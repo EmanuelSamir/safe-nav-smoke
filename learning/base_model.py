@@ -1,6 +1,8 @@
 from abc import ABC, abstractmethod
 from collections import deque
-import warnings
+import warnings 
+import numpy as np
+
 class BaseModel(ABC):
     """
     Abstract base class for an online forecasting model that tracks data during inference.
@@ -10,6 +12,7 @@ class BaseModel(ABC):
         Initializes the model with a rolling buffer for tracking past data.
         
         Args:
+            x_bounds: Tuple of two numpy arrays representing the bounds of the input space.
             history_size: Number of past data points to store.
         """
         self.history_size = history_size
@@ -46,6 +49,7 @@ class BaseModel(ABC):
         """
         self.input_history.append(x)
         self.output_history.append(y_true)
+
 
     def score(self, x, y_true):
         """

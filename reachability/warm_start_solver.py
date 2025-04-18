@@ -1,6 +1,6 @@
 import numpy as np
 import skfmm
-
+import skimage
 import hj_reachability as hj
 import jax.numpy as jnp
 from hj_reachability import dynamics, sets
@@ -16,7 +16,7 @@ from itertools import product
 import matplotlib.pyplot as plt
 from simulator.static_smoke import StaticSmoke, SmokeBlobParams
 from src.failure_map_builder import FailureMapBuilder, FailureMapParams
-
+from src.utils import *
 
 @dataclass
 class WarmStartSolverConfig:
@@ -25,16 +25,16 @@ class WarmStartSolverConfig:
     domain: np.ndarray # 2-dim: e.g [[x_min, y_min, theta_min], [x_max, y_max, theta_max]]
     mode: str # "brs" or "brt"
     accuracy: str # "low", "medium", "high", "very_high"
-    superlevel_set_epsilon: float = 0.1
+    superlevel_set_epsilon: float = 0.05
     converged_values: np.ndarray | None = None
     until_convergent: bool = True
     print_progress: bool = True
 
 
-speed = 2.0
+speed = 5.0
 class Dubins3D(dynamics.ControlAndDisturbanceAffineDynamics):
     def __init__(self,
-                 max_turn_rate=1.,
+                 max_turn_rate=4.,
                  control_mode="max",
                  disturbance_mode="min",
                  control_space=None,
@@ -123,8 +123,8 @@ class WarmStartSolver:
         """
         grid = hj.Grid.from_lattice_parameters_and_boundary_conditions(
             hj.sets.Box(
-                np.array([domain[0][0], domain[0][1], domain[0][2]]),
-                np.array([domain[1][0], domain[1][1], domain[1][2]]),
+                np.array(np.array(domain)[0, :]),
+                np.array(np.array(domain)[1, :]),
             ),
             tuple(domain_cells),
             periodic_dims=2,
@@ -137,6 +137,8 @@ class WarmStartSolver:
         :param grid_map: 2D numpy array of occupancy values
         :return: system-dim-D numpy array of warm-started values. e.g. for dubins3d, this is a 3D array
         """
+        # Erode the grid map
+        # grid_map = skimage.morphology.erosion(grid_map, skimage.morphology.square(3))
         warm_values = self.last_values
         l_x = self.compute_initial_values(grid_map)
         changed = np.where(self.last_grid_map != grid_map)
@@ -158,8 +160,7 @@ class WarmStartSolver:
         :return: system-dim-D numpy array of initial values. e.g. for dubins3d, this is a 3D array
         """
         if self.config.system_name == "dubins3d":
-            initial_values = grid_map - 0.5 # offset to make sure the distance is 0 at the border
-            initial_values = skfmm.distance(initial_values, dx=dx)
+            initial_values = skfmm.distance(grid_map, dx=dx)
             initial_values = np.tile(initial_values[:, :, np.newaxis], (1, 1, self.config.domain_cells[2]))
             return initial_values
         else:
@@ -182,12 +183,13 @@ class WarmStartSolver:
         print("Grid map shape:", grid_map.shape) if self.config.print_progress else None
         print("Domain cells:", self.config.domain_cells) if self.config.print_progress else None
 
-        if self.last_values is None:
-            print("Computing value function from scratch") if self.config.print_progress else None
-            initial_values = self.compute_initial_values(grid_map)
-        else:
-            print("Computing warm-started value function") if self.config.print_progress else None
-            initial_values = self.compute_warm_start_values(grid_map)
+        initial_values = self.compute_initial_values(grid_map)
+        # if self.last_values is None:
+        #     print("Computing value function from scratch") if self.config.print_progress else None
+        #     initial_values = self.compute_initial_values(grid_map)
+        # else:
+        #     print("Computing warm-started value function") if self.config.print_progress else None
+        #     initial_values = self.compute_warm_start_values(grid_map)
 
         self.initial_values = initial_values
 
@@ -222,7 +224,7 @@ class WarmStartSolver:
                 print(f"Current times step: {time} s to {target_time} s")
                 print(f"Max absolute difference between V_prev and V_now = {diff}")
         time_end = time_pkg()
-        print(f"Time taken: {time_end - time_start} seconds") if self.config.print_progress else None
+        print(f"Time taken: {time_end - time_start} seconds")# if self.config.print_progress else None
 
         self.last_values = values
 
@@ -265,7 +267,7 @@ class WarmStartSolver:
         action = nominal_action
 
         if not is_safe:
-            print("\033[31m{}\033[0m".format("Safe controller intervening. Value is:"))
+            #print("\033[31m{}{}\033[0m".format("Safe controller intervening. Value is:", value))
 
             state_ind = self._state_to_grid(state)
 
@@ -285,8 +287,8 @@ class WarmStartSolver:
 
             action = np.array([nominal_action[0], safe_w])
         else:
-            print("\033[32m{}\033[0m".format("Safe controller not intervening"))
-
+            #print("\033[32m{}\033[0m".format("Safe controller not intervening"))
+            pass
         return action, value, initial_value
 
     def _state_to_grid(self, state):
@@ -344,9 +346,6 @@ class WarmStartSolver:
 
 
 if __name__ == "__main__":
-    params = FailureMapParams(x_size=100, y_size=100, resolution=1, map_rule_type='threshold', map_rule_threshold=0.7)
-    builder = FailureMapBuilder(params)
-
     x_size, y_size = 80, 50
 
     smoke_blob_params = [
@@ -357,6 +356,9 @@ if __name__ == "__main__":
     ]
 
     smoke_simulator = StaticSmoke(x_size=x_size, y_size=y_size, resolution=0.1, smoke_blob_params=smoke_blob_params)
+    
+    params = FailureMapParams(x_size=x_size, y_size=y_size, resolution=0.5, map_rule_type='threshold', map_rule_threshold=0.7)
+    builder = FailureMapBuilder(params)
 
     gp = GaussianProcess()
 
@@ -370,6 +372,7 @@ if __name__ == "__main__":
 
     first_failure_map = builder.build_map(gp)
     builder.plot_failure_map()
+    plt.show()
 
     sample_size = 200
 
@@ -381,16 +384,17 @@ if __name__ == "__main__":
 
     second_failure_map = builder.build_map(gp)
     builder.plot_failure_map()
-    last_semantic_map = np.zeros((100, 100))
-    if last_semantic_map.ndim != 2:
-        raise ValueError("Last semantic map must be 2D")
+    plt.show()
 
+    cell_y_size, cell_x_size = get_index_bounds(x_size, y_size, builder.params.resolution)
+    domain_cells = np.array([cell_x_size, cell_y_size, 40])
+    domain = [[0, 0, 0], [x_size, y_size, 2*np.pi]]
 
     solver = WarmStartSolver(
         config=WarmStartSolverConfig(
             system_name="dubins3d",
-            domain_cells=[100, 100, 100],
-            domain=[[-10, -10, 0], [10, 10, 2*np.pi]],
+            domain_cells=domain_cells,
+            domain=domain,
             mode="brt",
             accuracy="low",
             converged_values=None,
@@ -399,9 +403,9 @@ if __name__ == "__main__":
         )
     )
 
-    first_values = solver.solve(first_failure_map, target_time=-3.0, dt=0.1, epsilon=0.0001)
+    first_values = solver.solve(first_failure_map.T, target_time=-10.0, dt=0.1, epsilon=0.0001)
 
-    second_values = solver.solve(second_failure_map, target_time=-3.0, dt=0.1, epsilon=0.0001)
+    second_values = solver.solve(second_failure_map.T, target_time=-10.0, dt=0.1, epsilon=0.0001)
 
     # nominal_action = [0.5, 0.4]
     # safe_action = solver.compute_safe_control([-8, -6, 0.3], nominal_action)

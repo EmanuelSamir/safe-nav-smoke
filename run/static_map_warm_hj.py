@@ -1,5 +1,5 @@
 from learning.base_model import BaseModel
-from learning.gaussian_process import GaussianProcess
+from learning.gaussian_process import GaussianProcess, plot_static_map
 from itertools import product
 import matplotlib.pyplot as plt
 from src.failure_map_builder import FailureMapBuilder, FailureMapParams
@@ -10,23 +10,27 @@ import numpy as np
 
 from src.mppi import Navigator, dubins_dynamics_tensor
 from matplotlib.patches import FancyArrow, Arrow
+from src.utils import *
 
 def main():
     env_params = EnvParams()
-    env_params.world_x_size = 30
-    env_params.world_y_size = 40
+    env_params.world_x_size = 20
+    env_params.world_y_size = 20
     env_params.max_steps = 2000
     env_params.render = False
-    env_params.goal_location = (25, 37)
+    env_params.goal_location = (18, 18)
 
     robot_params = RobotParams()
     smoke_blob_params = [
-        SmokeBlobParams(x_pos=15, y_pos=20, intensity=1.0, spread_rate=8.0),
+        SmokeBlobParams(x_pos=5, y_pos=5, intensity=1.0, spread_rate=2.0),
+        SmokeBlobParams(x_pos=12, y_pos=12, intensity=1.0, spread_rate=2.0),
+        SmokeBlobParams(x_pos=5, y_pos=12, intensity=1.0, spread_rate=2.0),
+        SmokeBlobParams(x_pos=12, y_pos=5, intensity=1.0, spread_rate=2.0),
     ]
 
     env = SmokeEnv(env_params, robot_params, smoke_blob_params)
 
-    state, _ = env.reset(initial_state=np.array([5.0, 5.0, 0.0, 0.0]))
+    state, _ = env.reset(initial_state=np.array([2.0, 2.0, 0.0, 0.0]))
 
     learner = GaussianProcess()
     
@@ -34,19 +38,24 @@ def main():
         params=FailureMapParams(
             x_size=env_params.world_x_size, 
             y_size=env_params.world_y_size, 
-            resolution=1.0, 
-            map_rule_type='threshold',
+            resolution=0.2, 
+            map_rule_type='cvar',
             map_rule_threshold=0.7
             )
         )
 
+    cell_y_size, cell_x_size = get_index_bounds(env_params.world_x_size, env_params.world_y_size, builder.params.resolution)
+    # Order is according to model input order and not the image order
+    domain_cells = np.array([cell_x_size, cell_y_size, 20])
+    domain = [[0, 0, 0], [env_params.world_x_size, env_params.world_y_size, 2*np.pi]]
+
     solver = WarmStartSolver(
         config=WarmStartSolverConfig(
             system_name="dubins3d",
-            domain_cells=[30, 40, 40],
-            domain=[[0, 0, 0], [env_params.world_x_size, env_params.world_y_size, 2*np.pi]],
+            domain_cells=domain_cells,
+            domain=domain,
             mode="brt",
-            accuracy="medium",
+            accuracy="low",
             converged_values=None,
             until_convergent=False,
             print_progress=False,
@@ -55,11 +64,11 @@ def main():
 
     nom_controller = Navigator()
     nom_controller.set_odom(state[:2],state[2])
-    nom_controller.set_map(builder.failure_map, [30, 40], [0, 0], 1.0)
+    nom_controller.set_map(builder.failure_map, builder.params.resolution)
     nom_controller.set_goal(list(env_params.goal_location))
 
     # TODO: Make this part of the dynamics
-    NOMINAL_ACTION_V = 2.0
+    NOMINAL_ACTION_V = 3.0
     nominal_action_w = nom_controller.get_command().item()
     nominal_action = np.array([NOMINAL_ACTION_V, nominal_action_w])
 
@@ -84,15 +93,17 @@ def main():
         learner_gt.track_data(X_sample, y_observe)
     learner_gt.update()
 
-
-    x = np.linspace(0, env_params.world_x_size, env_params.world_x_size)
-    y = np.linspace(0, env_params.world_y_size, env_params.world_y_size)
+    cell_y_size, cell_x_size = get_index_bounds(builder.params.x_size, builder.params.y_size, builder.params.resolution)
+    x = np.linspace(0, env_params.world_x_size, cell_x_size)
+    y = np.linspace(0, env_params.world_y_size, cell_y_size)
     xy = np.array(list(product(y, x)))
 
     y_pred, std = learner_gt.predict(xy)
-    y_pred = y_pred.reshape(env_params.world_y_size, env_params.world_x_size)
-    continuous_map = y_pred.reshape(int(env_params.world_y_size), int(env_params.world_x_size))
-    gt_failure_map = builder.rule_based_map(continuous_map)
+    continuous_map = y_pred.reshape(cell_y_size, cell_x_size)
+    map_assets = {}
+    map_assets['continuous_map'] = continuous_map
+    map_assets['std_map'] = std.reshape(cell_y_size, cell_x_size)
+    gt_failure_map = builder.rule_based_map(map_assets)
 
     plt.tight_layout()
     plt.draw()
@@ -133,13 +144,13 @@ def main():
             break
 
         nom_controller.set_odom(state[:2], state[2])
-        # nom_controller.set_map(builder.failure_map, [30, 40], [0, 0], 1.0)
+        nom_controller.set_map(builder.failure_map, builder.params.resolution)
 
         # Real time plotting
         env._render_frame(fig=f, ax=ax_env)
         builder.plot_failure_map(fig=f, ax=ax_fail)
 
-        learner.plot_map(x_size=env_params.world_x_size, y_size=env_params.world_y_size, fig=f, ax=ax_map)
+        plot_static_map(learner, world_x_size=env_params.world_x_size, world_y_size=env_params.world_y_size, resolution=builder.params.resolution, plot_type='cvar', fig=f, ax=ax_map)
 
         for arrow in ax_fail.patches:
             if isinstance(arrow, (FancyArrow, Arrow)):  
@@ -170,10 +181,10 @@ def main():
         z = values[:,:,state_ind[2]].T
         z_mask = z > 0.1
 
-        # contour = ax_fail.contour(x, y, z, levels=10, cmap='viridis')
-        # ax_fail.clabel(contour, fmt="%2.1f", colors="black", fontsize=5)
+        contour = ax_fail.contour(x, y, z, levels=10, cmap='viridis')
+        ax_fail.clabel(contour, fmt="%2.1f", colors="black", fontsize=5)
 
-        ax_fail.contour(x, y, z_mask, levels=[0.5], colors='green')
+        # ax_fail.contour(x, y, z_mask, levels=[0.5], colors='green')
 
         ax_fail.contour(x, y, gt_failure_map, levels=[0.5], colors='red')
 

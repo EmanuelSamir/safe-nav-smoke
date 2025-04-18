@@ -2,6 +2,8 @@ import numpy as np
 import matplotlib.pyplot as plt
 import warnings
 
+from src.utils import *
+
 class RobotParams:
     world_x_size: int = 80
     world_y_size: int = 30
@@ -17,7 +19,6 @@ class RobotParams:
 class BasicRobot:
     def __init__(self, robot_params: RobotParams) -> None:
         self.robot_params = robot_params
-
         # state is [x_pos, y_pos, angle]
         self.pos_x = 0
         self.pos_y = 0
@@ -37,18 +38,14 @@ class BasicRobot:
         self.pos_x += v * np.cos(self.angle) * self.robot_params.dt
         self.pos_y += v * np.sin(self.angle) * self.robot_params.dt
 
-        self.pos_x = np.clip(self.pos_x, 0, self.robot_params.world_x_size)
-        self.pos_y = np.clip(self.pos_y, 0, self.robot_params.world_y_size)
+        self.pos_x, self.pos_y = clip_world(self.pos_x, self.pos_y, self.robot_params.world_x_size, self.robot_params.world_y_size)
 
         self.angle += omega * self.robot_params.dt
         self.angle = np.mod(self.angle, 2 * np.pi)
 
     def reset(self, pos_x: float, pos_y: float, angle: float) -> None:
-        if pos_x < 0 or pos_x > self.robot_params.world_x_size:
-            raise ValueError(f"x_pos must be between 0 and {self.robot_params.world_x_size}")
-
-        if pos_y < 0 or pos_y > self.robot_params.world_y_size:
-            raise ValueError(f"y_pos must be between 0 and {self.robot_params.world_y_size}")
+        self.pos_x, self.pos_y = clip_world(pos_x, pos_y, self.robot_params.world_x_size, self.robot_params.world_y_size)
+        self.angle = np.mod(angle, 2 * np.pi)
 
         self.pos_x = pos_x
         self.pos_y = pos_y

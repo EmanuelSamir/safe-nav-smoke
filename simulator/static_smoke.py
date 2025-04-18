@@ -2,6 +2,8 @@ import numpy as np
 from dataclasses import dataclass
 import matplotlib.pyplot as plt
 
+from src.utils import *
+
 @dataclass
 class SmokeBlobParams:
     x_pos: int
@@ -15,16 +17,15 @@ class StaticSmoke:
         self.y_size = y_size
         self.resolution = resolution
 
+        self.y_discrete_size, self.x_discrete_size = get_index_bounds(self.x_size, self.y_size, self.resolution)
+
         self.smoke_map = self.build_smoke_map(smoke_blob_params)
 
     def build_smoke_map(self, smoke_blob_params: list[SmokeBlobParams]):
-        smoke_map = np.zeros((int(self.y_size / self.resolution), int(self.x_size / self.resolution)))
-
-        # x / resolution, y / resolution
+        smoke_map = np.zeros((self.y_discrete_size, self.x_discrete_size))
 
         for blob in smoke_blob_params:
-            x_pos_proj = int(blob.x_pos / self.resolution)
-            y_pos_proj = int(blob.y_pos / self.resolution)
+            y_pos_proj, x_pos_proj = world_to_index(blob.x_pos, blob.y_pos, self.x_size, self.y_size, self.resolution)
 
             y, x = np.ogrid[-y_pos_proj:smoke_map.shape[0]-y_pos_proj,
                             -x_pos_proj:smoke_map.shape[1]-x_pos_proj]
@@ -37,11 +38,7 @@ class StaticSmoke:
         return smoke_map
         
     def get_smoke_density(self, x, y):
-        x_proj = int(x / self.resolution)
-        y_proj = int(y / self.resolution)
-
-        x_proj = int(np.clip(x_proj, 0, (self.x_size - 1) / self.resolution))
-        y_proj = int(np.clip(y_proj, 0, (self.y_size - 1) / self.resolution))
+        y_proj, x_proj = world_to_index(x, y, self.x_size, self.y_size, self.resolution)
         return self.smoke_map[y_proj, x_proj]
 
     def get_smoke_map(self):
@@ -74,6 +71,7 @@ if __name__ == "__main__":
     smoke_simulator = StaticSmoke(x_size=80, y_size=50, resolution=0.1, smoke_blob_params=smoke_blob_params)
     print(smoke_simulator.get_smoke_density(70, 20))
     smoke_simulator.plot_smoke_map()
+    plt.show()
 
 
 

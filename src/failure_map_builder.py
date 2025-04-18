@@ -5,7 +5,8 @@ from learning.gaussian_process import GaussianProcess
 from itertools import product
 import matplotlib.pyplot as plt
 from simulator.static_smoke import StaticSmoke, SmokeBlobParams
-
+from src.utils import *
+import scipy.stats as stats
 @dataclass
 class FailureMapParams:
     x_size: int
@@ -20,6 +21,8 @@ class FailureMapParams:
     # Used for threshold map rule
     map_rule_threshold: float
 
+    # Used for cvar map rule
+    cvar_alpha: float = 0.9
 
 class FailureMapBuilder():  
     def __init__(self, params: FailureMapParams):
@@ -31,11 +34,14 @@ class FailureMapBuilder():
         """
         self.params = params
 
-        # TODO: Check if the initial map is correct?
-        self.failure_map = np.ones((int(self.params.y_size / self.params.resolution), int(self.params.x_size / self.params.resolution)))
+        cell_y_size, cell_x_size = get_index_bounds(self.params.x_size, self.params.y_size, self.params.resolution)
+        self.domain_cells = np.array([cell_x_size, cell_y_size])
 
-        x = np.linspace(0, self.params.x_size, int(self.params.x_size / self.params.resolution))
-        y = np.linspace(0, self.params.y_size, int(self.params.y_size / self.params.resolution))
+        # TODO: Check if the initial map is correct?
+        self.failure_map = np.ones([cell_y_size, cell_x_size])
+
+        x = np.linspace(0, self.params.x_size, cell_x_size, endpoint=False)
+        y = np.linspace(0, self.params.y_size, cell_y_size, endpoint=False)
         self.xy_coords = np.array(list(product(y, x)))
 
     def build_map(self, forecaster: BaseModel):
@@ -48,10 +54,14 @@ class FailureMapBuilder():
             failure_map: np.ndarray
         """
         try:
-            y_pred, _ = forecaster.predict(self.xy_coords)
-            continuous_map = y_pred.reshape(int(self.params.y_size / self.params.resolution), int(self.params.x_size / self.params.resolution))
+            y_pred, std_pred = forecaster.predict(self.xy_coords)
+            map_assets = {}
+            map_assets['continuous_map'] = y_pred.reshape(self.domain_cells[1], self.domain_cells[0])
 
-            self.failure_map = self.rule_based_map(continuous_map)
+            if self.params.map_rule_type == 'cvar':
+                map_assets['std_map'] = std_pred.reshape(self.domain_cells[1], self.domain_cells[0])
+
+            self.failure_map = self.rule_based_map(map_assets)
         except Exception as e:
             print(f"Error predicting: {e}. Returning last failure map.")
 
@@ -60,17 +70,26 @@ class FailureMapBuilder():
     def build_continuous_map(self, forecaster: BaseModel):
         try:
             y_pred, _ = forecaster.predict(self.xy_coords)
-            continuous_map = y_pred.reshape(int(self.params.y_size / self.params.resolution), int(self.params.x_size / self.params.resolution))
+            continuous_map = y_pred.reshape(self.domain_cells[1], self.domain_cells[0])
             return continuous_map
         except Exception as e:
             print(f"Error predicting: {e}. Returning last failure map instead.")
             return self.failure_map
     
-    def rule_based_map(self, continuous_map: np.ndarray):
-        if self.params.map_rule_type == 'threshold':
+    def rule_based_map(self, map_assets: dict):
+        """
+        Failure map is a boolean map where 1s are empty and 0s are failure.
+        """
+        if self.params.map_rule_type == 'threshold' and 'continuous_map' in map_assets:
+            continuous_map = map_assets['continuous_map']
             failure_map = (continuous_map < self.params.map_rule_threshold).astype(bool)
+        elif self.params.map_rule_type == 'cvar' and 'std_map' in map_assets:
+            std_map = map_assets['std_map']
+            continuous_map = map_assets['continuous_map']
+            cvar = continuous_map + std_map * stats.norm.pdf(stats.norm.ppf(self.params.cvar_alpha)) / (1 - self.params.cvar_alpha)
+            failure_map = (cvar < self.params.map_rule_threshold).astype(bool)
         else:
-            raise ValueError(f"Invalid map rule type: {self.params.map_rule_type}")
+            raise ValueError(f"Invalid map rule type: {self.params.map_rule_type} for map assets: {map_assets.keys()}")
 
         return failure_map
     
@@ -91,25 +110,24 @@ class FailureMapBuilder():
 
 
 if __name__ == "__main__":
-    params = FailureMapParams(x_size=80, y_size=50, resolution=1, map_rule_type='threshold', map_rule_threshold=0.7)
+    x_size, y_size = 80, 50
+    params = FailureMapParams(x_size=x_size, y_size=y_size, resolution=1.0, map_rule_type='threshold', map_rule_threshold=0.2)
     builder = FailureMapBuilder(params)
     print("Initial failure map shape:", builder.failure_map.shape)
     builder.plot_failure_map()
 
-    x_size, y_size = 80, 50
-
     smoke_blob_params = [
-        SmokeBlobParams(x_pos=10, y_pos=40, intensity=2.0, spread_rate=4.0),
-        SmokeBlobParams(x_pos=10, y_pos=20, intensity=1.5, spread_rate=5.0),
-        SmokeBlobParams(x_pos=60, y_pos=20, intensity=2.0, spread_rate=3.0),
-        SmokeBlobParams(x_pos=50, y_pos=10, intensity=1.5, spread_rate=5.0),
+        SmokeBlobParams(x_pos=10, y_pos=40, intensity=1.0, spread_rate=4.0),
+        SmokeBlobParams(x_pos=10, y_pos=20, intensity=1.0, spread_rate=5.0),
+        SmokeBlobParams(x_pos=60, y_pos=20, intensity=1.0, spread_rate=3.0),
+        SmokeBlobParams(x_pos=50, y_pos=10, intensity=1.0, spread_rate=5.0),
     ]
 
     smoke_simulator = StaticSmoke(x_size=x_size, y_size=y_size, resolution=0.1, smoke_blob_params=smoke_blob_params)
 
     gp = GaussianProcess()
 
-    sample_size = 100
+    sample_size = 400
 
     for i in range(sample_size):
         X_sample = np.concatenate([np.random.uniform(0, y_size, 1), np.random.uniform(0, x_size, 1)])

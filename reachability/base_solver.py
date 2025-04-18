@@ -1,7 +1,6 @@
 import hj_reachability as hj
 import numpy as np
 
-
 class BaseSolver:
     def __init__(self, failure_map: np.ndarray):
         self.failure_map = failure_map
@@ -21,8 +20,6 @@ class BaseSolver:
 
         if system == "dubins3d":
             return hj.systems.Dubins3d(**kwargs)
-
-
 
     def get_problem_definition(self, system, domain, dims, mode, accuracy):
         dynamics = self.get_dynamics(system)

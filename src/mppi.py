@@ -6,6 +6,9 @@ import numpy as np
 import torch
 from torch.distributions.multivariate_normal import MultivariateNormal
 from matplotlib import pyplot as plt
+
+from src.utils import *
+
 logger = logging.getLogger(__name__)
 
 def dubins_dynamics_tensor(current_state: torch.Tensor, action: torch.Tensor, dt: float) \
@@ -21,8 +24,8 @@ def dubins_dynamics_tensor(current_state: torch.Tensor, action: torch.Tensor, dt
     """
     def one_step_dynamics(state, action):
         """Compute the derivatives [dx/dt, dy/dt, dtheta/dt]."""
-        x_dot = 2.*torch.cos(state[:, 2])
-        y_dot = 2.*torch.sin(state[:, 2])
+        x_dot = 5.*torch.cos(state[:, 2])
+        y_dot = 5.*torch.sin(state[:, 2])
         theta_dot = action[:, 0]
         return torch.stack([x_dot, y_dot, theta_dot], dim=1)
 
@@ -401,7 +404,6 @@ class Navigator:
         self.planner = self._start_planner()
         self._map_torch = None  # Initialize later with the map data
         self._cell_size = None  # Initialize later with the map resolution
-        self._map_origin_torch = None  # Initialize later with the map origin
         self._goal_torch = None
         self._goal_thresh = 0.1
 
@@ -427,23 +429,17 @@ class Navigator:
                                          orientation],
                                          dtype=self.dtype, device=self.device)
 
-    def set_map(self, map_data, map_dim, map_origin, map_resolution):
+    def set_map(self, map_data, map_resolution):
         """
         :param map_data: (array-like): flattened map in row-major order
-        :param map_dim: (array-like): map dimensions in [height, width] order
-        :param map_origin: (array-like): map origin as [x, y]
         :param map_resolution: (float): map resolution
         """
-        self._map_torch = torch.tensor(map_data, dtype=self.dtype, device=self.device).reshape(map_dim[0],
-                                                                                               map_dim[1])
+        self._map_torch = torch.tensor(map_data, dtype=self.dtype, device=self.device)
         self._cell_size = map_resolution
-        self._map_origin_torch = torch.tensor([map_origin[0], map_origin[1]],
-                                              dtype=self.dtype, device=self.device)
 
     def set_goal(self, position):
         """
         :param position: (array-like): goal position [x, y]
-        :param orientation: (array-like): goal orientation [x, y, z, w] quaternion
         """
         self._goal_torch = torch.tensor([position[0], position[1]],
                                         dtype=self.dtype, device=self.device)
@@ -487,13 +483,14 @@ class Navigator:
 
     def _compute_collision_cost(self, current_state: torch.Tensor, action: torch.Tensor) -> torch.Tensor:
         """
+        Note: Collision map is 0 for collision, 1 for free space
         current_state: shape(num_samples, dim_x)
         action: shape(num_samples, dim_u)
 
         return:
         cost: shape(num_samples)
         """
-        position_map = (current_state[..., :2] - self._map_origin_torch) / self._cell_size
+        position_map = (current_state[..., :2]) / self._cell_size
         position_map = torch.round(position_map).long().to(self.device)
         is_out_of_bound = torch.logical_or(
             torch.logical_or(
@@ -507,15 +504,15 @@ class Navigator:
         position_map[..., 1] = torch.clamp(position_map[..., 1], 0, self._map_torch.shape[0] - 1)
         # Collision check
         collisions = self._map_torch[position_map[..., 1], position_map[..., 0]]
-        collisions = torch.where(collisions == -1, torch.tensor(0.0, device=self.device), collisions.float())
-        collisions = torch.where(collisions == 100, torch.tensor(1.0, device=self.device), collisions.float())
+        collisions = torch.where(collisions == 1, torch.tensor(0.0, device=self.device), collisions.float())
+        collisions = torch.where(collisions == 0, torch.tensor(1.0, device=self.device), collisions.float())
 
         # Out of bound cost
         collisions[is_out_of_bound] = 1.0
         return collisions
 
 
-    def mppi_cost_func(self, current_state: torch.Tensor, action: torch.Tensor, t, weights=(1, 2.5)) -> torch.Tensor:
+    def mppi_cost_func(self, current_state: torch.Tensor, action: torch.Tensor, t, weights=(1, 2.0)) -> torch.Tensor:
         """
         current_state: shape(num_samples, dim_x)
         return:
@@ -538,7 +535,11 @@ if __name__ == "__main__":
     state = torch.tensor([0, 0, np.pi])
     navigator = Navigator()
     navigator.set_odom(state[:2],state[-1])
-    navigator.set_map(np.ones((100, 100)), [100, 100], [0, 0], 0.5)
+
+    map_data = np.zeros((100, 100))
+    map_data[10:60, 10:60] = 1
+    navigator.set_map(map_data, 0.5)
+
     navigator.set_goal([50, 50])
 
     col_x = []
@@ -566,4 +567,5 @@ if __name__ == "__main__":
 
     plt.scatter(col_x, col_y, c='red')
     plt.scatter(non_col_x, non_col_y, c='green')
+    plt.imshow(navigator._map_torch.cpu().numpy(), origin='lower', extent=[0, 50, 0, 50])
     plt.show()

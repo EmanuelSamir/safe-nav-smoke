@@ -7,6 +7,8 @@ from dataclasses import dataclass, field
 import matplotlib.pyplot as plt
 from matplotlib.patches import Circle
 from matplotlib.patches import FancyArrow, Arrow
+from src.utils import *
+
 @dataclass
 class EnvParams:
     world_x_size: int = field(default=50)
@@ -17,7 +19,7 @@ class EnvParams:
     clock: float = field(default=0.1)
 
     goal_location: tuple[int, int] | None = field(default=None)
-
+    goal_radius: float = field(default=1.0)
 class SmokeEnv(gym.Env):
     def __init__(self, env_params: EnvParams, robot_params: RobotParams, smoke_blob_params: list[SmokeBlobParams]) -> None:
         super().__init__()
@@ -28,13 +30,8 @@ class SmokeEnv(gym.Env):
 
         self.smoke_simulator = StaticSmoke(env_params.world_x_size, env_params.world_y_size, smoke_blob_params)
 
-        self.robot_params.world_x_size = self.env_params.world_x_size - 1
-        self.robot_params.world_y_size = self.env_params.world_y_size - 1
-
-        for blob in self.smoke_blob_params:
-            blob.world_x_size = self.env_params.world_x_size - 1
-            blob.world_y_size = self.env_params.world_y_size - 1
-
+        self.robot_params.world_x_size = self.env_params.world_x_size
+        self.robot_params.world_y_size = self.env_params.world_y_size
 
         self.action_space = spaces.Box(low=np.array([self.robot_params.v_min, self.robot_params.omega_min]),
                                        high=np.array([self.robot_params.v_max, self.robot_params.omega_max]),
@@ -77,7 +74,7 @@ class SmokeEnv(gym.Env):
 
     def _get_terminated(self, obs):
         if self.env_params.goal_location is not None:
-            if np.linalg.norm(obs[:2] - self.env_params.goal_location) < 1.0:
+            if np.linalg.norm(obs[:2] - self.env_params.goal_location) < self.env_params.goal_radius:
                 return True
         return False
     
@@ -115,26 +112,29 @@ class SmokeEnv(gym.Env):
                 extent=[0, self.env_params.world_x_size, 0, self.env_params.world_y_size],
                 origin='lower'
             )
+
             # self.window["ax"].set_axis_off()
-            self.window["ax"].set_title("Simulation")
             #self.window["fig"].colorbar(self.window["cax"], ax=self.window["ax"], label="Smoke Density", shrink=0.5)
+            
+            self.window["ax"].set_title("Simulation")
             self.window["cax"].set_clim(vmin=np.min(0.0),
                                         vmax=np.max(1.0))
-            
+            self.window["ax"].set_xlim(0, self.env_params.world_x_size)
+            self.window["ax"].set_ylim(0, self.env_params.world_y_size)
             if self.env_params.goal_location is not None:
                 circle = Circle((self.env_params.goal_location[0], self.env_params.goal_location[1]), 
                               radius=1.0, color='g', fill=True, alpha=0.8)
                 self.window["ax"].add_patch(circle)
         
+        # self.window["cax"].set_array(self.smoke_simulator.get_smoke_map())
+
         for arrow in self.window["ax"].patches:
             if isinstance(arrow, (FancyArrow, Arrow)):  
                 arrow.remove()
 
-        # Plot the agent's location as a blue arrow
         self.window["ax"].arrow(self.robot.pos_x, self.robot.pos_y, 0.1*np.cos(self.robot.angle), 0.1*np.sin(self.robot.angle), 
                                 head_width=1., head_length=1., fc='b', ec='b')
         
-        # Redraw the plot to update the frame
         self.window["fig"].canvas.draw()
         self.window["fig"].canvas.flush_events()
         plt.pause(self.clock)
@@ -159,7 +159,7 @@ if __name__ == "__main__":
     ]
 
     env = SmokeEnv(env_params, robot_params, smoke_blob_params)
-    env.reset()
+    env.reset(initial_state=np.array([70, 40, 0, 0]))
 
     fig, ax = plt.subplots(figsize=(4, 4))
 
