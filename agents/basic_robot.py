@@ -8,7 +8,7 @@ class RobotParams:
     world_x_size: int = 80
     world_y_size: int = 30
 
-    v_max: float = 5.0
+    v_max: float = 3.0
     omega_max: float = 4.0
 
     v_min: float = 0.0

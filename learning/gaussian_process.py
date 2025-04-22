@@ -5,6 +5,10 @@ from matplotlib import pyplot as plt
 from sklearn.metrics import mean_squared_error
 from sklearn.gaussian_process import GaussianProcessRegressor
 from sklearn.gaussian_process.kernels import RBF, Matern, ConstantKernel as C
+
+# Optional if using online version of GP
+from goppy import OnlineGP, SquaredExponentialKernel, Matern32Kernel
+
 import scipy.stats as stats
 from collections import deque
 from simulator.static_smoke import StaticSmoke, SmokeBlobParams
@@ -14,52 +18,62 @@ from src.utils import *
 
 class Kernel:
     RBF = RBF(length_scale=0.1)
-    Matern = Matern(length_scale=0.5, nu=1.3)
+    Matern = Matern(length_scale=1.0, nu=1.3)
     ConstantKernel = C()
+
+class OnlineKernel:
+    Matern = Matern32Kernel(lengthscales=[10.0])
 
 N_RESTARTS_OPTIMIZER = 10
 NORMALIZE_Y = False
 
 class GaussianProcess(BaseModel):
-    def __init__(self, kernel: Kernel = Kernel.Matern):
+    def __init__(self, kernel: Kernel = Kernel.Matern, online_kernel: OnlineKernel = OnlineKernel.Matern, online: bool = False):
         super().__init__()
 
-        self.kernel = kernel
-        self.model = GaussianProcessRegressor(kernel=self.kernel, 
-                                             optimizer='fmin_l_bfgs_b', 
-                                             n_restarts_optimizer=N_RESTARTS_OPTIMIZER, 
-                                             normalize_y=NORMALIZE_Y)
-        self.online_res = None
+        self.online = online
+
+        if not self.online:
+            self.kernel = kernel
+            self.model = GaussianProcessRegressor(kernel=self.kernel, 
+                                                optimizer='fmin_l_bfgs_b', 
+                                                n_restarts_optimizer=N_RESTARTS_OPTIMIZER, 
+                                                normalize_y=NORMALIZE_Y)
+        else:
+            self.kernel = online_kernel
+            self.model = OnlineGP(self.kernel, noise_var=0.01)
+            self.first_update = False
         
-    def update(self, online_update: bool = False):
+    def update(self):
         if self.input_history and self.output_history:
             X = np.array(self.input_history)
             y = np.array(self.output_history)
 
-            if online_update:
-                raise NotImplementedError("Online update is still in progress")
-                if self.online_res is not None:
-                    print("using online update")
-                    self.kernel.set_params(**self.online_res.kernel_.get_params())
+            if y.ndim == 1:
+                y = y.reshape(-1, 1)
 
-                self.model= GaussianProcessRegressor(kernel=self.kernel, 
-                                             optimizer='fmin_l_bfgs_b', 
-                                             n_restarts_optimizer=N_RESTARTS_OPTIMIZER, 
-                                             normalize_y=NORMALIZE_Y)
-                res = self.model.fit(X, y)
-                self.online_res = res
+            if self.online:
+                if not self.first_update:
+                    self.model.fit(X, y)
+                    self.first_update = True
+                else:
+                    self.model.add(X, y)
 
                 # Flush history
                 self.input_history = deque()
                 self.output_history = deque()
-
             else:
                 with warnings.catch_warnings():
                     warnings.simplefilter("ignore")
                     self.model.fit(X, y)
 
     def predict(self, x):
-        y_pred, std = self.model.predict(x, return_std=True)
+        if not self.online:
+            y_pred, std = self.model.predict(x, return_std=True)
+        else:
+            res = self.model.predict(x, what=['mean', 'mse'])
+            y_pred = res['mean']
+            std = res['mse']#np.sqrt(res['mse'])
         return y_pred, std
 
     def score(self, x, y_true):
@@ -114,17 +128,16 @@ if __name__ == '__main__':
 
     smoke_simulator = StaticSmoke(x_size=world_x_size, y_size=world_y_size, resolution=0.1, smoke_blob_params=smoke_blob_params)
 
-    gp = GaussianProcess()
+    gp = GaussianProcess(online=True)
 
-    sample_size = 1000
+    sample_size = 500
     map_resolution = 0.5
 
     for i in range(sample_size):
         X_sample = np.concatenate([np.random.uniform(0, world_y_size, 1), np.random.uniform(0, world_x_size, 1)])
         y_observe = smoke_simulator.get_smoke_density(X_sample[1], X_sample[0])
         gp.track_data(X_sample, y_observe)
-
-    gp.update(online_update=False)
+    gp.update()
 
 
     y_true = smoke_simulator.get_smoke_map()

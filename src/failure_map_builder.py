@@ -22,7 +22,7 @@ class FailureMapParams:
     map_rule_threshold: float
 
     # Used for cvar map rule
-    cvar_alpha: float = 0.9
+    cvar_alpha: float = 0.95
 
 class FailureMapBuilder():  
     def __init__(self, params: FailureMapParams):
@@ -102,6 +102,8 @@ class FailureMapBuilder():
         else:
             ax_ = ax.imshow(self.failure_map, vmin=0.0, vmax=1.0, extent=[0, self.params.x_size, 0, self.params.y_size], origin='lower', cmap='gray')
             #fig.colorbar(ax_, label='Failure', shrink=0.5)
+            ax.set_xlim(0, self.params.x_size)
+            ax.set_ylim(0, self.params.y_size)
             ax.set_title('Failure Map')
             ax.set_xlabel('X')
             ax.set_ylabel('Y')
@@ -111,7 +113,7 @@ class FailureMapBuilder():
 
 if __name__ == "__main__":
     x_size, y_size = 80, 50
-    params = FailureMapParams(x_size=x_size, y_size=y_size, resolution=1.0, map_rule_type='threshold', map_rule_threshold=0.2)
+    params = FailureMapParams(x_size=x_size, y_size=y_size, resolution=1.0, map_rule_type='cvar', map_rule_threshold=0.2)
     builder = FailureMapBuilder(params)
     print("Initial failure map shape:", builder.failure_map.shape)
     builder.plot_failure_map()

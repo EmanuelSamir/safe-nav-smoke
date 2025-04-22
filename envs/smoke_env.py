@@ -137,7 +137,7 @@ class SmokeEnv(gym.Env):
         
         self.window["fig"].canvas.draw()
         self.window["fig"].canvas.flush_events()
-        plt.pause(self.clock)
+        plt.pause(0.01)#self.clock)
 
     def close(self):
         self.window = {"fig": None, "ax": None, "cax": None}

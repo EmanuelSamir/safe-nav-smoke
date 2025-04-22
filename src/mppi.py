@@ -24,8 +24,8 @@ def dubins_dynamics_tensor(current_state: torch.Tensor, action: torch.Tensor, dt
     """
     def one_step_dynamics(state, action):
         """Compute the derivatives [dx/dt, dy/dt, dtheta/dt]."""
-        x_dot = 5.*torch.cos(state[:, 2])
-        y_dot = 5.*torch.sin(state[:, 2])
+        x_dot = 3.*torch.cos(state[:, 2])
+        y_dot = 3.*torch.sin(state[:, 2])
         theta_dot = action[:, 0]
         return torch.stack([x_dot, y_dot, theta_dot], dim=1)
 
@@ -504,15 +504,15 @@ class Navigator:
         position_map[..., 1] = torch.clamp(position_map[..., 1], 0, self._map_torch.shape[0] - 1)
         # Collision check
         collisions = self._map_torch[position_map[..., 1], position_map[..., 0]]
-        collisions = torch.where(collisions == 1, torch.tensor(0.0, device=self.device), collisions.float())
-        collisions = torch.where(collisions == 0, torch.tensor(1.0, device=self.device), collisions.float())
+        collisions = torch.where(collisions == 1, torch.tensor(1.0, device=self.device), collisions.float())
+        collisions = torch.where(collisions == 0, torch.tensor(0.0, device=self.device), collisions.float())
 
         # Out of bound cost
         collisions[is_out_of_bound] = 1.0
         return collisions
 
 
-    def mppi_cost_func(self, current_state: torch.Tensor, action: torch.Tensor, t, weights=(1, 2.0)) -> torch.Tensor:
+    def mppi_cost_func(self, current_state: torch.Tensor, action: torch.Tensor, t, weights=(1, 0.0)) -> torch.Tensor:
         """
         current_state: shape(num_samples, dim_x)
         return:
@@ -536,8 +536,8 @@ if __name__ == "__main__":
     navigator = Navigator()
     navigator.set_odom(state[:2],state[-1])
 
-    map_data = np.zeros((100, 100))
-    map_data[10:60, 10:60] = 1
+    map_data = np.zeros((100, 100), dtype=bool)
+    map_data[10:60, 10:60] = True
     navigator.set_map(map_data, 0.5)
 
     navigator.set_goal([50, 50])
@@ -567,5 +567,5 @@ if __name__ == "__main__":
 
     plt.scatter(col_x, col_y, c='red')
     plt.scatter(non_col_x, non_col_y, c='green')
-    plt.imshow(navigator._map_torch.cpu().numpy(), origin='lower', extent=[0, 50, 0, 50])
+    plt.imshow(navigator._map_torch.cpu().numpy(), origin='lower', extent=[0, 50, 0, 50], cmap='gray')
     plt.show()

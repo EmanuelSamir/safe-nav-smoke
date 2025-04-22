@@ -25,13 +25,13 @@ class WarmStartSolverConfig:
     domain: np.ndarray # 2-dim: e.g [[x_min, y_min, theta_min], [x_max, y_max, theta_max]]
     mode: str # "brs" or "brt"
     accuracy: str # "low", "medium", "high", "very_high"
-    superlevel_set_epsilon: float = 0.05
+    superlevel_set_epsilon: float = 0.25
     converged_values: np.ndarray | None = None
     until_convergent: bool = True
     print_progress: bool = True
 
 
-speed = 5.0
+speed = 10.0
 class Dubins3D(dynamics.ControlAndDisturbanceAffineDynamics):
     def __init__(self,
                  max_turn_rate=4.,
@@ -224,7 +224,7 @@ class WarmStartSolver:
                 print(f"Current times step: {time} s to {target_time} s")
                 print(f"Max absolute difference between V_prev and V_now = {diff}")
         time_end = time_pkg()
-        print(f"Time taken: {time_end - time_start} seconds")# if self.config.print_progress else None
+        print(f"Time taken in computing BRT: {time_end - time_start} seconds") if self.config.print_progress else None
 
         self.last_values = values
 
