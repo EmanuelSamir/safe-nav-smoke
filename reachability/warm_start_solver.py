@@ -245,6 +245,35 @@ class WarmStartSolver:
             initial_value = None
 
         return value > self.config.superlevel_set_epsilon, value, initial_value
+    
+    def compute_safe_action(self, state, action_bounds, values=None, values_grad=None):
+        if self.problem_definition is None:
+            self.problem_definition = self.get_problem_definition(
+                self.config.system_name, self.config.domain, values.shape, self.config.mode, self.config.accuracy
+            )
+
+        if values_grad is None:
+            values_grad = np.gradient(values)
+
+        state_ind = self._state_to_grid(state)
+
+        grad_x = values_grad[0][state_ind[0], state_ind[1], state_ind[2]]
+        grad_y = values_grad[1][state_ind[0], state_ind[1], state_ind[2]]
+        grad_theta = values_grad[2][state_ind[0], state_ind[1], state_ind[2]]
+
+        # TODO: Replace temporal straight forward solution
+        N_samples = 1000
+        w_samples = np.linspace(action_bounds[1][0], action_bounds[1][1], N_samples)
+
+        opt_problem = lambda w: 0.5 * np.cos(state[2]) * grad_x + 0.5 * np.sin(state[2]) * grad_y + grad_theta * w
+
+        w_opt_ind = np.argmax(opt_problem(w_samples))
+        w_opt = w_samples[w_opt_ind]
+        safe_w = w_opt
+
+        action = np.array([3.0, safe_w])
+
+        return action
 
     def compute_safe_control(
         self, state, nominal_action, action_bounds, values=None, values_grad=None

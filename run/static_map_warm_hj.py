@@ -132,6 +132,11 @@ def main(opts: dict = {}):
 
     frames = []
 
+    soft_action_enabled = True
+    tau_hard = 0.05
+    tau_soft = 0.50
+    gamma_spread = 1.0
+
     # Create a line plot for the gradient values
     for t in range(1,env_params.max_steps):
         learner.track_data(state[0:2][::-1], state[3])
@@ -148,7 +153,14 @@ def main(opts: dict = {}):
         nominal_action = np.array([NOMINAL_ACTION_V, nominal_action.item()])
         safe_action = nominal_action
         if values is not None and not opts.get("safety_disabled"):
-            safe_action, _, _ = solver.compute_safe_control(state[0:3], nominal_action, action_bounds=np.array([[0.0, 5.0], [-4.0, 4.0]]), values=values)
+            if soft_action_enabled:
+                _, value, _ = solver.check_if_safe(state[0:3], values)
+                sigmoid = lambda x: 1 / (1 + np.exp((gamma_spread * (x - tau_soft))))
+                lambda_value = 1.0 if value < tau_hard else sigmoid(value)
+                safe_action = solver.compute_safe_action(state[0:3], action_bounds=np.array([[0.0, 5.0], [-4.0, 4.0]]), values=values)
+                safe_action = lambda_value * safe_action + (1 - lambda_value) * nominal_action
+            else:
+                safe_action, _, _ = solver.compute_safe_control(state[0:3], nominal_action, action_bounds=np.array([[0.0, 5.0], [-4.0, 4.0]]), values=values)
         else:   
             safe_action = nominal_action
         
