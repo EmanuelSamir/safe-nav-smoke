@@ -1,9 +1,10 @@
 import numpy as np
 import gymnasium as gym
 from gymnasium import spaces
-from simulator.static_smoke import StaticSmoke, SmokeBlobParams
+from simulator.dynamic_smoke import DynamicSmoke, SmokeBlobParams, DynamicSmokeParams, DownwardsSensorParams
 from agents.basic_robot import RobotParams
-from agents.dubins_robot import DubinsRobot, DubinsRobotFixedSpeed
+from agents.dubins_robot import DubinsRobot
+from agents.dubins_robot_fixed_velocity import DubinsRobotFixedVelocity
 from agents.unicycle_robot import UnicycleRobot
 from dataclasses import dataclass, field
 import matplotlib.pyplot as plt
@@ -11,7 +12,11 @@ from matplotlib.patches import Circle, Polygon
 from matplotlib.patches import FancyArrow, Arrow
 from src.utils import *
 import yaml
-from tqdm import tqdm
+from io import BytesIO
+import imageio
+import time
+
+# Current Performance: 1.24 Hz in Macbook M3
 
 @dataclass
 class EnvParams:
@@ -19,7 +24,7 @@ class EnvParams:
     world_y_size: int = field(default=50)
 
     max_steps: int = field(default=1000)
-    render: bool = field(default=False)
+    render: str = None
     clock: float = field(default=0.1)
 
     goal_location: tuple[int, int] | None = field(default=None)
@@ -41,22 +46,27 @@ class EnvParams:
             data = yaml.safe_load(f)
         return EnvParams(**data)
         
-class SmokeEnv(gym.Env):
-    def __init__(self, env_params: EnvParams, robot_params: RobotParams, smoke_blob_params: list[SmokeBlobParams]) -> None:
+class DynamicSmokeEnv(gym.Env):
+    def __init__(self, env_params: EnvParams, robot_params: RobotParams, smoke_params: DynamicSmokeParams) -> None:
         super().__init__()
 
         self.env_params = env_params
         self.robot_params = robot_params
-        self.smoke_blob_params = smoke_blob_params
 
-        self.smoke_simulator = StaticSmoke(env_params.world_x_size, env_params.world_y_size, smoke_blob_params)
+        self.smoke_simulator = DynamicSmoke(params=smoke_params)
 
         self.robot_params.state_max[0] = self.env_params.world_x_size
         self.robot_params.state_max[1] = self.env_params.world_y_size
 
-        self.action_space = spaces.Box(low=np.array([self.robot_params.action_min[0], self.robot_params.action_min[1]]),
-                                       high=np.array([self.robot_params.action_max[0], self.robot_params.action_max[1]]),
-                                       shape=(2,))
+        # if self.robot_params.robot_type == "dubins2d_fixed_velocity":
+
+        # elif self.robot_params.robot_type == "dubins2d":
+        # else:
+        #     raise NotImplementedError(f"Robot type {self.robot_params.robot_type} not implemented")
+
+        self.action_space = spaces.Box(low=self.robot_params.action_min,
+                                    high=self.robot_params.action_max,
+                                    shape=(self.robot_params.action_dim,))
         
         # 0: x, 1: y, 2: theta, 3: smoke_density
         # TODO: Check why world - 1?
@@ -69,20 +79,26 @@ class SmokeEnv(gym.Env):
             "smoke_density_location": spaces.Sequence(spaces.Box(low=np.array([0, 0]), high=np.array([self.env_params.world_x_size - 1, self.env_params.world_y_size - 1]), shape=(2,)), stack=True)
         })
 
-        self.fov_size = self.env_params.fov_size
+        if self.robot_params.robot_type == "unicycle":
+            self.observation_space["velocity"] = spaces.Box(low=self.robot_params.state_min[3], high=self.robot_params.state_max[3], shape=(1,))
+        elif self.robot_params.robot_type == "dubins2d":
+            pass
+        elif self.robot_params.robot_type == "dubins2d_fixed_velocity":
+            pass
+        else:
+            raise NotImplementedError(f"Robot type {self.robot_params.robot_type} not implemented")
 
-        # self.observation_space = spaces.Box(low=np.array([0, 0, 0, 0]),
-        #                                      high=np.array([self.env_params.world_x_size - 1, self.env_params.world_y_size - 1, 2*np.pi, 1.]),
-        #                                      shape=(4,))
+        self.fov_size = self.env_params.fov_size
 
         if robot_params.robot_type == "unicycle":
             self.robot = UnicycleRobot(robot_params)
         elif robot_params.robot_type == "dubins2d":
             self.robot = DubinsRobot(robot_params)
-        elif robot_params.robot_type == "dubins2d_fixed_speed":
-            self.robot = DubinsRobotFixedSpeed(robot_params)
+        elif robot_params.robot_type == "dubins2d_fixed_velocity":
+            self.robot = DubinsRobotFixedVelocity(robot_params)
         else:
             raise NotImplementedError(f"Robot type {robot_params.robot_type} not implemented")
+    
         self.window = {"fig": None, "ax": None, "cax": None}
         self.clock = self.env_params.clock
         self.current_step = 0
@@ -98,39 +114,63 @@ class SmokeEnv(gym.Env):
 
         self.smoke_simulator.reset()
 
-        self.robot.reset(np.array([obs["location"][0], obs["location"][1], obs["angle"]]))
+        if self.robot_params.robot_type == "unicycle":
+            self.robot.reset(np.array([obs["location"][0], obs["location"][1], obs["angle"], obs["velocity"]]))
+        elif self.robot_params.robot_type == "dubins2d":
+            self.robot.reset(np.array([obs["location"][0], obs["location"][1], obs["angle"]]))
+        elif self.robot_params.robot_type == "dubins2d_fixed_velocity":
+            self.robot.reset(np.array([obs["location"][0], obs["location"][1], obs["angle"]]))
+        else:
+            raise NotImplementedError(f"Robot type {self.robot_params.robot_type} not implemented")
 
         return self._get_obs(), {}
+
+    def get_robot_odom(self):
+        if self.robot_params.robot_type == "unicycle":
+            return {"location": self.robot.get_state()[:2],
+                    "angle": self.robot.get_state()[2],
+                    "velocity": self.robot.get_state()[3]}
+        elif self.robot_params.robot_type == "dubins2d":
+            return {"location": self.robot.get_state()[:2],
+                    "angle": self.robot.get_state()[2]}
+        elif self.robot_params.robot_type == "dubins2d_fixed_velocity":
+            return {"location": self.robot.get_state()[:2],
+                    "angle": self.robot.get_state()[2]}
+        else:
+            raise NotImplementedError(f"Robot type {self.robot_params.robot_type} not implemented")
         
     def _get_obs(self):
-        pos_x, pos_y, angle = self.robot.get_state()
+        odom = self.get_robot_odom()
+        pos_x, pos_y = odom["location"]
+        angle = odom["angle"]
         if self.env_params.measurement_type == "point":
-            return {"location": np.array([pos_x, pos_y]),
+            obs = {"location": np.array([pos_x, pos_y]),
                     "angle": angle,
                     "smoke_density": self.smoke_simulator.get_smoke_density(np.array([pos_x, pos_y])),
                     "smoke_density_location": np.array([[pos_x, pos_y]])}
 
         elif self.env_params.measurement_type == "square":
-            center = np.array([pos_x, pos_y])
-            polygon = np.array([[center[0] - self.fov_size / 2, center[1] - self.fov_size / 2],
-                                [center[0] + self.fov_size / 2, center[1] - self.fov_size / 2],
-                                [center[0] + self.fov_size / 2, center[1] + self.fov_size / 2],
-                                [center[0] - self.fov_size / 2, center[1] + self.fov_size / 2]])
-            bounded_polygon = np.array([clip_world(p[0], p[1], self.env_params.world_x_size - 1, self.env_params.world_y_size - 1) for p in polygon])                
-            
-            smoke_density, smoke_density_location = self.smoke_simulator.get_smoke_density_within_polygon(bounded_polygon, return_location=True)
-            
-            return {"location": np.array([pos_x, pos_y]),
+            smoke_density, smoke_density_location = self.smoke_simulator.get_smoke_density_downwards_sensor(np.array([pos_x, pos_y]), return_location=True)
+
+            obs = {"location": np.array([pos_x, pos_y]),
                     "angle": angle,
                     "smoke_density": smoke_density,
                     "smoke_density_location": smoke_density_location}    
         else:
             raise NotImplementedError(f"Measurement type {self.env_params.measurement_type} not implemented")
+            
+        if self.robot_params.robot_type == "unicycle":
+            obs["velocity"] = odom["velocity"]
+        return obs
 
     def _get_info(self):
         return {}
 
     def _get_reward(self, obs, action):
+        pos_x, pos_y = obs["location"]
+        if self.env_params.goal_location is not None:
+            if np.linalg.norm(np.array([pos_x, pos_y]) - self.env_params.goal_location) < self.env_params.goal_radius:
+                return 1.
         # TODO: Add reward if reached goal
         return 0.
 
@@ -163,12 +203,14 @@ class SmokeEnv(gym.Env):
         truncated = self._get_truncated(obs)
         info = self._get_info()
 
-        if self.env_params.render:
-            self._render_frame()
+        self._render_frame()
 
         return obs, reward, terminated, truncated, info
     
     def _render_frame(self, fig: plt.Figure = None, ax: plt.Axes = None):
+        if self.env_params.render and self.env_params.render not in ["human", "rgb_array"]:
+            return
+
         if self.window["fig"] is None:
             if fig is not None and ax is not None:
                 self.window["fig"] = fig
@@ -183,8 +225,8 @@ class SmokeEnv(gym.Env):
                 origin='lower'
             )
 
-            self.window["ax"].set_axis_off()
-            self.window["fig"].colorbar(self.window["cax"], ax=self.window["ax"], label="Smoke Density", shrink=0.5)
+            # self.window["ax"].set_axis_off()
+            # self.window["fig"].colorbar(self.window["cax"], ax=self.window["ax"], label="Smoke Density", shrink=0.5)
             
             self.window["ax"].set_title("Simulation")
             self.window["cax"].set_clim(vmin=np.min(0.0),
@@ -194,12 +236,12 @@ class SmokeEnv(gym.Env):
 
             if self.env_params.goal_location is not None:
                 circle = Circle((self.env_params.goal_location[0], self.env_params.goal_location[1]), 
-                              radius=1.0, color='g', fill=True, alpha=0.8)
+                              radius=self.env_params.goal_radius, color='g', fill=True, alpha=0.8)
                 self.window["ax"].add_patch(circle)
                 x0, y0 = circle.center
                 r = circle.radius
-                self.window["ax"].text(x0, y0 + r - 0.2, "goal", ha="center", va="bottom",
-                        fontsize=12, color="green", zorder=10)
+                self.window["ax"].text(x0, y0 - r - 1.5, "goal", ha="center", va="bottom",
+                        fontsize=10, color="green", zorder=10)
         
         self.window["cax"].set_array(self.smoke_simulator.get_smoke_map())
 
@@ -212,12 +254,12 @@ class SmokeEnv(gym.Env):
                 if isinstance(patch, Polygon):
                     patch.remove()
 
-            pos_x, pos_y, _ = self.robot.get_state()
-            square = np.array([(pos_x - self.fov_size / 2, pos_y - self.fov_size / 2),
-                                (pos_x + self.fov_size / 2, pos_y - self.fov_size / 2),
-                                (pos_x + self.fov_size / 2, pos_y + self.fov_size / 2),
-                                (pos_x - self.fov_size / 2, pos_y + self.fov_size / 2)])
-            bounded_square = np.array([clip_world(p[0], p[1], self.env_params.world_x_size - 1, self.env_params.world_y_size - 1) for p in square])
+            odom = self.get_robot_odom()
+            pos_x, pos_y = odom["location"]
+
+            square = self.smoke_simulator.sensor.projection_bounds(pos_x, pos_y)
+
+            bounded_square = np.array([clip_world(p[0], p[1], self.env_params.world_x_size, self.env_params.world_y_size) for p in square])
             self.window["ax"].add_patch(
                 Polygon(bounded_square, 
                 facecolor='none',     # no fill
@@ -225,12 +267,18 @@ class SmokeEnv(gym.Env):
                 linewidth=2,), 
             )
 
-        self.window["ax"].arrow(self.robot.get_state()[0], self.robot.get_state()[1], 0.1*np.cos(self.robot.get_state()[2]), 0.1*np.sin(self.robot.get_state()[2]), 
+        odom = self.get_robot_odom()
+        pos_x, pos_y = odom["location"]
+        angle = odom["angle"]
+        self.window["ax"].arrow(pos_x, pos_y, 0.1*np.cos(angle), 0.1*np.sin(angle), 
                                 head_width=1., head_length=1., fc='b', ec='b')
         
+
         self.window["fig"].canvas.draw()
-        self.window["fig"].canvas.flush_events()
-        plt.pause(self.clock)
+        
+        if self.env_params.render == "human":
+            self.window["fig"].canvas.flush_events()
+            plt.pause(self.clock)
 
     def close(self):
         self.window = {"fig": None, "ax": None, "cax": None}
@@ -238,25 +286,42 @@ class SmokeEnv(gym.Env):
 if __name__ == "__main__":
     env_params = EnvParams.load_from_yaml("envs/env_cfg.yaml")
 
-    robot_params = RobotParams.load_from_yaml("agents/dubins_cfg.yaml")
+    robot_params = RobotParams.load_from_yaml("agents/unicycle_cfg.yaml")
+    world_x_size = 60
+    world_y_size = 50
+    env_params.world_x_size = world_x_size
+    env_params.world_y_size = world_y_size
     smoke_blob_params = [
         SmokeBlobParams(x_pos=10, y_pos=40, intensity=1.0, spread_rate=1.0),
         SmokeBlobParams(x_pos=20, y_pos=20, intensity=1.0, spread_rate=3.0),
         SmokeBlobParams(x_pos=15, y_pos=45, intensity=1.0, spread_rate=4.0),
         SmokeBlobParams(x_pos=40, y_pos=40, intensity=1.0, spread_rate=8.0)
     ]
+    sensor_params = DownwardsSensorParams(world_x_size=world_x_size, world_y_size=world_y_size)
+    smoke_params = DynamicSmokeParams(x_size=world_x_size, y_size=world_y_size, smoke_blob_params=smoke_blob_params, resolution=0.3, fov_sensor_params=sensor_params)
 
-    env = SmokeEnv(env_params, robot_params, smoke_blob_params)
-    initial_state = {"location": np.array([20, 20]), "angle": 0, "smoke_density": 0}
+    env = DynamicSmokeEnv(env_params, robot_params, smoke_params)
+    initial_state = {"location": np.array([45, 15]), "angle": 0, "smoke_density": 0, "velocity": 4.0}
     env.reset(initial_state=initial_state)
 
     fig, ax = plt.subplots(figsize=(4, 4))
 
-    for _ in tqdm(range(100)):
-        state, reward, terminated, truncated, info = env.step(env.action_space.sample())
-        print(state["smoke_density"][:10])
-        print(state["smoke_density_location"][:10])
+    frames = []
+    for _ in range(100):
+        action = env.action_space.sample()
+        print(action)
+        state, reward, terminated, truncated, info = env.step(action)
+        print(state["velocity"], state["location"])
         print(20*"-")
         env._render_frame(fig=fig, ax=ax)
+
+        # buf = BytesIO()
+        # plt.savefig(buf, format='png')
+        # buf.seek(0)
+        # image = imageio.imread(buf)
+        # frames.append(image)
+
+    # if frames:
+    #     imageio.mimsave(f'smoke_dynamic.gif', frames, duration=10.0)
 
     env.close()

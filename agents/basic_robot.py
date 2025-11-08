@@ -1,80 +1,83 @@
 import numpy as np
 import matplotlib.pyplot as plt
-import warnings
-
+import logging
 from src.utils import *
+from dataclasses import dataclass, field
+import yaml
 
+@dataclass
 class RobotParams:
-    world_x_size: int = 80
-    world_y_size: int = 30
+    action_dim: int = 2
+    state_dim: int = 3
 
-    v_max: float = 3.0
-    omega_max: float = 4.0
+    action_max: list = field(default_factory=lambda: [3.0, 4.0])
+    action_min: list = field(default_factory=lambda: [0.0, -4.0])
+    state_max: list = field(default_factory=lambda: [80, 30, 2 * np.pi])
+    state_min: list = field(default_factory=lambda: [0, 0, 0])
 
-    v_min: float = 0.0
-    omega_min: float = -4.0
+    robot_type: str = field(default="dubins2d") # "unicycle", "dubins2d", "dubins2d_fixed_speed"
 
     dt: float = 0.1
 
-class BasicRobot:
-    def __init__(self, robot_params: RobotParams) -> None:
+    def __post_init__(self):
+        assert self.action_dim == len(self.action_max) == len(self.action_min), "Action dimension must match the length of action_max and action_min"
+        assert self.state_dim == len(self.state_max) == len(self.state_min), "State dimension must match the length of state_max and state_min"
+        self.action_min = np.array(self.action_min, dtype=np.float32)
+        self.action_max = np.array(self.action_max, dtype=np.float32)
+        self.state_min = np.array(self.state_min, dtype=np.float32)
+        self.state_max = np.array(self.state_max, dtype=np.float32)
+
+    @staticmethod
+    def load_from_yaml(file_path: str) -> "RobotParams":
+        """Load robot parameters from a YAML config file."""
+        with open(file_path, "r") as f:
+            data = yaml.safe_load(f)
+        return RobotParams(**data)
+
+
+class Robot:
+    def __init__(self, robot_params: RobotParams, log_enabled: bool = False) -> None:
         self.robot_params = robot_params
-        # state is [x_pos, y_pos, angle]
-        self.pos_x = 0
-        self.pos_y = 0
-        self.angle = 0
-    
-    def dynamic_step(self, v: float, omega: float) -> None:
-        if v < self.robot_params.v_min or v > self.robot_params.v_max:
-            warnings.warn(f"v must be between {self.robot_params.v_min} and {self.robot_params.v_max}")
-            v = np.clip(v, self.robot_params.v_min, self.robot_params.v_max)
+        self.state = None
+        self.log_enabled = log_enabled
 
-        if omega < self.robot_params.omega_min or omega > self.robot_params.omega_max:
-            warnings.warn(f"omega must be between {self.robot_params.omega_min} and {self.robot_params.omega_max}")
-            omega = np.clip(omega, self.robot_params.omega_min, self.robot_params.omega_max)
+    def reset(self, state: np.ndarray) -> None:
+        raise NotImplementedError("Subclasses must implement this method")
 
-        # Euler integration.
-        # TODO: Use Runge-Kutta method.
-        self.pos_x += v * np.cos(self.angle) * self.robot_params.dt
-        self.pos_y += v * np.sin(self.angle) * self.robot_params.dt
-
-        self.pos_x, self.pos_y = clip_world(self.pos_x, self.pos_y, self.robot_params.world_x_size, self.robot_params.world_y_size)
-
-        self.angle += omega * self.robot_params.dt
-        self.angle = np.mod(self.angle, 2 * np.pi)
-
-    def reset(self, pos_x: float, pos_y: float, angle: float) -> None:
-        self.pos_x, self.pos_y = clip_world(pos_x, pos_y, self.robot_params.world_x_size, self.robot_params.world_y_size)
-        self.angle = np.mod(angle, 2 * np.pi)
-
-        self.pos_x = pos_x
-        self.pos_y = pos_y
-        self.angle = angle
+    def bound_state(self, state: np.ndarray) -> np.ndarray:
+        raise NotImplementedError("Subclasses must implement this method")
 
     def get_state(self) -> np.ndarray:
-        return np.array([self.pos_x, self.pos_y, self.angle])
-    
+        raise NotImplementedError("Subclasses must implement this method")
 
-def plot_robot_trajectory(robot: BasicRobot, trajectory: np.ndarray) -> None:
-    ratio_window = robot_params.world_x_size / robot_params.world_y_size
-    if ratio_window > 1:
-        f = plt.figure(figsize=(5 , 5/ ratio_window))
-    else:
-        f = plt.figure(figsize=(5 * ratio_window, 5 ))
-    ax = f.add_subplot(111)
-    ax.scatter(trajectory[:, 0], trajectory[:, 1])
-    ax.set_xlim(0, robot_params.world_x_size)
-    ax.set_ylim(0, robot_params.world_y_size)
-    ax.set_xlabel("x")
-    ax.set_ylabel("y")
-    plt.show()
+    def open_loop_dynamics(self, state):
+        raise NotImplementedError("Subclasses must implement this method")
 
-if __name__ == "__main__":
-    robot_params = RobotParams()
-    robot = BasicRobot(robot_params)
-    robot.reset(40., 10., 0.)
-    trajectory = np.zeros((100, 3))
-    for i in range(100):
-        robot.dynamic_step(4., 0.4)
-        trajectory[i, :] = robot.get_state()
-    plot_robot_trajectory(robot, trajectory)
+    def control_jacobian(self, state):
+        raise NotImplementedError("Subclasses must implement this method")
+
+    def dynamic_step(self, action: np.ndarray) -> None:
+        action = self.filter_action(action)
+
+        def one_step_dynamics(state, action):
+            next_state = self.open_loop_dynamics(state) + self.control_jacobian(state) @ action
+            return next_state
+
+        # k1
+        k1 = one_step_dynamics(self.state, action)
+        # k2
+        mid_state_k2 = self.state + 0.5 * self.dt * k1
+        k2 = one_step_dynamics(mid_state_k2, action)
+        # k3
+        mid_state_k3 = self.state + 0.5 * self.dt * k2
+        k3 = one_step_dynamics(mid_state_k3, action)
+        # k4
+        end_state_k4 = self.state + self.dt * k3
+        k4 = one_step_dynamics(end_state_k4, action)
+
+        # Combine k1, k2, k3, k4 to compute the next state
+        self.state = self.state + (self.dt / 6.0) * (k1 + 2 * k2 + 2 * k3 + k4)
+
+        self.state = self.bound_state(self.state)
+
+        return self.state

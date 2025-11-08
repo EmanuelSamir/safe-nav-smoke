@@ -41,14 +41,31 @@ class BaseModel(ABC):
 
     def track_data(self, x, y_true):
         """
+        x: n_x array or mxn_x array
+        y_true: n_y array or mxn_y array
+        n_x: number of input features
+        n_y: number of output features
+        m: number of data points
         Stores the latest input and prediction in the rolling buffer.
 
         Args:
             x: The input features.
             y_true: The model's prediction.
         """
-        self.input_history.append(x)
-        self.output_history.append(y_true)
+
+        if x.ndim == 2 and y_true.ndim == 2:
+            assert x.shape[0] == y_true.shape[0], "Input and output must have the same number of data points"
+            for i in range(x.shape[0]):
+                self.input_history.append(x[i])
+                self.output_history.append(y_true[i])
+        elif x.ndim == 1 and y_true.ndim == 1:
+            # assert x.shape[0] == y_true.shape[0], "Input and output must have the same number of data points"
+            self.input_history.append(x)
+            self.output_history.append(y_true)
+        else:
+            raise ValueError("Input and output must be a 1D or 2D array and have the same number of data points")
+
+    
 
 
     def score(self, x, y_true):

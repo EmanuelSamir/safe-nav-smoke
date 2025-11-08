@@ -1,0 +1,10 @@
+action_dim: 1
+state_dim: 3
+
+action_max: [4.0]
+action_min: [-4.0]
+state_max: [80, 30, 6.283185]
+state_min: [0, 0, 0]
+
+dt: 0.1
+robot_type: "dubins2d_fixed_velocity"

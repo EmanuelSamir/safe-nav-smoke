@@ -3,8 +3,10 @@ envs/__pycache__/
 simulator/__pycache__/
 agents/__pycache__/
 learning_models/__pycache__/
+misc/
 */__pycache__/
 *.pyc
 *.pyo
 *.pyd
 *.pyw
+.DS_Store

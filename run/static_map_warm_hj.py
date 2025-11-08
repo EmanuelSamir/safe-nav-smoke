@@ -21,12 +21,7 @@ from tqdm import tqdm
 import os
 
 def main(opts: dict = {}):
-    env_params = EnvParams()
-    env_params.world_x_size = 20
-    env_params.world_y_size = 20
-    env_params.max_steps = 200
-    env_params.render = False
-    env_params.goal_location = (18, 18)
+    env_params = EnvParams.load_from_yaml("envs/env_cfg.yaml")
 
     n_blobs = 5
     margin = 4
@@ -34,16 +29,13 @@ def main(opts: dict = {}):
     random_poses[:, 0] = np.random.uniform(margin, env_params.world_x_size - margin, n_blobs)
     random_poses[:, 1] = np.random.uniform(margin, env_params.world_y_size - margin, n_blobs)
 
-    robot_params = RobotParams()
-    # smoke_blob_params = [
-    #     SmokeBlobParams(x_pos=5, y_pos=5, intensity=1.0, spread_rate=2.0),
-    #     SmokeBlobParams(x_pos=15, y_pos=12, intensity=1.0, spread_rate=2.0),
-    #     SmokeBlobParams(x_pos=5, y_pos=12, intensity=1.0, spread_rate=2.0),
-    #     SmokeBlobParams(x_pos=12, y_pos=7, intensity=1.0, spread_rate=2.0),
-    # ]
     smoke_blob_params = [
         SmokeBlobParams(x_pos=random_poses[i, 0], y_pos=random_poses[i, 1], intensity=1.0, spread_rate=2.0) for i in range(n_blobs)
     ]
+
+    robot_params = RobotParams()
+    robot_params.world_x_size = env_params.world_x_size
+    robot_params.world_y_size = env_params.world_y_size
 
     env = SmokeEnv(env_params, robot_params, smoke_blob_params)
 
@@ -64,6 +56,7 @@ def main(opts: dict = {}):
 
 
     cell_y_size, cell_x_size = get_index_bounds(env_params.world_x_size, env_params.world_y_size, builder.params.resolution)
+    
     # Order is according to model input order and not the image order
     domain_cells = np.array([cell_x_size, cell_y_size, 20])
     domain = [[0, 0, 0], [env_params.world_x_size, env_params.world_y_size, 2*np.pi]]
@@ -132,7 +125,7 @@ def main(opts: dict = {}):
 
     frames = []
 
-    soft_action_enabled = True
+    soft_action_enabled = False
     tau_hard = 0.05
     tau_soft = 0.50
     gamma_spread = 1.0
@@ -143,6 +136,7 @@ def main(opts: dict = {}):
 
         learner.update()
         builder.build_map(learner)
+        
         if t % update_interval == 0 and not opts.get("safety_disabled"):
             if np.all(builder.failure_map == 1):
                 values = None
@@ -183,6 +177,7 @@ def main(opts: dict = {}):
 
         if opts.get('render'):
             # Real time plotting
+
             env._render_frame(fig=f, ax=ax_env)
 
             builder.plot_failure_map(fig=f, ax=ax_fail)
