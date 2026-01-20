@@ -11,7 +11,8 @@ def clip_world(x: float, y: float, x_max: float, y_max: float):
     y_clipped = np.clip(y, 0, y_max - epsilon)
 
     if x != x_clipped or y != y_clipped:
-        warnings.warn(f"Clipping world coords: ({x}, {y}) → ({x_clipped}, {y_clipped})")
+        # warnings.warn(f"Clipping world coords: ({x}, {y}) → ({x_clipped}, {y_clipped})")
+        pass
     return x_clipped, y_clipped
 
 def clip_index(row: int, col: int, x_max: int, y_max: int, resolution: float):
@@ -25,7 +26,8 @@ def clip_index(row: int, col: int, x_max: int, y_max: int, resolution: float):
     col_clipped = np.clip(col, 0, num_cols - 1)
 
     if row != row_clipped or col != col_clipped:
-        warnings.warn(f"Clipping index: ({row}, {col}) → ({row_clipped}, {col_clipped})")
+        # warnings.warn(f"Clipping index: ({row}, {col}) → ({row_clipped}, {col_clipped})")
+        pass
 
     return row_clipped, col_clipped
 

@@ -1,0 +1,17 @@
+defaults:
+  - env: smoke_env
+  - agent: dubins
+  - experiment: base
+  - _self_
+
+# Global settings
+seed: 42
+debug: false
+output_dir: "outputs/${now:%Y-%m-%d}/${now:%H-%M-%S}"
+
+# Logging
+logger:
+  project_name: "safe-nav-smoke"
+  run_name: "${experiment.name}_${now:%m%d_%H%M}"
+  log_frequency: 1
+  save_video: true

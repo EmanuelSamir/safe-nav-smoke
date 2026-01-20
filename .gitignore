@@ -1,12 +1,76 @@
-bin/
-envs/__pycache__/
-simulator/__pycache__/
-agents/__pycache__/
-learning_models/__pycache__/
-misc/
-*/__pycache__/
-*.pyc
-*.pyo
-*.pyd
-*.pyw
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+*.backup
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Hydra
+outputs/
+multirun/
+.hydra/
+
+# PyTorch
+*.pth
+*.pt
+# Exclude checkpoints directory from gitignore to track important models
+!checkpoints/*.pt
+!checkpoints/*.pth
+
+# Data & Logs
+*.log
+*.npz
+*.h5
+*.csv
+runs/
+wandb/
+mlruns/
+
+# IDEs
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
 .DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
+
+# Project Specific
+# Ignore legacy data and binaries, but keep legacy code
+legacy/misc/
+legacy/bin/
+legacy/temp_files/
+
+# Generated Media
+*.mp4
+*.gif
+*.png
+# Allow media in docs
+!docs/*.png
+!docs/*.gif
+!docs/*.mp4
+
+# Temporary scripts
+scripts/refactoring/

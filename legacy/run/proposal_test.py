@@ -1,7 +1,7 @@
 from learning.gaussian_process import GaussianProcess
 from itertools import product
 import matplotlib.pyplot as plt
-from src.failure_map_builder import FailureMapBuilder, FailureMapParams
+from src.risk_map_builder import RiskMapBuilder, RiskMapParams
 from envs.smoke_env_dyn import EnvParams, DynamicSmokeEnv
 from agents.basic_robot import RobotParams
 from agents.dubins_robot_fixed_velocity import DubinsRobotFixedVelocity
@@ -30,7 +30,7 @@ warnings.filterwarnings("ignore")
 
 def main(opts: dict = {}):
     env_params = EnvParams.load_from_yaml("envs/env_cfg.yaml")
-    discrete_resolution = 0.6
+    hj_resolution = 0.6
     sim_resolution = 0.4
     robot_type = "dubins2d_fixed_velocity"
     cfg_file = f"agents/{robot_type}_cfg.yaml"
@@ -74,11 +74,11 @@ def main(opts: dict = {}):
     learner = GaussianProcess(online=True)
 
     # ==== failure map builder SETUP ====
-    builder = FailureMapBuilder(
-        params=FailureMapParams(
+    builder = RiskMapBuilder(
+        params=RiskMapParams(
             x_size=env_params.world_x_size, 
             y_size=env_params.world_y_size, 
-            resolution=discrete_resolution, 
+            resolution=hj_resolution, 
             map_rule_type='cvar',
             map_rule_threshold=env.env_params.smoke_density_threshold,
             )

@@ -1,0 +1,22 @@
+# @package _global_
+defaults:
+  - /env: smoke_env
+  - /agent: dubins
+
+data_collection:
+  num_samples: 100000
+  output_dir: "misc/data_collection"
+  num_smoke_blobs: 6
+  
+  sensor:
+    type: "downwards"
+    points_in_range: 8
+    fov_size_degrees: 15
+
+  smoke:
+    resolution: 0.4
+    intensity: 1.0
+    spread_rate: 1.0
+
+env:
+  max_steps: 200 # Override default

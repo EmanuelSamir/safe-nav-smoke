@@ -1,0 +1,10 @@
+name: "dubins2d"
+action_dim: 2
+state_dim: 3
+
+# Limits
+action_min: [0.0, -1.0] # [v, w]
+action_max: [1.0, 1.0]
+
+# Dynamics
+dt: 0.1

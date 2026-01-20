@@ -1,0 +1,26 @@
+name: "DynamicSmokeEnv"
+world_x_size: 30.0
+world_y_size: 20.0
+max_steps: 200
+clock: 0.1
+render: "rgb_array"  # "human" or "rgb_array"
+
+# Goal settings
+goal_location: [25.0, 7.0]
+goal_radius: 1.5
+
+# Sensor settings
+sensor:
+  type: "downwards" # "downwards" or "global"
+  points_in_range: 8
+  fov_size_degrees: 15
+
+# Smoke simulation
+smoke:
+  resolution: 0.4
+  blobs:
+    - {x: 9.0, y: 16.0, intensity: 1.0, spread: 1.0}
+    - {x: 9.0, y: 10.0, intensity: 1.0, spread: 1.0}
+    - {x: 9.0, y: 3.0, intensity: 1.0, spread: 1.0}
+    - {x: 17.0, y: 13.0, intensity: 1.0, spread: 1.0}
+    - {x: 17.0, y: 7.0, intensity: 1.0, spread: 1.0}

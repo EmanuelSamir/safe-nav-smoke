@@ -18,7 +18,7 @@ from src.utils import *
 from tqdm import tqdm
 
 class Kernel:
-    RBF = RBF(length_scale=0.1)
+    RBF = RBF(length_scale=5.0)
     Matern = Matern(length_scale=1.0, nu=1.3)
     ConstantKernel = C()
 
@@ -29,8 +29,8 @@ N_RESTARTS_OPTIMIZER = 10
 NORMALIZE_Y = False
 
 class GaussianProcess(BaseModel):
-    def __init__(self, kernel: Kernel = Kernel.Matern, online_kernel: OnlineKernel = OnlineKernel.Matern, online: bool = False):
-        super().__init__()
+    def __init__(self, kernel: Kernel = Kernel.Matern, online_kernel: OnlineKernel = OnlineKernel.Matern, online: bool = False, history_size: int = None):
+        super().__init__(history_size=history_size)
 
         self.online = online
         # Variables acumulativas para std
@@ -38,19 +38,22 @@ class GaussianProcess(BaseModel):
         self.mean_y = 0.0
         self.M2 = 0.0  # suma de cuadrados de las desviaciones
 
-
         if not self.online:
-            self.kernel = kernel
-            self.model = GaussianProcessRegressor(kernel=self.kernel, 
-                                                optimizer='fmin_l_bfgs_b', 
-                                                n_restarts_optimizer=N_RESTARTS_OPTIMIZER, 
-                                                normalize_y=NORMALIZE_Y)
+            # self.kernel = kernel
+            # self.model = GaussianProcessRegressor(kernel=self.kernel, 
+            #                                     optimizer='fmin_l_bfgs_b', 
+            #                                     n_restarts_optimizer=N_RESTARTS_OPTIMIZER, 
+            #                                     normalize_y=NORMALIZE_Y)
+            self.kernel = online_kernel
+            self.model = OnlineGP(self.kernel, noise_var=0.01)
+            self.first_update = False
         else:
             self.kernel = online_kernel
             self.model = OnlineGP(self.kernel, noise_var=0.01)
             self.first_update = False
         
     def update(self):
+
         if self.input_history and self.output_history:
             X = np.array(self.input_history)
             y = np.array(self.output_history)
@@ -81,7 +84,10 @@ class GaussianProcess(BaseModel):
 
     def predict(self, x):
         if not self.online:
-            y_pred, std = self.model.predict(x, return_std=True)
+            # y_pred, std = self.model.predict(x, return_std=True)
+            res = self.model.predict(x, what=['mean', 'mse'])
+            y_pred = res['mean']
+            std = np.sqrt(res['mse']) #res['mse']#
         else:
             res = self.model.predict(x, what=['mean', 'mse'])
             y_pred = res['mean']

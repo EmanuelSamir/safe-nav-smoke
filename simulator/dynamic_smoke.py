@@ -1,12 +1,13 @@
 import numpy as np
 from dataclasses import dataclass
+from typing import Optional
 import matplotlib.pyplot as plt
 from matplotlib.path import Path
 from phi import flow
 import phi.field
 
 from src.utils import *
-from simulator.sensor import DownwardsSensorParams, DownwardsSensor
+from simulator.sensor import DownwardsSensorParams, DownwardsSensor, PointSensor, GlobalSensor, BaseSensorParams
 
 @dataclass
 class SmokeBlobParams:
@@ -27,10 +28,10 @@ class DynamicSmokeParams:
     smoke_emission_rate: float = 0.7
     smoke_diffusion_rate: float = 0.3
     smoke_decay_rate: float = 1.0
-    fov_sensor_params: DownwardsSensorParams | None = None
+    # sensor_params: BaseSensorParams | None = None
 
 class DynamicSmoke:
-    def __init__(self, params: DynamicSmokeParams | None = None):
+    def __init__(self, params: Optional[DynamicSmokeParams] = None):
         self.params = params
 
         assert self.params.x_size >= self.params.resolution or self.params.y_size >= self.params.resolution, "Resolution must be smaller than the size of the world"
@@ -41,8 +42,6 @@ class DynamicSmoke:
         self.spatial_resolution = flow.spatial(x=x_resolution, y=y_resolution)
         self.bounds = flow.Box(x=self.params.x_size, y=self.params.y_size)
         self.smoke_blob_params = self.params.smoke_blob_params
-
-        self.sensor = DownwardsSensor(self.params.fov_sensor_params) if self.params.fov_sensor_params is not None else None
 
         self.smoke_map = self.build_smoke_map(self.params.smoke_blob_params)
         self.velocity = self.build_velocity()
@@ -144,13 +143,13 @@ class DynamicSmoke:
             densities.append(density)
         return np.array(densities).reshape(-1, 1)
 
-    def get_smoke_density_downwards_sensor(self, pos: np.ndarray, return_location: bool = False) -> np.ndarray:
-        assert self.sensor is not None, "Sensor must have been initialized"
+    # def get_smoke_density_sensor(self, pos: np.ndarray, return_location: bool = False) -> np.ndarray:
+    #     assert self.sensor is not None, "Sensor must have been initialized"
 
-        sensor_output = self.sensor.read(self.get_smoke_density, curr_pos=pos)
-        if return_location:
-            return sensor_output["sensor_readings"], sensor_output["sensor_position_readings"]
-        return sensor_output["sensor_readings"]
+    #     sensor_output = self.sensor.read(self.get_smoke_density, curr_pos=pos)
+    #     if return_location:
+    #         return sensor_output["sensor_readings"], sensor_output["sensor_position_readings"]
+    #     return sensor_output["sensor_readings"]
 
     def get_smoke_map(self):
         smoke_arr = self.smoke_map.values.numpy(('y','x', 'inflow_loc'))
@@ -178,9 +177,9 @@ class DynamicSmoke:
             ax.set_xlabel('X Position')
             ax.set_ylabel('Y Position')
 
-        if self.sensor is not None:
-            pairs_to_plot = self.sensor.grid_pairs_positions + np.array([10, 30])
-            ax.scatter(pairs_to_plot[:, 0], pairs_to_plot[:, 1], color='red', s=0.1)
+        # if self.sensor is not None:
+        #     pairs_to_plot = self.sensor.grid_pairs_positions + np.array([10, 30])
+        #     ax.scatter(pairs_to_plot[:, 0], pairs_to_plot[:, 1], color='red', s=0.1)
 
         fig.canvas.draw()
 
@@ -205,7 +204,6 @@ if __name__ == "__main__":
         smoke_simulator.step(dt=0.1)
         smoke_simulator.plot_smoke_map(fig=fig, ax=ax)
         print(np.round(smoke_simulator.get_smoke_density(np.array([[10, 40],[40, 10]])), 2))
-        print(np.round(smoke_simulator.get_smoke_density_downwards_sensor(np.array([10, 30]), return_location=False), 2).shape)
         plt.draw()
         plt.pause(0.1)
 

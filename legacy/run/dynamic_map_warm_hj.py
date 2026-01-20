@@ -2,7 +2,7 @@ from learning.base_model import BaseModel
 from learning.gaussian_process import GaussianProcess, plot_static_map, plot_dynamic_map
 from itertools import product
 import matplotlib.pyplot as plt
-from src.failure_map_builder import FailureMapBuilder, FailureMapParams
+from src.risk_map_builder import RiskMapBuilder, RiskMapParams
 from envs.smoke_env_dyn import EnvParams, DynamicSmokeEnv
 from agents.basic_robot import RobotParams
 from simulator.dynamic_smoke import DynamicSmoke, DynamicSmokeParams, DownwardsSensorParams
@@ -59,8 +59,8 @@ def main(opts: dict = {}):
 
     learner = GaussianProcess(online=True)
 
-    builder = FailureMapBuilder(
-        params=FailureMapParams(
+    builder = RiskMapBuilder(
+        params=RiskMapParams(
             x_size=env_params.world_x_size, 
             y_size=env_params.world_y_size, 
             resolution=0.6, 

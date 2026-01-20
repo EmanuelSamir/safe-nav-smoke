@@ -1,0 +1,15 @@
+name: "base_experiment"
+time_horizon: 10
+samples: 1
+
+# Initial conditions
+initial_locations:
+  - [1.0, 4.0]
+  - [1.0, 10.0]
+  - [1.0, 16.0]
+
+# Metrics to track
+metrics:
+  - "dist_to_goal"
+  - "smoke_on_robot"
+  - "success_rate"

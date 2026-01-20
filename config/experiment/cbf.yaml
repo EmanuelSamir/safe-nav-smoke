@@ -1,0 +1,13 @@
+# @package experiment
+defaults:
+  - base
+
+name: "cbf_experiment"
+type: "cbf"
+
+# CBF specific parameters
+smoke_threshold: 0.25
+gamma: 1.0 # CBF gamma parameter (if applicable, checking code)
+
+# Override base defaults if needed
+time_horizon: 1 # CBF is usually reactive (1 step)

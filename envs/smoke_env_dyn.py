@@ -1,8 +1,11 @@
 import numpy as np
 import gymnasium as gym
 from gymnasium import spaces
-from simulator.dynamic_smoke import DynamicSmoke, SmokeBlobParams, DynamicSmokeParams, DownwardsSensorParams
+from simulator.dynamic_smoke import DynamicSmoke, SmokeBlobParams, DynamicSmokeParams
+from simulator.sensor import GlobalSensorParams, PointSensorParams, DownwardsSensorParams, BaseSensorParams, DownwardsSensor, PointSensor, GlobalSensor
 from agents.basic_robot import RobotParams
+from matplotlib.collections import PathCollection
+
 from agents.dubins_robot import DubinsRobot
 from agents.dubins_robot_fixed_velocity import DubinsRobotFixedVelocity
 from agents.unicycle_robot import UnicycleRobot
@@ -15,8 +18,6 @@ import yaml
 from io import BytesIO
 import imageio
 import time
-
-# Current Performance: 1.24 Hz in Macbook M3
 
 @dataclass
 class EnvParams:
@@ -31,13 +32,7 @@ class EnvParams:
     goal_radius: float = field(default=1.0)
 
     smoke_density_threshold: float = None
-
-    # Available measurement types:
-    # - 'point': point measurement
-    # - 'square': square measurement
-    # TODO: FOV circle, FOV horizon
-    measurement_type: str = field(default="point")
-    fov_size: int = field(default=10) # Only used for square measurement type
+    sensor_params: BaseSensorParams | DownwardsSensorParams | PointSensorParams | GlobalSensorParams | None = field(default=None)
 
     @staticmethod
     def load_from_yaml(file_path: str) -> "EnvParams":
@@ -57,12 +52,6 @@ class DynamicSmokeEnv(gym.Env):
 
         self.robot_params.state_max[0] = self.env_params.world_x_size
         self.robot_params.state_max[1] = self.env_params.world_y_size
-
-        # if self.robot_params.robot_type == "dubins2d_fixed_velocity":
-
-        # elif self.robot_params.robot_type == "dubins2d":
-        # else:
-        #     raise NotImplementedError(f"Robot type {self.robot_params.robot_type} not implemented")
 
         self.action_space = spaces.Box(low=self.robot_params.action_min,
                                     high=self.robot_params.action_max,
@@ -88,7 +77,15 @@ class DynamicSmokeEnv(gym.Env):
         else:
             raise NotImplementedError(f"Robot type {self.robot_params.robot_type} not implemented")
 
-        self.fov_size = self.env_params.fov_size
+        if self.env_params.sensor_params is not None:
+            if self.env_params.sensor_params.sensor_type == "downwards":
+                self.sensor = DownwardsSensor(self.env_params.sensor_params)
+            elif self.env_params.sensor_params.sensor_type == "point":
+                self.sensor = PointSensor(self.env_params.sensor_params)
+            elif self.env_params.sensor_params.sensor_type == "global":
+                self.sensor = GlobalSensor(self.env_params.sensor_params)
+            else:
+                raise ValueError(f"Sensor type {self.env_params.sensor_params.sensor_type} not supported")
 
         if robot_params.robot_type == "unicycle":
             self.robot = UnicycleRobot(robot_params)
@@ -138,26 +135,32 @@ class DynamicSmokeEnv(gym.Env):
                     "angle": self.robot.get_state()[2]}
         else:
             raise NotImplementedError(f"Robot type {self.robot_params.robot_type} not implemented")
+
+    def get_smoke_density_sensor(self, pos: np.ndarray, return_location: bool = True):
+        assert self.sensor is not None, "Sensor must have been initialized"
+
+        sensor_output = self.sensor.read(self.smoke_simulator.get_smoke_density, curr_pos=pos)
+        if return_location:
+            return sensor_output["sensor_readings"], sensor_output["sensor_position_readings"]
+        return sensor_output["sensor_readings"]
+
+    def get_smoke_density_in_robot(self) -> float:
+        odom = self.get_robot_odom()
+        pos_x, pos_y = odom["location"]
+        smoke_density_in_robot = self.smoke_simulator.get_smoke_density(np.array([pos_x, pos_y]))
+        return smoke_density_in_robot
         
     def _get_obs(self):
         odom = self.get_robot_odom()
         pos_x, pos_y = odom["location"]
         angle = odom["angle"]
-        if self.env_params.measurement_type == "point":
-            obs = {"location": np.array([pos_x, pos_y]),
-                    "angle": angle,
-                    "smoke_density": self.smoke_simulator.get_smoke_density(np.array([pos_x, pos_y])),
-                    "smoke_density_location": np.array([[pos_x, pos_y]])}
 
-        elif self.env_params.measurement_type == "square":
-            smoke_density, smoke_density_location = self.smoke_simulator.get_smoke_density_downwards_sensor(np.array([pos_x, pos_y]), return_location=True)
+        smoke_density, smoke_density_location = self.get_smoke_density_sensor(np.array([pos_x, pos_y]))
 
-            obs = {"location": np.array([pos_x, pos_y]),
-                    "angle": angle,
-                    "smoke_density": smoke_density,
-                    "smoke_density_location": smoke_density_location}    
-        else:
-            raise NotImplementedError(f"Measurement type {self.env_params.measurement_type} not implemented")
+        obs = {"location": np.array([pos_x, pos_y]),
+                "angle": angle,
+                "smoke_density": smoke_density,
+                "smoke_density_location": smoke_density_location}
             
         if self.robot_params.robot_type == "unicycle":
             obs["velocity"] = odom["velocity"]
@@ -203,7 +206,7 @@ class DynamicSmokeEnv(gym.Env):
         truncated = self._get_truncated(obs)
         info = self._get_info()
 
-        self._render_frame()
+        # self._render_frame()
 
         return obs, reward, terminated, truncated, info
     
@@ -234,6 +237,9 @@ class DynamicSmokeEnv(gym.Env):
             self.window["ax"].set_xlim(0, self.env_params.world_x_size)
             self.window["ax"].set_ylim(0, self.env_params.world_y_size)
 
+            self.window["ax"].set_xticks([])
+            self.window["ax"].set_yticks([])
+
             if self.env_params.goal_location is not None:
                 circle = Circle((self.env_params.goal_location[0], self.env_params.goal_location[1]), 
                               radius=self.env_params.goal_radius, color='g', fill=True, alpha=0.8)
@@ -249,7 +255,7 @@ class DynamicSmokeEnv(gym.Env):
             if isinstance(arrow, (FancyArrow, Arrow)):  
                 arrow.remove()
 
-        if self.env_params.measurement_type == "square":
+        if self.env_params.sensor_params.sensor_type == "downwards":
             for patch in self.window["ax"].patches:
                 if isinstance(patch, Polygon):
                     patch.remove()
@@ -257,7 +263,7 @@ class DynamicSmokeEnv(gym.Env):
             odom = self.get_robot_odom()
             pos_x, pos_y = odom["location"]
 
-            square = self.smoke_simulator.sensor.projection_bounds(pos_x, pos_y)
+            square = self.sensor.projection_bounds(pos_x, pos_y)
 
             bounded_square = np.array([clip_world(p[0], p[1], self.env_params.world_x_size, self.env_params.world_y_size) for p in square])
             self.window["ax"].add_patch(
@@ -271,8 +277,15 @@ class DynamicSmokeEnv(gym.Env):
         pos_x, pos_y = odom["location"]
         angle = odom["angle"]
         self.window["ax"].arrow(pos_x, pos_y, 0.1*np.cos(angle), 0.1*np.sin(angle), 
-                                head_width=1., head_length=1., fc='b', ec='b')
+                                head_width=0.8, head_length=0.8, fc='b', ec='b')
         
+        if self.env_params.sensor_params.sensor_type == "downwards" or self.env_params.sensor_params.sensor_type == "global":
+            for coll in list(self.window["ax"].collections):
+                if isinstance(coll, PathCollection):
+                    coll.remove()
+
+            _, smoke_density_location = self.get_smoke_density_sensor(np.array([pos_x, pos_y]))
+            self.window["ax"].scatter(smoke_density_location[:, 0], smoke_density_location[:, 1], color='red', s=0.1)
 
         self.window["fig"].canvas.draw()
         
@@ -286,7 +299,7 @@ class DynamicSmokeEnv(gym.Env):
 if __name__ == "__main__":
     env_params = EnvParams.load_from_yaml("envs/env_cfg.yaml")
 
-    robot_params = RobotParams.load_from_yaml("agents/unicycle_cfg.yaml")
+    robot_params = RobotParams.load_from_yaml("agents/dubins2d_fixed_velocity_cfg.yaml")
     world_x_size = 60
     world_y_size = 50
     env_params.world_x_size = world_x_size
@@ -297,8 +310,9 @@ if __name__ == "__main__":
         SmokeBlobParams(x_pos=15, y_pos=45, intensity=1.0, spread_rate=4.0),
         SmokeBlobParams(x_pos=40, y_pos=40, intensity=1.0, spread_rate=8.0)
     ]
-    sensor_params = DownwardsSensorParams(world_x_size=world_x_size, world_y_size=world_y_size)
-    smoke_params = DynamicSmokeParams(x_size=world_x_size, y_size=world_y_size, smoke_blob_params=smoke_blob_params, resolution=0.3, fov_sensor_params=sensor_params)
+    sensor_params = GlobalSensorParams(world_x_size=world_x_size, world_y_size=world_y_size)
+    env_params.sensor_params = sensor_params
+    smoke_params = DynamicSmokeParams(x_size=world_x_size, y_size=world_y_size, smoke_blob_params=smoke_blob_params, resolution=0.3)
 
     env = DynamicSmokeEnv(env_params, robot_params, smoke_params)
     initial_state = {"location": np.array([45, 15]), "angle": 0, "smoke_density": 0, "velocity": 4.0}
@@ -311,7 +325,6 @@ if __name__ == "__main__":
         action = env.action_space.sample()
         print(action)
         state, reward, terminated, truncated, info = env.step(action)
-        print(state["velocity"], state["location"])
         print(20*"-")
         env._render_frame(fig=fig, ax=ax)
 
