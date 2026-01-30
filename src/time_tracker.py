@@ -4,28 +4,28 @@ import numpy as np
 
 class TimeTracker:
     """
-    Clase para medir tiempos de ejecución por bloques de código usando `with`.
-    Guarda un historial de tiempos por nombre, y puede devolver promedios, totales, etc.
+    Class to measure execution times for code blocks using `with`.
+    Stores a history of times by name, and can return averages, totals, etc.
     """
 
     def __init__(self):
         self.times = defaultdict(list)   # {block_name: [durations]}
-        self._start_times = {}           # interno, guarda inicio por bloque activo
+        self._start_times = {}           # internal, stores start time per active block
 
     def track(self, name: str):
         """
-        Uso:
-            with timer.track("nombre_bloque"):
-                <código a medir>
+        Usage:
+            with timer.track("block_name"):
+                <code to measure>
         """
         return _TimeBlock(self, name)
 
     def record(self, name: str, duration: float):
-        """Guarda el tiempo en el registro."""
+        """Saves the time in the log."""
         self.times[name].append(duration)
 
     def summary(self):
-        """Devuelve promedio y std por bloque."""
+        """Returns avg and std per block."""
         return {
             k: {
                 "mean": sum(v)/len(v),
@@ -37,17 +37,17 @@ class TimeTracker:
         }
 
     def as_dict(self):
-        """Devuelve el diccionario crudo."""
+        """Returns the raw dictionary."""
         return dict(self.times)
     
     def reset(self):
-        """Limpia todos los registros."""
+        """Clears all records."""
         self.times.clear()
         self._start_times.clear()
 
 
 class _TimeBlock:
-    """Context manager interno que mide el tiempo entre __enter__ y __exit__."""
+    """Internal context manager that measures time between __enter__ and __exit__."""
     def __init__(self, tracker: TimeTracker, name: str):
         self.tracker = tracker
         self.name = name

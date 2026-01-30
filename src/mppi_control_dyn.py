@@ -265,7 +265,7 @@ if __name__ == "__main__":
     map_data = np.zeros((H, W), dtype=bool)  # y, x
     map_data[5:20, 10:20] = True
 
-    # generar coordenadas (x, y)
+    # generate coordinates (x, y)
     x = np.arange(W)
     y = np.arange(H)
     X, Y = np.meshgrid(x, y, indexing='xy')

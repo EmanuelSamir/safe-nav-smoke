@@ -1,0 +1,54 @@
+# Standard Training Configuration
+# Use this as base for all models
+
+training:
+  experiment_name: "base_experiment"
+  seed: 42
+  
+  data:
+    # Common
+    batch_size: 32
+    train_split: 0.9
+    max_samples: null
+    
+    # Model-free (sequential models)
+    buffer_path: "data/raw/global_collected_source_400_100_2nd_10000.npz"
+    sequence_length: 10
+    num_workers: 0
+    
+    # Model-based (Neural Process models)
+    data_path: "data/playback_data/global_source_400_100_2nd.npz"
+    context_frames: 10
+    target_frames: 15
+    info_ratio_per_frame: 0.2
+  
+  model:
+    # Latent dimensions (use consistent naming)
+    latent_dim: 128      # z: stochastic latent
+    hidden_dim: 128      # h: deterministic state (RNN)
+    embed_dim: 128       # r: representation/embedding
+    
+    # Network layer dimensions
+    encoder_hidden_dim: 128
+    decoder_hidden_dim: 128
+    prior_hidden_dim: 128
+    posterior_hidden_dim: 128
+    
+    # Model-specific settings
+    action_dim: 2              # For model-free models
+    use_actions: false         # For model-based models
+    out_mode: "full"           # For PINN models
+    aggregator: "mean"         # For SNP models: "mean" or "attention"
+  
+  optimizer:
+    lr: 1e-4
+    max_epochs: 200
+    grad_clip: 1.0
+    beta_max: 1.0
+    min_lr: 1e-6
+  
+  loss:
+    mse_weight: 1.0
+    kl_weight: 1.0
+    pde_weight: 1.0
+    pde_type: "blind_discovery"

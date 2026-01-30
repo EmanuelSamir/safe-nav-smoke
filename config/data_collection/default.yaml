@@ -4,14 +4,17 @@ defaults:
   - /agent: dubins
 
 data_collection:
-  num_samples: 100000
-  output_dir: "misc/data_collection"
-  num_smoke_blobs: 6
+  num_samples: 10000
+  output_dir: "data/raw"
+  output_filename: "global_collected_source_400_100_2nd_10000.npz"
+  playback_path: "/Users/emanuelsamir/Documents/dev/cmu/research/experiments/7_safe_nav_smoke/data/playback_data/global_source_400_100_2nd.npz"
+  num_robots: 20 # Virtual fleet to speed up collection
+  num_smoke_blobs: 8
   
   sensor:
     type: "downwards"
-    points_in_range: 8
-    fov_size_degrees: 15
+    points_in_range: 32
+    fov_size_degrees: 50
 
   smoke:
     resolution: 0.4
@@ -19,4 +22,4 @@ data_collection:
     spread_rate: 1.0
 
 env:
-  max_steps: 200 # Override default
+  max_steps: 100 # Override default

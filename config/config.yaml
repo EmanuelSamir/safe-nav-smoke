@@ -1,7 +1,7 @@
 defaults:
   - env: smoke_env
   - agent: dubins
-  - experiment: base
+  - experiment: vaessm
   - _self_
 
 # Global settings

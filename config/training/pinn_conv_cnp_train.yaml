@@ -1,0 +1,38 @@
+# @package _global_
+# Configuration for PINN ConvCNP (Convolutional Conditional Neural Process)
+training:
+  experiment_name: "pinn_conv_cnp_experiment"
+  seed: 42
+  
+  data:
+    data_path: "data/playback_data/global_source_400_100_2nd.npz"
+    batch_size: 4
+    train_split: 0.9
+    max_samples: null
+    context_frames: 10
+    target_frames: 15
+    info_ratio_per_frame: 0.2
+    num_workers: 0
+
+  model:
+    hidden_dim: 128
+    out_mode: "full"
+    grid_res: 32           # Resolution for ConvCNP set_conv
+    spatial_max: 50.0      # Dataset size
+    temporal_max: 3.0      # Approx max time window (2.5s)
+    
+  optimizer:
+    lr: 8e-4              # Slightly lower for Conv potentially
+    max_epochs: 80
+    grad_clip: 1.0
+
+  loss:
+    mse_weight: 1.0
+    pde_weight: 1.0
+    pde_type: "blind_discovery"
+
+  checkpoint:
+    save_dir: "checkpoints/"
+    save_freq: 50
+    save_top_k: 3
+    monitor: "val_loss"

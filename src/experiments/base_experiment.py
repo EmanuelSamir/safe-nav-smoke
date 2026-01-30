@@ -12,130 +12,131 @@ from src.utils import LoggerMetrics, dataclass_json_dump
 from src.visualization import StandardRenderer
 from src.time_tracker import TimeTracker
 
-# Configurar logger global
+# Configure global logger
 log = logging.getLogger(__name__)
 
 class BaseExperiment(abc.ABC):
     """
-    Clase base abstracta para todos los experimentos.
-    Maneja la configuración, logging, métricas y ciclo de vida del experimento.
+    Abstract base class for all experiments.
+    Handles configuration, logging, metrics, and experiment life cycle.
     """
 
     def __init__(self, cfg: DictConfig):
         self.cfg = cfg
         self.output_dir = Path(os.getcwd())
         
-        # Inicializar utilidades
+        # Initialize utilities
         self.metrics = LoggerMetrics()
         self.time_tracker = TimeTracker()
         self.renderer = None
         
-        # Estado del experimento
+        # Experiment state
         self.env = None
         self.robot = None
         self.controller = None
         self.finished = False
         
-        log.info(f"Inicializando experimento: {cfg.experiment.name}")
-        log.info(f"Directorio de salida: {self.output_dir}")
+        log.info(f"Initializing experiment: {cfg.experiment.name}")
+        log.info(f"Output directory: {self.output_dir}")
         
-        # Guardar configuración completa
-        with open("config_dump.yaml", "w") as f:
+        # Save full configuration
+        dump_path = self.output_dir / "config_dump.yaml"
+        with open(dump_path, "w") as f:
             OmegaConf.save(cfg, f)
 
     @abc.abstractmethod
     def setup(self):
         """
-        Configura el entorno, robot y controladores.
-        Debe ser implementado por las subclases.
+        Configures the environment, robot, and controllers.
+        Must be implemented by subclasses.
         """
         pass
 
     @abc.abstractmethod
     def run_episode(self) -> Dict[str, Any]:
         """
-        Ejecuta un episodio completo de simulación.
-        Debe ser implementado por las subclases.
+        Executes a full simulation episode.
+        Must be implemented by subclasses.
         """
         pass
 
     def setup_renderer(self, opts: Dict[str, Any]):
-        """Inicializa el renderizador estándar."""
+        """Initializes the standard renderer."""
         if self.cfg.env.render:
             self.renderer = StandardRenderer(opts=opts)
 
     def teardown(self):
-        """Limpieza de recursos y guardado de resultados finales."""
-        log.info("Finalizando experimento y guardando resultados...")
+        """Resource cleanup and saving final results."""
+        log.info("Finishing experiment and saving results...")
         
-        # Guardar métricas
+        # Save metrics
         metrics_path = self.output_dir / "metrics.csv"
         self.metrics.dump_to_csv(str(metrics_path))
-        log.info(f"Métricas guardadas en {metrics_path}")
+        log.info(f"Metrics saved at {metrics_path}")
         
-        # Guardar tiempos
+        # Save timings
         time_path = self.output_dir / "timing.csv"
         time_df = pd.DataFrame(self.time_tracker.as_dict())
         time_df.to_csv(time_path, index=False)
         
-        # Cerrar entorno y renderer
+        # Close environment and renderer
         if self.env:
             self.env.close()
         
         if self.renderer:
-            self.renderer.close() # Asegura que se guarden los videos
+            self.renderer.close() # Ensure videos are saved
 
     def run(self):
-        """Método principal para ejecutar el experimento."""
+        """Main method to execute the experiment."""
         try:
             self.setup()
             results = self.run_episode()
             return results
         except Exception as e:
-            log.error(f"Error durante la ejecución del experimento: {e}", exc_info=True)
+            log.error(f"Error during experiment execution: {e}", exc_info=True)
             raise
         finally:
             self.teardown()
 
-    # --- Métodos Helpers Comunes ---
+    # --- Common Helper Methods ---
 
     def get_initial_location(self) -> np.ndarray:
-        """Selecciona una posición inicial aleatoria de la configuración."""
+        """Selects a random initial location from the configuration."""
         locs = self.cfg.experiment.initial_locations
         idx = np.random.randint(0, len(locs))
         return np.array(locs[idx])
 
     def check_termination(self, state, reward, terminated, truncated) -> bool:
-        """Verifica condiciones de terminación y loguea el estado final."""
+        """Checks termination conditions and logs final state."""
         if terminated or truncated:
             status = 'truncated'
             if terminated:
                 status = 'reached_goal' if reward > 0.0 else 'crashed'
             
             self.metrics.add_value('status', status)
-            log.info(f"Episodio terminado. Estado: {status}")
+            log.info(f"Episode finished. Status: {status}")
             return True
         
         self.metrics.add_value('status', 'running')
         return False
 
     def log_common_metrics(self, state, action, t):
-        """Registra métricas estándar comunes a la mayoría de experimentos."""
-        # Distancia al objetivo
+        """Logs standard metrics common to most experiments."""
+        # Distance to goal
         if hasattr(self.env, 'env_params') and self.env.env_params.goal_location is not None:
             dist = np.linalg.norm(state["location"] - self.env.env_params.goal_location)
             self.metrics.add_value('dist_to_goal', dist)
 
-        # Humo en el robot
+        # Smoke at robot location
         if hasattr(self.env, 'get_smoke_density_in_robot'):
             smoke = self.env.get_smoke_density_in_robot()[0]
             self.metrics.add_value('smoke_on_robot', smoke)
             
-            # Acumulado
+            # Accumulated
             last_acc = self.metrics.get_last_value('smoke_on_robot_acc')
             self.metrics.add_value('smoke_on_robot_acc', last_acc + smoke)
 
-        # Acciones y Estado
+        # Actions and State
         for i, a in enumerate(action):
             self.metrics.add_value(f'action_{i}', a)
         

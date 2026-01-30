@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
-Script principal para ejecutar experimentos.
-Uso: python run_experiment.py experiment=base env=smoke_env agent=dubins
+Main script to run experiments.
+Usage: python run_experiment.py experiment=base env=smoke_env agent=dubins
 """
 
 import sys
@@ -9,7 +9,7 @@ import os
 import hydra
 from omegaconf import DictConfig, OmegaConf
 
-# Añadir src al path
+# Add src to path
 sys.path.append(os.path.join(os.getcwd(), "src"))
 
 from src.experiments.mppi_experiment import MPPIExperiment

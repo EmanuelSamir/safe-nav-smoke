@@ -1,11 +1,10 @@
 import numpy as np
 from dataclasses import dataclass, field
-from learning.base_model import BaseModel
-from learning.gaussian_process import GaussianProcess
+from src.models.base_model import BaseModel
+from src.models.gaussian_process import GaussianProcess
 from itertools import product
 import matplotlib.pyplot as plt
-from simulator.static_smoke import StaticSmoke, SmokeBlobParams
-from simulator.dynamic_smoke import DynamicSmoke, DynamicSmokeParams
+from simulator.dynamic_smoke import SmokeBlobParams, DynamicSmoke, DynamicSmokeParams
 from simulator.sensor import DownwardsSensorParams
 from tqdm import tqdm
 from src.utils import *

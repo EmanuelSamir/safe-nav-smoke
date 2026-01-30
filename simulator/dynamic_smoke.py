@@ -24,10 +24,11 @@ class DynamicSmokeParams:
     resolution: float
 
     # Parameters for the smoke simulation
-    average_wind_speed: float = 15.0
-    smoke_emission_rate: float = 0.7
-    smoke_diffusion_rate: float = 0.3
-    smoke_decay_rate: float = 1.0
+    average_wind_speed: float = 8.0
+    smoke_emission_rate: float = 2.0
+    smoke_diffusion_rate: float = 2.0 #1.0 #0.5
+    smoke_decay_rate: float = 1.5
+    buoyancy_factor: float = 1.2
     # sensor_params: BaseSensorParams | None = None
 
 class DynamicSmoke:
@@ -43,7 +44,13 @@ class DynamicSmoke:
         self.bounds = flow.Box(x=self.params.x_size, y=self.params.y_size)
         self.smoke_blob_params = self.params.smoke_blob_params
 
-        self.smoke_map = self.build_smoke_map(self.params.smoke_blob_params)
+        self.inflow_bank = []
+        for _ in range(5):
+            self.inflow_bank.append(self.build_smoke_map(self.params.smoke_blob_params))
+        
+        self.smoke_map = self.inflow_bank[0]
+        self.smoke_map = flow.diffuse.explicit(self.smoke_map, diffusivity=0.1, dt=0.1)
+
         self.velocity = self.build_velocity()
 
         smoke_top = flow.CenteredGrid(1, flow.extrapolation.BOUNDARY,resolution=self.spatial_resolution, bounds=self.bounds)
@@ -52,63 +59,85 @@ class DynamicSmoke:
         self.smoke_zero = smoke_zero
 
     def reset(self):
-        self.smoke_map = self.build_smoke_map(self.params.smoke_blob_params)
+        self.smoke_map = self.inflow_bank[0]
+        self.smoke_map = flow.diffuse.explicit(self.smoke_map, diffusivity=0.1, dt=0.1)
         self.velocity = self.build_velocity()
 
     def step(self, dt: float = 0.1):
-        wind_force = 0.1 * self.params.average_wind_speed * flow.StaggeredGrid(flow.Noise(smoothness=0.8), flow.extrapolation.ZERO,resolution=self.spatial_resolution, bounds=self.bounds) 
-        wind_force, _ = flow.fluid.make_incompressible(wind_force, (), flow.Solve(rank_deficiency=0))
+        # 1. --- FUERZAS DE VELOCIDAD (NUEVO) ---
+        # El humo (densidad) genera fuerza hacia arriba (Flotabilidad)
+        # Resampleamos el humo al centro de las celdas de velocidad (Staggered)
+        smoke_centered = self.smoke_map.at(self.velocity)
+        
+        # Creamos una fuerza hacia arriba (eje y=1) proporcional a la densidad del humo
+        # Esto crea los remolinos "tipo hongo"
+        buoyancy_force = smoke_centered * (0, self.params.buoyancy_factor) 
+        
+        # Aplicamos la fuerza a la velocidad
+        self.velocity = self.velocity + buoyancy_force * dt
 
-        self.velocity += wind_force
+        # 2. --- ADVECCIÓN DE VELOCIDAD ---
         self.velocity = flow.advect.semi_lagrangian(self.velocity, self.velocity, dt=dt)
         self.velocity, _ = flow.fluid.make_incompressible(self.velocity, (), flow.Solve(rank_deficiency=0))
 
-        kappa = self.params.smoke_diffusion_rate * self.scalar_resolution**2 / 4 / dt #0.3        # diffusion coeff
-        tau = self.params.smoke_decay_rate        # decay time-constant
-        emit_rate = self.params.smoke_emission_rate   # emission strength (scale as you like)
+        # --- Parámetros ---
+        diffusion_amount = self.params.smoke_diffusion_rate 
+        tau = self.params.smoke_decay_rate
+        emit_rate = self.params.smoke_emission_rate
 
-        # 1) Source / inflow (scaled by dt)
-        # assume self.inflow_map is a [0..1] mask or field with source strength
-        self.smoke_map = self.smoke_map + emit_rate * self.inflow_map
+        # 3. --- SOURCE / INFLOW ---
+        # Usamos tu banco de texturas random
+        idx = np.random.randint(len(self.inflow_bank))
+        # Multiplicamos por dt para consistencia física
+        self.smoke_map = self.smoke_map + emit_rate * self.inflow_bank[idx] * dt
 
-        # 2) Advection
-        # Mac Cormack only
-        self.smoke_map = flow.advect.mac_cormack(self.smoke_map, self.velocity, dt=dt)
+        # 4. --- ADVECCIÓN DE HUMO ---
+        self.smoke_map = flow.advect.semi_lagrangian(self.smoke_map, self.velocity, dt=dt)
 
-        # mac cormack + boundry handling
-        # pred = flow.advect.semi_lagrangian(self.smoke_map, self.velocity, dt=dt)
-        # back = flow.advect.semi_lagrangian(pred,         -self.velocity, dt=dt)
-        # mc   = pred + 0.5 * (self.smoke_map - back)
-        # lo = flow.field.minimum(self.smoke_map, pred)
-        # hi = flow.field.maximum(self.smoke_map, pred)
-        # self.smoke_map = flow.field.maximum(flow.field.minimum(mc, hi), lo)
-
-        # 3) Diffusion
-        self.smoke_map = flow.diffuse.explicit(self.smoke_map, kappa, dt=dt)
-
-        # 4) Exponential decay
+        # 4) Decaimiento Exponencial
         self.smoke_map = self.smoke_map * flow.math.exp(-dt / tau)
 
-        # 5) Clamp to valid range
+        # 5) Clamp (Limpieza final)
         self.smoke_map = phi.field.maximum(
                 phi.field.minimum(self.smoke_map, self.smoke_top),
                 self.smoke_zero
         )
 
     def build_smoke_map(self, smoke_blob_params: list[SmokeBlobParams]):
-        inflow_map = flow.CenteredGrid(0, flow.extrapolation.BOUNDARY,resolution=self.spatial_resolution, bounds=self.bounds)  # sampled at cell centers
+        # Inicializamos el mapa vacío
+        inflow_map = flow.CenteredGrid(0, flow.extrapolation.BOUNDARY, resolution=self.spatial_resolution, bounds=self.bounds)
 
         for blob in smoke_blob_params:
+            # 1. Definir la ubicación y la forma base (La Esfera/Mascara)
             loc = flow.tensor([(blob.x_pos, blob.y_pos)], flow.batch('inflow_loc'), flow.channel(vector='x,y'))
-            sphere = flow.Sphere(center=loc, radius=blob.spread_rate)
-            inflow = flow.CenteredGrid(flow.Sphere(center=loc, radius=blob.spread_rate), flow.extrapolation.BOUNDARY,resolution=self.spatial_resolution, bounds=self.bounds)
-            inflow_map += inflow
+            sphere_shape = flow.Sphere(center=loc, radius=blob.spread_rate)
+            
+            # Convertimos la esfera a una rejilla (0 fuera, 1 dentro)
+            sphere_mask = flow.CenteredGrid(sphere_shape, flow.extrapolation.BOUNDARY, resolution=self.spatial_resolution, bounds=self.bounds)
 
-        self.inflow_map = inflow_map
+            # 2. Generar el Ruido (La Textura)
+            # scale: controla qué tan "grandes" son los grumos de humo. 
+            # smoothness: suaviza el ruido para que parezca humo y no estática de TV.
+            noise_grid = flow.CenteredGrid(
+                flow.Noise(scale=blob.spread_rate * 0.5, smoothness=0.8), 
+                flow.extrapolation.BOUNDARY, 
+                resolution=self.spatial_resolution, 
+                bounds=self.bounds
+            )
+
+            # 3. Combinar: Normalizamos el ruido y lo multiplicamos por la esfera
+            # El ruido viene de -1 a 1. Lo pasamos a 0 a 1 con (noise + 1) / 2
+            texture = (noise_grid + 1) / 2
+            
+            # Multiplicamos: (Forma Esfera) * (Textura Ruido) * (Intensidad)
+            blob_inflow = sphere_mask * texture * blob.intensity
+            
+            inflow_map += blob_inflow
+        
         return inflow_map
 
     def build_velocity(self):
-        velocity = self.params.average_wind_speed * flow.StaggeredGrid(flow.Noise(smoothness=0.5), flow.extrapolation.ZERO,resolution=self.spatial_resolution, bounds=self.bounds)
+        velocity = self.params.average_wind_speed * flow.StaggeredGrid(flow.Noise(smoothness=0.4), flow.extrapolation.ZERO,resolution=self.spatial_resolution, bounds=self.bounds)
         velocity, _ = flow.fluid.make_incompressible(velocity, (), flow.Solve(rank_deficiency=0))
         return velocity
 
@@ -132,24 +161,21 @@ class DynamicSmoke:
         """
 
         if pos.ndim == 1:
-            return np.array([[self.get_smoke_density_at_point(pos[0], pos[1])]])
+            pos = pos.reshape(1, 2)
 
         assert pos.shape[1] == 2 and pos.ndim == 2, "Position must be a nx2 array"
         
-        densities = []
-        for i in range(pos.shape[0]):
-            x, y = pos[i]
-            density = self.get_smoke_density_at_point(x, y)
-            densities.append(density)
-        return np.array(densities).reshape(-1, 1)
-
-    # def get_smoke_density_sensor(self, pos: np.ndarray, return_location: bool = False) -> np.ndarray:
-    #     assert self.sensor is not None, "Sensor must have been initialized"
-
-    #     sensor_output = self.sensor.read(self.get_smoke_density, curr_pos=pos)
-    #     if return_location:
-    #         return sensor_output["sensor_readings"], sensor_output["sensor_position_readings"]
-    #     return sensor_output["sensor_readings"]
+        # Vectorized sampling using phi.flow
+        # Create a single tensor with all query points in a 'points' batch dimension
+        pos_tensor = flow.tensor(pos, flow.batch('points'), flow.channel(vector='x,y'))
+        
+        # Sample the smoke map at these coordinates (interpolated)
+        sampled_values = self.smoke_map.sample(pos_tensor)
+        
+        # Use single string for dimension order as suggested by phiml error message
+        values = sampled_values.numpy('inflow_loc,points')
+        
+        return values.reshape(-1, 1)
 
     def get_smoke_map(self):
         smoke_arr = self.smoke_map.values.numpy(('y','x', 'inflow_loc'))
@@ -171,15 +197,11 @@ class DynamicSmoke:
         if ax.images:
             ax.images[0].set_array(smoke_arr)
         else:
-            ax_ = ax.imshow(smoke_arr, cmap='gray', extent=extent, origin='lower')
+            ax_ = ax.imshow(smoke_arr, cmap='gray', extent=extent, origin='lower', vmin=0, vmax=1)
             fig.colorbar(ax_, label='Smoke Density')
             ax.set_title('Static Smoke Map')
             ax.set_xlabel('X Position')
             ax.set_ylabel('Y Position')
-
-        # if self.sensor is not None:
-        #     pairs_to_plot = self.sensor.grid_pairs_positions + np.array([10, 30])
-        #     ax.scatter(pairs_to_plot[:, 0], pairs_to_plot[:, 1], color='red', s=0.1)
 
         fig.canvas.draw()
 
@@ -195,7 +217,7 @@ if __name__ == "__main__":
     world_x_size = 60
     world_y_size = 50
     sensor_params = DownwardsSensorParams(world_x_size=world_x_size, world_y_size=world_y_size)
-    smoke_params = DynamicSmokeParams(x_size=world_x_size, y_size=world_y_size, smoke_blob_params=smoke_blob_params, resolution=0.3, fov_sensor_params=sensor_params)
+    smoke_params = DynamicSmokeParams(x_size=world_x_size, y_size=world_y_size, smoke_blob_params=smoke_blob_params, resolution=0.3)
     smoke_simulator = DynamicSmoke(params=smoke_params)
 
 
@@ -208,37 +230,6 @@ if __name__ == "__main__":
         plt.pause(0.1)
 
     plt.show()
-
-
-
-
-    # def get_smoke_density_within_polygon(self, polygon: np.ndarray, return_location: bool = False) -> np.ndarray:
-    #     """
-    #     polygon: nx2 array
-    #     return: (n,1) array, optional: (n,2) array
-    #     """
-    #     assert polygon.shape[1] == 2 and polygon.ndim == 2, "Polygon must be a nx2 array"
-
-    #     polygon_in_discrete = [world_to_index(p[0], p[1], self.x_size, self.y_size, 1) for p in polygon]
-
-    #     cols, rows = np.meshgrid(np.arange(self.x_size), np.arange(self.y_size))
-
-    #     pts = np.column_stack([rows.ravel(), cols.ravel()])
-
-    #     path = Path(polygon_in_discrete)
-    #     inside = path.contains_points(pts)
-    #     inside_map = inside.reshape(self.y_size, self.x_size)
-
-    #     smoke_map = self.smoke_map.values.numpy(('x', 'y', 'inflow_loc')).squeeze().T
-    #     values = smoke_map[inside_map]
-
-    #     if return_location:
-    #         pts_in_discrete = pts[inside]
-    #         pts_in_world = [index_to_world(p[0], p[1], self.x_size, self.y_size, 1) for p in pts_in_discrete]
-    #         pts_in_world = np.array(pts_in_world)
-    #         return values.reshape(-1, 1), pts_in_world
-
-    #     return values.reshape(-1, 1)
 
 
 

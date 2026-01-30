@@ -7,17 +7,17 @@ from collections import deque
 from src.experiments.base_experiment import BaseExperiment
 from src.mppi_control_dyn import MPPIControlDyn, MPPIControlParams
 from src.risk_map_builder import RiskMapBuilder, RiskMapParams, LocalRegion, GlobalRegion
-from learning.gaussian_process import GaussianProcess
+from src.models.gaussian_process import GaussianProcess
 from envs.smoke_env_dyn import EnvParams, DynamicSmokeEnv, DynamicSmokeParams
 from agents.basic_robot import RobotParams
 from simulator.sensor import DownwardsSensorParams, GlobalSensorParams
-from simulator.static_smoke import SmokeBlobParams
+from simulator.dynamic_smoke import SmokeBlobParams
 
 class MPPIExperiment(BaseExperiment):
     def setup(self):
-        # 1. Configurar Parámetros desde Hydra
-        # Convertir DictConfig a objetos Params específicos
-        # TODO: Idealmente, los constructores deberían aceptar diccionarios o kwargs
+        # 1. Configure Parameters from Hydra
+        # Convert DictConfig to specific Params objects
+        # TODO: Ideally, constructors should accept dictionaries or kwargs
         
         # Env Params
         self.env_params = EnvParams()
@@ -56,7 +56,7 @@ class MPPIExperiment(BaseExperiment):
         )
 
         # Robot Params
-        self.robot_params = RobotParams() # TODO: Cargar desde cfg.agent
+        self.robot_params = RobotParams() # TODO: Load from cfg.agent
         self.robot_params.world_x_size = self.env_params.world_x_size
         self.robot_params.world_y_size = self.env_params.world_y_size
         # Overwrite defaults with config
@@ -64,10 +64,10 @@ class MPPIExperiment(BaseExperiment):
         self.robot_params.action_max = np.array(self.cfg.agent.action_max)
         self.robot_params.dt = self.cfg.agent.dt
 
-        # 2. Inicializar Entorno
+        # 2. Initialize Environment
         self.env = DynamicSmokeEnv(self.env_params, self.robot_params, self.smoke_params)
         
-        # Estado inicial
+        # Initial state
         initial_loc = self.get_initial_location()
         self.state, _ = self.env.reset(initial_state={
             "location": initial_loc, 
@@ -75,8 +75,8 @@ class MPPIExperiment(BaseExperiment):
             "smoke_density": 0.0
         })
 
-        # 3. Inicializar Modelos (GP & RiskMap)
-        # TODO: Mover esto a una abstracción de modelo
+        # 3. Initialize Models (GP & RiskMap)
+        # TODO: Move this to a model abstraction
         num_points = self.env.sensor.grid_pairs_positions.shape[0]
         history_size = self.cfg.experiment.time_horizon * num_points
         self.learner = GaussianProcess(online=False, history_size=history_size)
@@ -84,29 +84,29 @@ class MPPIExperiment(BaseExperiment):
         max_inference_range = self.env_params.clock * self.cfg.experiment.time_horizon * self.robot_params.action_max[0]
         
         # Risk Map Builder
-        # TODO: Configurar inference region desde hydra
+        # TODO: Configure inference region from hydra
         inference_region = LocalRegion(
             range_bound=(max_inference_range, max_inference_range), 
             resolution=0.5
         )
         self.builder = RiskMapBuilder(params=RiskMapParams(
             inference_region=inference_region, 
-            map_rule_type='cvar' # TODO: Parametrizar
+            map_rule_type='cvar' # TODO: Parameterize
         ))
 
-        # 4. Inicializar Controlador (MPPI)
+        # 4. Initialize Controller (MPPI)
         mppi_params = MPPIControlParams(horizon=self.cfg.experiment.time_horizon)
         self.controller = MPPIControlDyn(
             self.robot_params, 
             self.cfg.agent.name, 
-            0.6, # discrete_resolution TODO: Parametrizar
+            0.6, # discrete_resolution TODO: Parameterize
             mppi_params=mppi_params, 
             goal_thresh=self.env_params.goal_radius
         )
         self.controller.set_goal(list(self.env_params.goal_location))
 
         # 5. Setup Renderer
-        # Crear diccionario de opciones compatible con StandardRenderer
+        # Create options dictionary compatible with StandardRenderer
         render_opts = {
             'env_params': self.env_params,
             'robot_params': self.robot_params,
@@ -120,7 +120,7 @@ class MPPIExperiment(BaseExperiment):
     def run_episode(self):
         finished = False
         
-        # Bucle principal
+        # Main loop
         for t in tqdm(range(self.env_params.max_steps + 1)):
             if finished:
                 break
@@ -189,8 +189,8 @@ class MPPIExperiment(BaseExperiment):
 
 @hydra.main(version_base=None, config_path="../../config", config_name="config")
 def main(cfg: DictConfig):
-    # Hydra cambia el directorio de trabajo por defecto, lo cual rompe imports relativos a veces.
-    # Vamos a imprimir el directorio actual para debug.
+    # Hydra changes the default working directory, which sometimes breaks relative imports.
+    # We will print the current directory for debug.
     print(f"Working directory: {os.getcwd()}")
     experiment = MPPIExperiment(cfg)
     experiment.run()

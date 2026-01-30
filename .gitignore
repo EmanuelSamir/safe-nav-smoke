@@ -41,6 +41,8 @@ multirun/
 runs/
 wandb/
 mlruns/
+data/
+outputs/
 
 # IDEs
 .idea/
@@ -73,4 +75,14 @@ legacy/temp_files/
 !docs/*.mp4
 
 # Temporary scripts
-scripts/refactoring/
+scripts/
+
+.antigravity-server
+.cache
+.gemini
+.venv
+.nv
+.vscode
+.config
+
+output.log

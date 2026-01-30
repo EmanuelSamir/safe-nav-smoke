@@ -12,8 +12,8 @@ goal_radius: 1.5
 # Sensor settings
 sensor:
   type: "downwards" # "downwards" or "global"
-  points_in_range: 8
-  fov_size_degrees: 15
+  points_in_range: 32
+  fov_size_degrees: 50
 
 # Smoke simulation
 smoke:

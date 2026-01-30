@@ -6,7 +6,7 @@ name: "vaessm_experiment"
 type: "vaessm"
 
 # VAESSM specific parameters
-checkpoint_path: "${hydra:runtime.cwd}/checkpoints/vaessm_3rd.pt"
+checkpoint_path: "${hydra:runtime.cwd}/best_model.pt"
 map_rule_type: "mean"
 disable_risk_map: false
 

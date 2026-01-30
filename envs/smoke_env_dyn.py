@@ -2,6 +2,7 @@ import numpy as np
 import gymnasium as gym
 from gymnasium import spaces
 from simulator.dynamic_smoke import DynamicSmoke, SmokeBlobParams, DynamicSmokeParams
+from simulator.playback_smoke import PlaybackSmoke, PlaybackSmokeParams
 from simulator.sensor import GlobalSensorParams, PointSensorParams, DownwardsSensorParams, BaseSensorParams, DownwardsSensor, PointSensor, GlobalSensor
 from agents.basic_robot import RobotParams
 from matplotlib.collections import PathCollection
@@ -33,6 +34,7 @@ class EnvParams:
 
     smoke_density_threshold: float = None
     sensor_params: BaseSensorParams | DownwardsSensorParams | PointSensorParams | GlobalSensorParams | None = field(default=None)
+    playback_path: str = "/Users/emanuelsamir/Documents/dev/cmu/research/experiments/7_safe_nav_smoke/data/global_source_400_100_2nd.npz" # field(default=None)
 
     @staticmethod
     def load_from_yaml(file_path: str) -> "EnvParams":
@@ -48,7 +50,11 @@ class DynamicSmokeEnv(gym.Env):
         self.env_params = env_params
         self.robot_params = robot_params
 
-        self.smoke_simulator = DynamicSmoke(params=smoke_params)
+        if self.env_params.playback_path:
+            playback_params = PlaybackSmokeParams(data_path=self.env_params.playback_path)
+            self.smoke_simulator = PlaybackSmoke(params=playback_params)
+        else:
+            self.smoke_simulator = DynamicSmoke(params=smoke_params)
 
         self.robot_params.state_max[0] = self.env_params.world_x_size
         self.robot_params.state_max[1] = self.env_params.world_y_size
@@ -109,10 +115,20 @@ class DynamicSmokeEnv(gym.Env):
         else:
             obs = initial_state
 
-        self.smoke_simulator.reset()
+        if isinstance(self.smoke_simulator, PlaybackSmoke):
+            # Support selecting specific episode via seed or options if desired, 
+            # otherwise PlaybackSmoke cycles automatically.
+            episode_idx = None
+            if options and 'episode_idx' in options:
+                episode_idx = options['episode_idx']
+            elif seed is not None:
+                episode_idx = seed
+            self.smoke_simulator.reset(episode_idx=episode_idx)
+        else:
+            self.smoke_simulator.reset()
 
         if self.robot_params.robot_type == "unicycle":
-            self.robot.reset(np.array([obs["location"][0], obs["location"][1], obs["angle"], obs["velocity"]]))
+            self.robot.reset(np.array([obs["location"][0], obs["location"][1], obs["angle"], obs["velocity"][0]]))
         elif self.robot_params.robot_type == "dubins2d":
             self.robot.reset(np.array([obs["location"][0], obs["location"][1], obs["angle"]]))
         elif self.robot_params.robot_type == "dubins2d_fixed_velocity":
@@ -205,9 +221,6 @@ class DynamicSmokeEnv(gym.Env):
         terminated = self._get_terminated(obs)
         truncated = self._get_truncated(obs)
         info = self._get_info()
-
-        # self._render_frame()
-
         return obs, reward, terminated, truncated, info
     
     def _render_frame(self, fig: plt.Figure = None, ax: plt.Axes = None):
@@ -297,9 +310,11 @@ class DynamicSmokeEnv(gym.Env):
         self.window = {"fig": None, "ax": None, "cax": None}
 
 if __name__ == "__main__":
-    env_params = EnvParams.load_from_yaml("envs/env_cfg.yaml")
+    # env_params = EnvParams.load_from_yaml("config/env/smoke_env.yaml")
+    env_params = EnvParams()
+    robot_params = RobotParams()
 
-    robot_params = RobotParams.load_from_yaml("agents/dubins2d_fixed_velocity_cfg.yaml")
+    # robot_params = RobotParams.load_from_yaml("agents/dubins2d_fixed_velocity_cfg.yaml")
     world_x_size = 60
     world_y_size = 50
     env_params.world_x_size = world_x_size
@@ -327,14 +342,6 @@ if __name__ == "__main__":
         state, reward, terminated, truncated, info = env.step(action)
         print(20*"-")
         env._render_frame(fig=fig, ax=ax)
-
-        # buf = BytesIO()
-        # plt.savefig(buf, format='png')
-        # buf.seek(0)
-        # image = imageio.imread(buf)
-        # frames.append(image)
-
-    # if frames:
-    #     imageio.mimsave(f'smoke_dynamic.gif', frames, duration=10.0)
+        plt.pause(0.1)
 
     env.close()

@@ -8,7 +8,7 @@ from src.cbf_controller import CBFController
 from envs.smoke_env_dyn import EnvParams, DynamicSmokeEnv, DynamicSmokeParams
 from agents.basic_robot import RobotParams
 from simulator.sensor import DownwardsSensorParams, GlobalSensorParams
-from simulator.static_smoke import SmokeBlobParams
+from simulator.dynamic_smoke import SmokeBlobParams
 
 class CBFExperiment(BaseExperiment):
     def setup(self):
