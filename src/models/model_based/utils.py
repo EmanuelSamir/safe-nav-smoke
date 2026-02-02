@@ -11,7 +11,7 @@ class ObsPINN:
     """
     xs: torch.Tensor
     ys: torch.Tensor
-    ts: torch.Tensor
+    ts: Optional[torch.Tensor] = None
     values: Optional[torch.Tensor] = None
     mask: Optional[torch.Tensor] = None # Added mask for compatibility
 
@@ -19,7 +19,7 @@ class ObsPINN:
         return ObsPINN(
             xs=self.xs.to(device),
             ys=self.ys.to(device),
-            ts=self.ts.to(device),
+            ts=self.ts.to(device) if self.ts is not None else None,
             values=self.values.to(device) if self.values is not None else None,
             mask=self.mask.to(device) if self.mask is not None else None
         )

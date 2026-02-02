@@ -36,7 +36,7 @@ class FourierFeatures(nn.Module):
         self.num_frequencies = num_frequencies
         self.input_max = input_max
         
-        # Random frequency matrix B ~ N(0, σ²I)
+        # Random frequency matrix B ~ N(0, σ²I) 
         # Registered as buffer (not trainable, but part of model state)
         B = torch.randn(input_dim, num_frequencies) * frequency_scale
         # Explicitly ensure it's not trainable (though buffer default is usually no grad)
