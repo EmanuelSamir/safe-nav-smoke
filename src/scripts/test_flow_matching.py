@@ -116,9 +116,9 @@ def main(cfg: DictConfig):
             timesteps=20
         ).to(device)
         
-        optimizer = optim.Adam(model.parameters(), lr=1e-4) # Lower LR for Transformer sometimes better
+        optimizer = optim.Adam(model.parameters(), lr=8e-4) # Lower LR for Transformer sometimes better
         
-        epochs = 200 # More epochs for Transformer convergence
+        epochs = 20 # More epochs for Transformer convergence
         epoch_pbar = tqdm(range(epochs), desc="Training")
         
         history_loss = []
@@ -206,11 +206,10 @@ def main(cfg: DictConfig):
                     # Context Data
                     ctx_xs = b_xs[is_ctx].unsqueeze(0).to(device) # (1, N_c)
                     ctx_ys = b_ys[is_ctx].unsqueeze(0).to(device)
-                    ctx_ts = b_ts[is_ctx].unsqueeze(0).to(device)
                     ctx_vs = b_vs[is_ctx].unsqueeze(0).to(device)
                     ctx_mask = torch.zeros((1, ctx_xs.shape[1]), dtype=torch.bool).to(device)
                     
-                    ctx = ObsPINN(xs=ctx_xs, ys=ctx_ys, ts=ctx_ts, values=ctx_vs, mask=ctx_mask)
+                    ctx = ObsPINN(xs=ctx_xs, ys=ctx_ys, values=ctx_vs, mask=ctx_mask)
                     
                     # Plot Setup
                     num_frames = min(len(unique_times), 5) # Max 5 frames
@@ -226,11 +225,10 @@ def main(cfg: DictConfig):
                         # Target Points for this frame
                         trg_xs = b_xs[is_frame].unsqueeze(0).to(device)
                         trg_ys = b_ys[is_frame].unsqueeze(0).to(device)
-                        trg_ts = b_ts[is_frame].unsqueeze(0).to(device)
                         trg_vs = b_vs[is_frame].unsqueeze(0).to(device)
                         trg_mask = torch.zeros((1, trg_xs.shape[1]), dtype=torch.bool).to(device)
                         
-                        trg = ObsPINN(xs=trg_xs, ys=trg_ys, ts=trg_ts, values=trg_vs, mask=trg_mask)
+                        trg = ObsPINN(xs=trg_xs, ys=trg_ys, values=trg_vs, mask=trg_mask)
                         
                         # Predict
                         # We predict ONE frame at a time query
