@@ -23,7 +23,7 @@ class RNPConfig:
     
     # Model options
     action_dim: int = 2
-    use_actions: bool = True
+    use_actions: bool = False
     num_layers: int = 3
     lstm_layers: int = 1
     min_std: float = 0.01

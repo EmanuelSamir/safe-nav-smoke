@@ -25,6 +25,7 @@ training:
     fourier_scale: 20.0
     spatial_max: 30.0
     temporal_max: 10.0
+    aggregator: "mean"
     
   optimizer:
     lr: 1e-4

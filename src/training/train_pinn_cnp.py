@@ -28,8 +28,7 @@ def main(cfg: DictConfig):
     torch.manual_seed(cfg.training.seed)
     device = torch.device("cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu")
     
-    # TODO: Modify to get these folders from config name directly
-    output_dir = hydra.core.hydra_config.HydraConfig.get().runtime.output_dir
+    output_dir = cfg.hydra.runtime.output_dir
     
     # Create subdirectories
     log_dir = os.path.join(output_dir, "logs")
@@ -40,7 +39,9 @@ def main(cfg: DictConfig):
     writer = SummaryWriter(log_dir=log_dir)
     
     # 2. Data
-    data_path = Path(hydra.utils.get_original_cwd()) / cfg.training.data.data_path
+    data_path = cfg.training.data.data_path
+    if not os.path.exists(data_path):
+        raise FileNotFoundError(f"Data path {data_path} does not exist")
     
     train_ds = GlobalSmokeDataset(
         data_path=str(data_path),
@@ -65,7 +66,10 @@ def main(cfg: DictConfig):
     
     # 3. Model & Losses
     # Use "full" mode for BlindDiscoveryLoss (Navier-Stokes)
-    hyper_params = {"latent_dim": 128, "hidden_dim": 128, "out_mode": "lite"}
+    hyper_params = {
+        "latent_dim": 128, "hidden_dim": 128, "out_mode": "lite",
+        "aggregator_type": cfg.training.model.get("aggregator", "attention")
+    }
     model = PINN_CNP(**hyper_params).to(device)
     
     # Configurable Loss Type

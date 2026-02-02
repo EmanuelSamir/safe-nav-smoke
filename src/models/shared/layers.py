@@ -59,3 +59,16 @@ class ResidualBlock(nn.Module):
 
     def forward(self, x):
         return x + self.net(x)
+
+class MeanAggregator(nn.Module):
+    """Simple mean aggregation of features."""
+    def __init__(self, r_dim: int):
+        super().__init__()
+        
+    def forward(self, r_i: torch.Tensor, mask: Optional[torch.Tensor] = None) -> torch.Tensor:
+        if mask is not None:
+            valid_mask = (~mask).float().unsqueeze(-1) # (B, N, 1)
+            # Sum / Count
+            return (r_i * valid_mask).sum(dim=1) / valid_mask.sum(dim=1).clamp(min=1.0)
+        else:
+            return r_i.mean(dim=1)

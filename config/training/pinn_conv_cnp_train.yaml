@@ -6,7 +6,7 @@ training:
   
   data:
     data_path: "data/playback_data/global_source_400_100_2nd.npz"
-    batch_size: 4
+    batch_size: 32
     train_split: 0.9
     max_samples: null
     context_frames: 10
@@ -15,10 +15,10 @@ training:
     num_workers: 0
 
   model:
-    hidden_dim: 128
+    hidden_dim: 64
     out_mode: "full"
-    grid_res: 32           # Resolution for ConvCNP set_conv
-    spatial_max: 50.0      # Dataset size
+    grid_res: 128           # Resolution for ConvCNP set_conv
+    spatial_max: 30.0      # Dataset size
     temporal_max: 3.0      # Approx max time window (2.5s)
     
   optimizer:

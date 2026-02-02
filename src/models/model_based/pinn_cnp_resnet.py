@@ -6,7 +6,8 @@ from dataclasses import dataclass
 from typing import Optional, List
 
 from src.models.model_based.utils import ObsPINN, PINNOutput
-from src.models.shared.layers import AttentionAggregator, SoftplusSigma
+from src.models.model_based.utils import ObsPINN, PINNOutput
+from src.models.shared.layers import AttentionAggregator, MeanAggregator, SoftplusSigma
 from src.models.shared.fourier_features import ConditionalFourierFeatures
 
 class ResidualBlock(nn.Module):
@@ -29,7 +30,8 @@ class ResidualPointNet(nn.Module):
     def __init__(self, input_dim=4, latent_dim=128, num_blocks=2,
                  use_fourier_spatial=False, use_fourier_temporal=False,
                  fourier_frequencies=128, fourier_scale=20.0,
-                 spatial_max=100.0, temporal_max=10.0):
+                 spatial_max=100.0, temporal_max=10.0,
+                 aggregator_type="attention"):
         super().__init__()
         
         # Fourier encoders
@@ -49,7 +51,10 @@ class ResidualPointNet(nn.Module):
         self.blocks = nn.ModuleList([
             ResidualBlock(latent_dim) for _ in range(num_blocks)
         ])
-        self.aggregator = AttentionAggregator(latent_dim, latent_dim)
+        if aggregator_type == "mean":
+            self.aggregator = MeanAggregator(latent_dim)
+        else:
+            self.aggregator = AttentionAggregator(latent_dim, latent_dim)
 
     def forward(self, obs: ObsPINN) -> torch.Tensor:
         # Encode spatial and temporal separately
@@ -161,7 +166,8 @@ class PINN_CNP_ResNet(nn.Module):
     def __init__(self, latent_dim=128, hidden_dim=256, num_blocks=3, out_mode="full",
                  use_fourier_spatial=False, use_fourier_temporal=False,
                  fourier_frequencies=128, fourier_scale=20.0,
-                 spatial_max=100.0, temporal_max=10.0):
+                 spatial_max=100.0, temporal_max=10.0,
+                 aggregator_type="attention"):
         super().__init__()
         self.encoder = ResidualPointNet(
             latent_dim=latent_dim, num_blocks=num_blocks,
@@ -170,7 +176,8 @@ class PINN_CNP_ResNet(nn.Module):
             fourier_frequencies=fourier_frequencies,
             fourier_scale=fourier_scale,
             spatial_max=spatial_max,
-            temporal_max=temporal_max
+            temporal_max=temporal_max,
+            aggregator_type=aggregator_type
         )
         self.decoder = ResidualPINNDecoder(
             context_dim=latent_dim, 

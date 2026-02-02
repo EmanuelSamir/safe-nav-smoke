@@ -5,7 +5,11 @@ from torch.distributions import Normal
 from dataclasses import dataclass
 from typing import Optional, Dict, Tuple
 
-from src.models.shared.layers import AttentionAggregator, SoftplusSigma
+from torch.distributions import Normal
+from dataclasses import dataclass
+from typing import Optional, Dict, Tuple
+
+from src.models.shared.layers import AttentionAggregator, MeanAggregator, SoftplusSigma
 from src.models.model_based.utils import ObsPINN, PINNOutput
 from src.models.shared.fourier_features import ConditionalFourierFeatures
 
@@ -14,8 +18,9 @@ class ContextEncoder(nn.Module):
     """Codifica puntos (x, y, t, s) en una representación determinista C."""
     def __init__(self, input_dim=4, latent_dim=128, 
                  use_fourier_spatial=False, use_fourier_temporal=False,
-                 fourier_frequencies=128, fourier_scale=20.0,
-                 spatial_max=100.0, temporal_max=10.0):
+                 fourier_frequencies=32, fourier_scale=10.0,
+                 spatial_max=30.0, temporal_max=5.0,
+                 aggregator_type="attention"):
         super().__init__()
         
         # Fourier encoders
@@ -37,7 +42,10 @@ class ContextEncoder(nn.Module):
             nn.Linear(latent_dim, latent_dim), nn.ReLU(inplace=True),
             nn.Linear(latent_dim, latent_dim)
         )
-        self.aggregator = AttentionAggregator(latent_dim, latent_dim)
+        if aggregator_type == "mean":
+            self.aggregator = MeanAggregator(latent_dim)
+        else:
+            self.aggregator = AttentionAggregator(latent_dim, latent_dim)
 
     def forward(self, obs: ObsPINN) -> torch.Tensor:
         # Encode spatial and temporal separately
@@ -59,8 +67,8 @@ class PINNDecoder(nn.Module):
     """
     def __init__(self, context_dim=128, hidden_dim=128, out_mode="full",
                  use_fourier_spatial=False, use_fourier_temporal=False,
-                 fourier_frequencies=128, fourier_scale=20.0,
-                 spatial_max=100.0, temporal_max=10.0):
+                 fourier_frequencies=128, fourier_scale=10.0,
+                 spatial_max=30.0, temporal_max=5.0):
         super().__init__()
         self.out_mode = out_mode
         
@@ -78,22 +86,32 @@ class PINNDecoder(nn.Module):
         # Input: fourier_features + context
         input_dim = self.spatial_encoder.output_dim + self.temporal_encoder.output_dim + context_dim
         
-        self.net = nn.Sequential(
+        self.backbone = nn.Sequential(
             nn.Linear(input_dim, hidden_dim), nn.Tanh(),
             nn.Linear(hidden_dim, hidden_dim), nn.Tanh(),
-            nn.Linear(hidden_dim, hidden_dim), nn.Tanh()
         )
         
         # Cabezales de salida
-        self.vel_head = nn.Linear(hidden_dim, 2) # [u, v]
-        self.f_head = nn.Linear(hidden_dim, 2) # [f_u, f_v]
-        
-        if out_mode == "full":
-            self.phys_head = nn.Linear(hidden_dim, 2) # [p, q]
+        self.vel_head = nn.Sequential(
+            nn.Linear(hidden_dim, hidden_dim), nn.Tanh(),
+            nn.Linear(hidden_dim, 2),
+        ) # [u, v]
+
+        self.f_head = nn.Sequential(
+            nn.Linear(hidden_dim, hidden_dim), nn.Tanh(),
+            nn.Linear(hidden_dim, 2),
+        ) # [f_u, f_v]
         
         # Humo s como distribución Normal
-        self.smoke_mu = nn.Linear(hidden_dim, 1)
-        self.smoke_std = nn.Sequential(nn.Linear(hidden_dim, 1), SoftplusSigma(min_std=0.01))
+        self.smoke_mu = nn.Sequential(
+            nn.Linear(hidden_dim, hidden_dim), nn.Tanh(),
+            nn.Linear(hidden_dim, 1),
+        )
+        self.smoke_std = nn.Sequential(
+            nn.Linear(hidden_dim, hidden_dim), nn.Tanh(),
+            nn.Linear(hidden_dim, 1),
+            SoftplusSigma(min_std=0.01)
+        )
 
     def forward(self, coords: torch.Tensor, C: torch.Tensor) -> PINNOutput:
         # coords: (B, N, 3) -> [x, y, t]
@@ -110,38 +128,33 @@ class PINNDecoder(nn.Module):
         C_exp = C.unsqueeze(1).expand(-1, N, -1)
         decoder_in = torch.cat([spatial_features, temporal_features, C_exp], dim=-1)
         
-        feat = self.net(decoder_in.view(B*N, -1))
+        feat = self.backbone(decoder_in.view(B*N, -1))
         
-        # Extraer predicciones
         u_v = self.vel_head(feat).view(B, N, 2)
         u, v = u_v[..., 0:1], u_v[..., 1:2]
 
         f_uv = self.f_head(feat).view(B, N, 2)
         fu, fv = f_uv[..., 0:1], f_uv[..., 1:2]
-        
-        p, q = None, None
-        if self.out_mode == "full":
-            p_q = self.phys_head(feat).view(B, N, 2)
-            p, q = p_q[..., 0:1], p_q[..., 1:2]
             
         s_mu = self.smoke_mu(feat).view(B, N, 1)
         s_std = self.smoke_std(feat).view(B, N, 1)
         
         return PINNOutput(
             smoke_dist=Normal(s_mu, s_std),
-            u=u, v=v, p=p, q=q, fu=fu, fv=fv
+            u=u, v=v, fu=fu, fv=fv
         )
 
 class PINN_CNP(nn.Module):
     """
-    Modelo Integrado PINN + Conditional Neural Process.
-    Diseñado para descubrir física y predecir campos de humo.
+    PINN + CNP
     """
     def __init__(self, latent_dim=128, hidden_dim=128, out_mode="full",
                  use_fourier_spatial=False, use_fourier_temporal=False,
-                 fourier_frequencies=128, fourier_scale=20.0,
-                 spatial_max=100.0, temporal_max=10.0):
+                 fourier_frequencies=128, fourier_scale=10.0,
+                 spatial_max=30.0, temporal_max=5.0,
+                 aggregator_type="attention"):
         super().__init__()
+        
         self.encoder = ContextEncoder(
             latent_dim=latent_dim,
             use_fourier_spatial=use_fourier_spatial,
@@ -149,7 +162,8 @@ class PINN_CNP(nn.Module):
             fourier_frequencies=fourier_frequencies,
             fourier_scale=fourier_scale,
             spatial_max=spatial_max,
-            temporal_max=temporal_max
+            temporal_max=temporal_max,
+            aggregator_type=aggregator_type
         )
         self.decoder = PINNDecoder(
             context_dim=latent_dim,
@@ -164,14 +178,8 @@ class PINN_CNP(nn.Module):
         )
 
     def forward(self, context: ObsPINN, query: ObsPINN) -> PINNOutput:
-        """
-        1. Comprime el contexto en un vector C.
-        2. Evalúa los puntos de consulta (query) usando el decoder PINN.
-        """
-        # Obtenemos representación del contexto
         C = self.encoder(context)
         
-        # Construimos el tensor de coordenadas de consulta [x, y, t]
         query_coords = torch.stack([query.xs, query.ys, query.ts], dim=-1)
         
         if self.training:

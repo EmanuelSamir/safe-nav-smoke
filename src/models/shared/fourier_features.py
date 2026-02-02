@@ -39,6 +39,8 @@ class FourierFeatures(nn.Module):
         # Random frequency matrix B ~ N(0, σ²I)
         # Registered as buffer (not trainable, but part of model state)
         B = torch.randn(input_dim, num_frequencies) * frequency_scale
+        # Explicitly ensure it's not trainable (though buffer default is usually no grad)
+        B.requires_grad = False
         self.register_buffer('B', B)
         
         # Output dimension: 2 * num_frequencies (sin + cos)
@@ -112,46 +114,3 @@ class ConditionalFourierFeatures(nn.Module):
     
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return self.encoder(x)
-
-
-def create_coordinate_encoder(
-    spatial_dim: int = 2,  # (x, y)
-    temporal_dim: int = 0,  # t (0 if not used)
-    use_fourier_spatial: bool = False,
-    use_fourier_temporal: bool = False,
-    num_frequencies: int = 128,
-    frequency_scale: float = 20.0,
-    spatial_max: float = 100.0,
-    temporal_max: float = 10.0
-) -> tuple[Optional[ConditionalFourierFeatures], Optional[ConditionalFourierFeatures], int]:
-    """
-    Factory function to create coordinate encoders.
-    
-    Returns:
-        (spatial_encoder, temporal_encoder, total_output_dim)
-    """
-    spatial_encoder = None
-    temporal_encoder = None
-    total_dim = 0
-    
-    if spatial_dim > 0:
-        spatial_encoder = ConditionalFourierFeatures(
-            input_dim=spatial_dim,
-            use_fourier=use_fourier_spatial,
-            num_frequencies=num_frequencies,
-            frequency_scale=frequency_scale,
-            input_max=spatial_max
-        )
-        total_dim += spatial_encoder.output_dim
-    
-    if temporal_dim > 0:
-        temporal_encoder = ConditionalFourierFeatures(
-            input_dim=temporal_dim,
-            use_fourier=use_fourier_temporal,
-            num_frequencies=num_frequencies,
-            frequency_scale=frequency_scale,
-            input_max=temporal_max
-        )
-        total_dim += temporal_encoder.output_dim
-    
-    return spatial_encoder, temporal_encoder, total_dim

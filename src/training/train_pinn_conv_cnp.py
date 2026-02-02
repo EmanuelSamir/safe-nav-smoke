@@ -18,8 +18,8 @@ import logging
 
 from src.models.model_based.pinn_conv_cnp import PINN_Conv_CNP
 from src.models.model_based.utils import ObsPINN
-from src.models.model_based.dataset import GlobalSmokeDataset, pinn_collate_fn
-from src.models.model_based.losses import BlindDiscoveryLoss
+from src.models.shared.datasets import GlobalSmokeDataset, pinn_collate_fn
+# from src.models.model_based.losses import BlindDiscoveryLoss
 from src.utils.eval_protocol import evaluate_10_15_protocol, evaluate_forecast_protocol
 from src.utils.visualize import log_pinn_fields, log_physics_params
 
@@ -78,7 +78,8 @@ def main(cfg: DictConfig):
         data_path=str(data_path),
         context_frames=10,
         target_frames=15,
-        info_ratio_per_frame=0.2,
+        min_points_ratio=0.05,
+        max_points_ratio=0.25,
         mode='train',
         max_samples=cfg.training.data.get("max_samples", None)
     )
@@ -87,7 +88,8 @@ def main(cfg: DictConfig):
         data_path=str(data_path),
         context_frames=10,
         target_frames=15,
-        info_ratio_per_frame=0.2,
+        min_points_ratio=0.05,
+        max_points_ratio=0.25,
         mode='val',
         max_samples=cfg.training.data.get("max_samples", None)
     )
@@ -110,11 +112,11 @@ def main(cfg: DictConfig):
         temporal_max=cfg.training.model.temporal_max
     ).to(device)
     
-    physics_loss_fn = BlindDiscoveryLoss().to(device)
-    log.info("Using BlindDiscoveryLoss (Navier-Stokes)")
+    # physics_loss_fn = BlindDiscoveryLoss().to(device)
+    log.info("Using pure ConvCNP (No Physics Loss)")
     
     optimizer = optim.Adam(
-        list(model.parameters()) + list(physics_loss_fn.parameters()), 
+        list(model.parameters()), 
         lr=cfg.training.optimizer.lr
     )
     
@@ -140,34 +142,25 @@ def main(cfg: DictConfig):
             
             # Metric Losses
             pred_s = output.smoke_dist.loc
-            loss_mse = torch.mean((pred_s.squeeze(-1) - query.values)**2)
             
-            # Physics Loss
-            # Flatten for PDE
-            pred_tensor = torch.cat([
-                output.u.view(-1, 1), 
-                output.v.view(-1, 1), 
-                output.smoke_dist.loc.view(-1, 1),
-                output.fu.view(-1, 1), 
-                output.fv.view(-1, 1)
-            ], dim=-1)
+            if query.mask is not None:
+                valid_mask = (~query.mask).float().unsqueeze(-1)
+                loss_mse = ((pred_s.squeeze(-1) - query.values)**2 * valid_mask.squeeze(-1)).sum() / (valid_mask.sum() + 1e-5)
+            else:
+                loss_mse = torch.mean((pred_s.squeeze(-1) - query.values)**2)
             
-            # Coords with gradients
-            coords_tensor = output.coords.view(-1, 3)
-            
-            loss_pde, pde_stats = physics_loss_fn(pred_tensor, coords_tensor)
+            # Physics Loss Removed
             
             mse_w = cfg.training.loss.mse_weight
-            pde_w = cfg.training.loss.pde_weight
-            total_loss = mse_w * loss_mse + pde_w * loss_pde
+            total_loss = mse_w * loss_mse
             
             total_loss.backward()
             torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
             optimizer.step()
             
             train_mse += loss_mse.item()
-            train_phys += loss_pde.item()
-            pbar.set_postfix({'MSE': loss_mse.item(), 'PDE': loss_pde.item()})
+            # train_phys += loss_pde.item()
+            pbar.set_postfix({'MSE': loss_mse.item()})
             
         # Logging
         avg_mse = train_mse / len(train_loader)
