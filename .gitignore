@@ -74,9 +74,6 @@ legacy/temp_files/
 !docs/*.gif
 !docs/*.mp4
 
-# Temporary scripts
-scripts/
-
 .antigravity-server
 .cache
 .gemini
