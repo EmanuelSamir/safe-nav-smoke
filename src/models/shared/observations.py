@@ -50,3 +50,13 @@ class Obs:
         if self.ts is None:
             raise ValueError("Time coordinates (ts) not available")
         return torch.stack([self.xs, self.ys, self.ts], dim=-1)
+
+    def swap_btd_to_tdb(self):
+        """Swap batch, time, and data dimensions."""
+        return Obs(
+            xs=self.xs.swapaxes(0, 1),
+            ys=self.ys.swapaxes(0, 1),
+            values=self.values.swapaxes(0, 1) if self.values is not None else None,
+            mask=self.mask.swapaxes(0, 1) if self.mask is not None else None,
+            ts=self.ts.swapaxes(0, 1) if self.ts is not None else None
+        )

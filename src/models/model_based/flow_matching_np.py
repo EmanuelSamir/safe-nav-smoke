@@ -3,7 +3,8 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import numpy as np
-from src.models.model_based.utils import ObsPINN
+from src.models.shared.observations import Obs
+# ObsPINN is deprecated. Using Obs.
 
 # ==========================================
 # FNP Architecture (Autonomous / No Flow Time Input)

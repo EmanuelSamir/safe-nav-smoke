@@ -14,8 +14,8 @@ import numpy as np
 
 # Imports
 from src.models.model_based.flow_matching_np import FlowNP
-from src.models.shared.datasets import GlobalSmokeDataset, pinn_collate_fn
-from src.models.model_based.utils import ObsPINN
+from src.models.shared.datasets import GlobalSpatiotemporalDataset, global_collate_fn
+from src.models.shared.observations import Obs
 
 log = logging.getLogger(__name__)
 
@@ -87,10 +87,9 @@ def main(cfg: DictConfig):
         
         data_path = Path(hydra.utils.get_original_cwd()) / cfg.training.data.data_path
         
-        ds = GlobalSmokeDataset(
+        ds = GlobalSpatiotemporalDataset(
             data_path=str(data_path),
-            context_frames=1,
-            target_frames=0, 
+            sequence_length=5, # Sequence for forecasting window
             min_points_ratio=0.05,
             max_points_ratio=0.5,
             mode='val', 
@@ -101,10 +100,10 @@ def main(cfg: DictConfig):
         y_size = getattr(ds, 'y_size', 50.0)
         
         batch_size = 1 # Reduced from 4
-        loader = DataLoader(ds, batch_size=batch_size, collate_fn=pinn_collate_fn)
+        loader = DataLoader(ds, batch_size=batch_size, collate_fn=global_collate_fn)
         
         # Init FlowNP
-        # dim_x=3 (x,y,t)
+        # dim_x=3 (x,y,t) -> Adjusted to 2 as per user's FlowNP changes
         # Reduced size for speed/memory on Mac
         model = FlowNP(
             dim_x=2,
@@ -128,7 +127,27 @@ def main(cfg: DictConfig):
             batch_losses = []
             
             for i, batch in enumerate(loader):
-                full_obs = batch[0]
+                full_obs = batch[0] # ctx is usually batch[0] in GlobalDataset? No, check getitem.
+                # GlobalSpatiotemporalDataset returns ctx, trg, total.
+                # But here we implement CUSTOM split logic for forecasting?
+                # "Sorted Time Split" relies on full_obs (total) which is batch[2].
+                # Wait, datasets.py: returns ctx_obs, trg_obs, total_obs
+                # collate_fn: returns ctx_list, trg_list, total_list...
+                # So batch[0] = ctx, batch[1] = trg, batch[2] = total.
+                
+                # In previous code:
+                # full_obs = batch[0] 
+                # GlobalSmokeDataset returned: ctx_obs, trg_obs, total_obs
+                # So batch[0] was ctx?
+                # The code used `full_obs.xs` and randomly split it.
+                # If batch[0] corresponds to Context (subset), splitting it further is weird.
+                # We should use TOTAL obs (batch[2]) to do custom split.
+                # OR rename variable properly.
+                
+                # Let's assume user wants to control split dynamically here.
+                # So use TOTAL obs.
+                full_obs = batch[2]
+                
                 B, N = full_obs.xs.shape
                 
                 # Sorted Time Split (Forecasting)
@@ -142,7 +161,8 @@ def main(cfg: DictConfig):
                 c_vs = full_obs.values[:, :num_ctx].to(device)
                 c_mask = full_obs.mask[:, :num_ctx].to(device)
                 
-                ctx = ObsPINN(xs=c_xs, ys=c_ys, values=c_vs, mask=c_mask)
+                # Obs used to be ObsPINN. Now Obs.
+                ctx = Obs(xs=c_xs, ys=c_ys, values=c_vs, mask=c_mask)
                 
                 trg = full_obs # Reconstruct full
                 trg.xs = trg.xs.to(device)
@@ -175,7 +195,7 @@ def main(cfg: DictConfig):
             for i, batch in enumerate(loader):
                 if cases_plotted >= 3: break
                 
-                full_obs = batch[0]
+                full_obs = batch[2] # Use Total Obs
                 B, N = full_obs.xs.shape
                 
                 # For each element in batch
@@ -209,7 +229,7 @@ def main(cfg: DictConfig):
                     ctx_vs = b_vs[is_ctx].unsqueeze(0).to(device)
                     ctx_mask = torch.zeros((1, ctx_xs.shape[1]), dtype=torch.bool).to(device)
                     
-                    ctx = ObsPINN(xs=ctx_xs, ys=ctx_ys, values=ctx_vs, mask=ctx_mask)
+                    ctx = Obs(xs=ctx_xs, ys=ctx_ys, values=ctx_vs, mask=ctx_mask)
                     
                     # Plot Setup
                     num_frames = min(len(unique_times), 5) # Max 5 frames
@@ -228,7 +248,7 @@ def main(cfg: DictConfig):
                         trg_vs = b_vs[is_frame].unsqueeze(0).to(device)
                         trg_mask = torch.zeros((1, trg_xs.shape[1]), dtype=torch.bool).to(device)
                         
-                        trg = ObsPINN(xs=trg_xs, ys=trg_ys, values=trg_vs, mask=trg_mask)
+                        trg = Obs(xs=trg_xs, ys=trg_ys, values=trg_vs, mask=trg_mask)
                         
                         # Predict
                         # We predict ONE frame at a time query

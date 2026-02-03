@@ -3,6 +3,25 @@ import torch.nn as nn
 import torch.nn.functional as F
 from typing import Optional
 
+def init_weights(m):
+    """Xavier initialization."""
+    if isinstance(m, nn.Linear):
+        nn.init.xavier_normal_(m.weight)
+        if m.bias is not None:
+            m.bias.data.fill_(0)
+class MLP(nn.Module):
+    """Simple MLP."""
+    def __init__(self, layer_sizes, output_dim, activation=nn.ReLU):
+        super().__init__()
+        layers = []
+        for i in range(len(layer_sizes) - 1):
+            layers.append(nn.Linear(layer_sizes[i], layer_sizes[i+1]))
+            layers.append(activation())
+        layers.append(nn.Linear(layer_sizes[-1], output_dim))
+        self.net = nn.Sequential(*layers)
+    
+    def forward(self, x):
+        return self.net(x)
 class SoftplusSigma(nn.Module):
     """Helper to convert raw network output to a valid standard deviation."""
     def __init__(self, min_std: float = 0.1, scale: float = 0.9):
