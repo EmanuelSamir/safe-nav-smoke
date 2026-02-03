@@ -83,3 +83,4 @@ legacy/temp_files/
 .config
 
 output.log
+.env

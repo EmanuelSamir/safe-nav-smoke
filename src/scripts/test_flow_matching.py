@@ -1,4 +1,3 @@
-
 import hydra
 from omegaconf import DictConfig
 import torch
@@ -14,276 +13,198 @@ import numpy as np
 
 # Imports
 from src.models.model_based.flow_matching_np import FlowNP
-from src.models.shared.datasets import GlobalSpatiotemporalDataset, global_collate_fn
-from src.models.shared.observations import Obs
+from src.models.shared.datasets import GlobalSmokeDataset, pinn_collate_fn
+from src.models.model_based.utils import ObsPINN
 
 log = logging.getLogger(__name__)
 
-def visualize_reconstruction(context, target, pred_samples, b_idx, save_dir, epoch, case_id, x_lim=50, y_lim=50):
+def visualize_static_reconstruction(model, context_obs, gt_grid, device, save_path, title_suffix="", x_size=50, y_size=50):
     """
-    Visualizes Flow Matching Reconstruction.
+    Visualizes reconstruction of a static frame on a dense grid.
     """
-    if context.mask is not None:
-        c_mask = ~context.mask[b_idx]
-    else:
-        c_mask = slice(None)
+    model.eval()
+    with torch.no_grad():
+        # Create Dense Grid Query
+        H, W = gt_grid.shape
+        y_coords = torch.linspace(0, y_size, H)
+        x_coords = torch.linspace(0, x_size, W)
+        grid_y, grid_x = torch.meshgrid(y_coords, x_coords, indexing='ij')
         
-    cx = context.xs[b_idx][c_mask].detach().cpu().numpy()
-    cy = context.ys[b_idx][c_mask].detach().cpu().numpy()
-    cv = context.values[b_idx][c_mask].detach().cpu().numpy()
-    
-    tx = target.xs[b_idx].detach().cpu().numpy()
-    ty = target.ys[b_idx].detach().cpu().numpy()
-    tv = target.values[b_idx].detach().cpu().numpy()
-    pv = pred_samples[b_idx].detach().cpu().numpy().flatten()
-    
-    x_max = max(tx.max(), cx.max(), x_lim)
-    y_max = max(ty.max(), cy.max(), y_lim)
+        flat_x = grid_x.reshape(-1)
+        flat_y = grid_y.reshape(-1)
+        
+        query_xs = flat_x.unsqueeze(0).to(device) # (1, H*W)
+        query_ys = flat_y.unsqueeze(0).to(device)
+        
+        query_mask = torch.zeros_like(query_xs, dtype=torch.bool)
+        
+        query = ObsPINN(xs=query_xs, ys=query_ys, values=torch.zeros_like(query_xs), mask=query_mask)
+        
+        # Sample from model
+        # steps=20 ensures good integration
+        pred_vals = model.sample(context_obs, query, steps=20) # (1, N_q, 1)
+        pred_grid = pred_vals[0].reshape(H, W).cpu().numpy()
+        
+        # Context Points
+        cx = context_obs.xs[0].cpu().numpy()
+        cy = context_obs.ys[0].cpu().numpy()
+        cv = context_obs.values[0].cpu().numpy()
 
-    fig, axes = plt.subplots(1, 4, figsize=(24, 5))
-    
-    sc1 = axes[0].scatter(cx, cy, c=cv, cmap='plasma', vmin=0, vmax=1)
-    axes[0].set_title(f"Context N={len(cx)}")
-    axes[0].set_xlim(0, x_max)
-    axes[0].set_ylim(0, y_max)
-    plt.colorbar(sc1, ax=axes[0])
-    
-    sc2 = axes[1].scatter(tx, ty, c=tv, cmap='plasma', vmin=0, vmax=1)
-    axes[1].set_title("Ground Truth")
-    axes[1].set_xlim(0, x_max)
-    axes[1].set_ylim(0, y_max)
-    plt.colorbar(sc2, ax=axes[1])
-    
-    sc3 = axes[2].scatter(tx, ty, c=pv, cmap='plasma', vmin=0, vmax=1)
-    axes[2].set_title(f"Flow Sample (Ep {epoch})")
-    axes[2].set_xlim(0, x_max)
-    axes[2].set_ylim(0, y_max)
-    plt.colorbar(sc3, ax=axes[2])
-    
-    # Error Map
-    err = np.abs(tv - pv)
-    sc4 = axes[3].scatter(tx, ty, c=err, cmap='viridis', vmin=0, vmax=0.5)
-    axes[3].set_title("Abs Error")
-    axes[3].set_xlim(0, x_max)
-    axes[3].set_ylim(0, y_max)
-    plt.colorbar(sc4, ax=axes[3])
-    
-    save_path = os.path.join(save_dir, f"flownp_case_{case_id}_ep{epoch}.png")
-    plt.savefig(save_path)
-    plt.close()
+        fig, axes = plt.subplots(1, 3, figsize=(18, 5))
+        
+        # 1. Ground Truth
+        im1 = axes[0].imshow(gt_grid, origin='lower', extent=[0, x_size, 0, y_size], cmap='plasma', vmin=0, vmax=1)
+        axes[0].set_title(f"Ground Truth {title_suffix}")
+        plt.colorbar(im1, ax=axes[0])
+        
+        # 2. Context Points
+        axes[1].scatter(cx, cy, c=cv, cmap='plasma', vmin=0, vmax=1, s=10)
+        axes[1].set_title(f"Context Points (N={len(cx)})")
+        axes[1].set_xlim(0, x_size)
+        axes[1].set_ylim(0, y_size)
+        axes[1].set_aspect('equal')
+        
+        # 3. Model Reconstruction
+        im3 = axes[2].imshow(pred_grid, origin='lower', extent=[0, x_size, 0, y_size], cmap='plasma', vmin=0, vmax=1)
+        axes[2].set_title(f"Reconstruction")
+        plt.colorbar(im3, ax=axes[2])
+        
+        plt.tight_layout()
+        plt.savefig(save_path)
+        plt.close()
 
 @hydra.main(version_base=None, config_path="../../config", config_name="training/pinn_conv_cnp_train")
 def main(cfg: DictConfig):
     try:
         torch.manual_seed(cfg.training.seed)
+        np.random.seed(cfg.training.seed)
+        
         device = torch.device("cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu")
-        # device = torch.device("cpu") # Force CPU to debug "Salio error"
         log.info(f"Using device: {device}")
         
         output_dir = hydra.core.hydra_config.HydraConfig.get().runtime.output_dir
         os.makedirs(output_dir, exist_ok=True)
         
-        log.info("Debugging FlowNP (Transformer) on Static Data")
+        log.info("Debugging FlowNP: Training on Batch of Static Frames")
         
         data_path = Path(hydra.utils.get_original_cwd()) / cfg.training.data.data_path
         
-        ds = GlobalSpatiotemporalDataset(
+        # Load Data
+        ds = GlobalSmokeDataset(
             data_path=str(data_path),
-            sequence_length=5, # Sequence for forecasting window
-            min_points_ratio=0.05,
-            max_points_ratio=0.5,
-            mode='val', 
-            max_samples=32
+            context_frames=1,   # Single frame per sample
+            target_frames=0, 
+            min_points_ratio=0.05, 
+            max_points_ratio=0.25, # Sparse enough to be interesting
+            mode='train', 
+            max_samples=32 
         )
         
         x_size = getattr(ds, 'x_size', 50.0)
         y_size = getattr(ds, 'y_size', 50.0)
         
-        batch_size = 1 # Reduced from 4
-        loader = DataLoader(ds, batch_size=batch_size, collate_fn=global_collate_fn)
+        # Loader
+        loader = DataLoader(ds, batch_size=8, shuffle=True, collate_fn=pinn_collate_fn, drop_last=True)
         
-        # Init FlowNP
-        # dim_x=3 (x,y,t) -> Adjusted to 2 as per user's FlowNP changes
-        # Reduced size for speed/memory on Mac
+        # Init Model (dim_x=2 for Static)
         model = FlowNP(
             dim_x=2,
             dim_y=1,
-            d_model=64,   # Reduced from 128
-            num_layers=2, # Reduced from 4
-            nhead=2,      # Reduced from 4
-            dim_posenc=10,
-            timesteps=20
+            d_model=128,  
+            num_layers=4, 
+            nhead=4,      
+            dim_posenc=16,
+            timesteps=20,
+            bounds=[x_size, y_size]
         ).to(device)
         
-        optimizer = optim.Adam(model.parameters(), lr=8e-4) # Lower LR for Transformer sometimes better
+        optimizer = optim.Adam(model.parameters(), lr=5e-4) # Slightly higher LR for batch
+        scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=1000)
         
-        epochs = 20 # More epochs for Transformer convergence
-        epoch_pbar = tqdm(range(epochs), desc="Training")
+        epochs = 200
+        pbar = tqdm(range(epochs), desc="Training")
         
-        history_loss = []
-
-        for epoch in epoch_pbar:
+        for epoch in pbar:
             model.train()
             batch_losses = []
             
-            for i, batch in enumerate(loader):
-                full_obs = batch[0] # ctx is usually batch[0] in GlobalDataset? No, check getitem.
-                # GlobalSpatiotemporalDataset returns ctx, trg, total.
-                # But here we implement CUSTOM split logic for forecasting?
-                # "Sorted Time Split" relies on full_obs (total) which is batch[2].
-                # Wait, datasets.py: returns ctx_obs, trg_obs, total_obs
-                # collate_fn: returns ctx_list, trg_list, total_list...
-                # So batch[0] = ctx, batch[1] = trg, batch[2] = total.
+            for batch in loader:
+                # Unpack Batch
+                # batch: ctx, trg, total, inflow, idx, t0
+                full_obs = batch[2] # Total points available
                 
-                # In previous code:
-                # full_obs = batch[0] 
-                # GlobalSmokeDataset returned: ctx_obs, trg_obs, total_obs
-                # So batch[0] was ctx?
-                # The code used `full_obs.xs` and randomly split it.
-                # If batch[0] corresponds to Context (subset), splitting it further is weird.
-                # We should use TOTAL obs (batch[2]) to do custom split.
-                # OR rename variable properly.
+                full_obs = full_obs.to(device)
                 
-                # Let's assume user wants to control split dynamically here.
-                # So use TOTAL obs.
-                full_obs = batch[2]
+                # Create Dynamic Context (Inpainting Task)
+                # Take first 20% of points as context
+                B, N_max = full_obs.xs.shape
+                num_ctx = int(N_max * 0.5)
+                if num_ctx < 5: num_ctx = 5 # Safety
                 
-                B, N = full_obs.xs.shape
+                # Context
+                c_xs = full_obs.xs[:, :num_ctx]
+                c_ys = full_obs.ys[:, :num_ctx]
+                c_vs = full_obs.values[:, :num_ctx]
+                c_mask = full_obs.mask[:, :num_ctx] # Preserves padding mask if present
                 
-                # Sorted Time Split (Forecasting)
-                # Since data is sequential frames, splitting by index splits by time implicitly.
-                # Ratio 0.2 ~ 1 frame. 0.8 ~ 4 frames.
-                ratio = np.random.uniform(0.2, 0.4) 
-                num_ctx = max(10, int(N * ratio))
+                ctx = ObsPINN(xs=c_xs, ys=c_ys, values=c_vs, mask=c_mask)
                 
-                c_xs = full_obs.xs[:, :num_ctx].to(device)
-                c_ys = full_obs.ys[:, :num_ctx].to(device)
-                c_vs = full_obs.values[:, :num_ctx].to(device)
-                c_mask = full_obs.mask[:, :num_ctx].to(device)
-                
-                # Obs used to be ObsPINN. Now Obs.
-                ctx = Obs(xs=c_xs, ys=c_ys, values=c_vs, mask=c_mask)
-                
-                trg = full_obs # Reconstruct full
-                trg.xs = trg.xs.to(device)
-                trg.ys = trg.ys.to(device)
-                trg.values = trg.values.to(device)
-                trg.mask = trg.mask.to(device)
+                # Target: All points (Reconstruction)
+                trg = full_obs
                 
                 optimizer.zero_grad()
                 loss = model(ctx, trg)
                 loss.backward()
-                torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
                 optimizer.step()
                 
                 batch_losses.append(loss.item())
-            
+
+            scheduler.step()
             avg_loss = np.mean(batch_losses)
-            history_loss.append(avg_loss)
-            
-            if epoch % 10 == 0:
-                 tqdm.write(f"Ep {epoch}: Loss {avg_loss:.5f}")
-                 
-            epoch_pbar.set_postfix({'Loss': f"{avg_loss:.4f}"})
-
-        # --- Forecasting Visualization ---
-        log.info("Generating Forecasting Visualizations (IC -> Future Sequence)...")
-        model.eval()
-        cases_plotted = 0
+            pbar.set_postfix({'Loss': f"{avg_loss:.6f}"})
         
-        with torch.no_grad():
-            for i, batch in enumerate(loader):
-                if cases_plotted >= 3: break
-                
-                full_obs = batch[2] # Use Total Obs
-                B, N = full_obs.xs.shape
-                
-                # For each element in batch
-                for b_idx in range(B):
-                    if cases_plotted >= 3: break
-                    
-                    # Extract valid data for this sample
-                    if full_obs.mask is not None:
-                         valid_mask = ~full_obs.mask[b_idx]
-                    else:
-                         valid_mask = slice(None)
-                         
-                    b_xs = full_obs.xs[b_idx][valid_mask]
-                    b_ys = full_obs.ys[b_idx][valid_mask]
-                    b_ts = full_obs.ts[b_idx][valid_mask]
-                    b_vs = full_obs.values[b_idx][valid_mask]
-                    
-                    # Identify Unique Times
-                    unique_times = torch.unique(b_ts).sort()[0]
-                    if len(unique_times) < 2:
-                        log.warning(f"Skipping case {cases_plotted}: Not enough time steps ({len(unique_times)})")
-                        continue
-                    
-                    # Define Context (IC): First Time Step
-                    t0 = unique_times[0]
-                    is_ctx = (b_ts == t0)
-                    
-                    # Context Data
-                    ctx_xs = b_xs[is_ctx].unsqueeze(0).to(device) # (1, N_c)
-                    ctx_ys = b_ys[is_ctx].unsqueeze(0).to(device)
-                    ctx_vs = b_vs[is_ctx].unsqueeze(0).to(device)
-                    ctx_mask = torch.zeros((1, ctx_xs.shape[1]), dtype=torch.bool).to(device)
-                    
-                    ctx = Obs(xs=ctx_xs, ys=ctx_ys, values=ctx_vs, mask=ctx_mask)
-                    
-                    # Plot Setup
-                    num_frames = min(len(unique_times), 5) # Max 5 frames
-                    fig, axes = plt.subplots(2, num_frames, figsize=(4*num_frames, 8))
-                    
-                    # If only 1 frame column, wrap in list
-                    if num_frames == 1: axes = np.array([axes]).T
-                    
-                    for t_idx in range(num_frames):
-                        t_val = unique_times[t_idx]
-                        is_frame = (b_ts == t_val)
-                        
-                        # Target Points for this frame
-                        trg_xs = b_xs[is_frame].unsqueeze(0).to(device)
-                        trg_ys = b_ys[is_frame].unsqueeze(0).to(device)
-                        trg_vs = b_vs[is_frame].unsqueeze(0).to(device)
-                        trg_mask = torch.zeros((1, trg_xs.shape[1]), dtype=torch.bool).to(device)
-                        
-                        trg = Obs(xs=trg_xs, ys=trg_ys, values=trg_vs, mask=trg_mask)
-                        
-                        # Predict
-                        # We predict ONE frame at a time query
-                        pred_vals = model.sample(ctx, trg, steps=20) # (1, N_t, 1)
-                        pred_flat = pred_vals[0].cpu().numpy().flatten()
-                        
-                        # Ground Truth
-                        gt_flat = trg_vs[0].cpu().numpy()
-                        frame_x = trg_xs[0].cpu().numpy()
-                        frame_y = trg_ys[0].cpu().numpy()
-                        
-                        # Plot GT (Top Row)
-                        sc_gt = axes[0, t_idx].scatter(frame_x, frame_y, c=gt_flat, cmap='plasma', vmin=0, vmax=1)
-                        axes[0, t_idx].set_title(f"GT t={t_val:.2f}")
-                        axes[0, t_idx].set_xlim(0, x_size)
-                        axes[0, t_idx].set_ylim(0, y_size)
-                        
-                        # Plot Pred (Bottom Row)
-                        sc_pred = axes[1, t_idx].scatter(frame_x, frame_y, c=pred_flat, cmap='plasma', vmin=0, vmax=1)
-                        title = "IC (Context)" if t_idx == 0 else f"Pred t={t_val:.2f}"
-                        axes[1, t_idx].set_title(title)
-                        axes[1, t_idx].set_xlim(0, x_size)
-                        axes[1, t_idx].set_ylim(0, y_size)
-                    
-                    plt.tight_layout()
-                    save_path = os.path.join(output_dir, f"forecast_case_{cases_plotted}_ep{epochs}.png")
-                    plt.savefig(save_path)
-                    plt.close()
-                    log.info(f"Saved forecasting sequence to {save_path}")
-                    cases_plotted += 1
+        log.info("Training Complete. Generating Visualizations...")
+        
+        # Visualize 5 Random Cases
+        for i in range(5):
+            # Sample random item from dataset directly (getting fresh points)
+            rand_idx = np.random.randint(0, len(ds))
+            raw_item = ds[rand_idx]
+            
+            # Unpack (ObsPINN, ObsPINN, ObsPINN, Inflow, Idx, t_offset)
+            _, _, total_obs, _, ep_idx, t_offset = raw_item
+            
+            # Prepare GT Grid for this specific sample time
+            # t_offset is the exact time of the frame sampled
+            # We need to find the frame index in the raw data
+            # dt = ds.dt
+            frame_idx = int(round(t_offset / ds.dt))
+            gt_grid = ds.smoke_data[ep_idx, frame_idx]
+            
+            # Prepare Context (First 20%)
+            # Need to put into batch format (1, N)
+            N_pts = len(total_obs.xs)
+            num_ctx = int(N_pts * 0.5)
+            
+            # Slicing 1D tensors
+            c_xs = total_obs.xs[:num_ctx].unsqueeze(0).to(device)
+            c_ys = total_obs.ys[:num_ctx].unsqueeze(0).to(device)
+            c_vs = total_obs.values[:num_ctx].unsqueeze(0).to(device)
+            c_mask = torch.zeros((1, num_ctx), dtype=torch.bool).to(device)
+            
+            ctx = ObsPINN(xs=c_xs, ys=c_ys, values=c_vs, mask=c_mask)
+            
+            save_path = os.path.join(output_dir, f"viz_sample_{i}_ep{ep_idx}_t{t_offset:.1f}.png")
+            visualize_static_reconstruction(
+                model, ctx, gt_grid, device, save_path, 
+                title_suffix=f"(Ep {ep_idx} t={t_offset:.1f})",
+                x_size=x_size, y_size=y_size
+            )
+            
+        log.info(f"Done. Check {output_dir}")
 
-        log.info(f"Completed. Output: {output_dir}")
-    
     except Exception as e:
-        log.error(f"Error during execution: {e}", exc_info=True)
+        log.error(f"Error: {e}", exc_info=True)
         raise e
 
 if __name__ == "__main__":
