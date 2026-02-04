@@ -1,5 +1,5 @@
 """
-RNP - Recurrent Neural Process
+RNP - Recurrent Neural Process (Spatial / ConvLSTM Variant)
 """
 
 import torch
@@ -14,32 +14,33 @@ from src.models.shared.outputs import RNPOutput
 from src.models.shared.fourier_features import ConditionalFourierFeatures
 from src.models.shared.layers import MLP, init_weights
 from src.models.shared.observations import Obs
+from src.models.shared.conv_lstm import ConvLSTM
 
 
 @dataclass
 class RNPConfig:
     """Configuration for RNP model."""
     # Dimensions
-    r_dim: int = 128
-    h_dim: int = 128
+    r_dim: int = 128 # Used as channel dim for enc
+    h_dim: int = 128 # Used as hidden channel dim for LSTM
     
     # use_actions: bool = False
-    encoder_num_layers: int = 3
-    decoder_num_layers: int = 3
+    encoder_num_layers: int = 2
+    decoder_num_layers: int = 2
     lstm_num_layers: int = 1
     min_std: float = 0.01
     
     # Fourier Features if enabled
     use_fourier_encoder: bool = False
-    use_fourier_decoder: bool = False
+    use_fourier_decoder: bool = True
     fourier_frequencies: int = 128
     fourier_scale: float = 20.0
     spatial_max: float = 30.0
     
     # Conv Encoder Options
-    use_conv_encoder: bool = False
-    grid_res: int = 32
-    grid_range: Tuple[float, float] = (-1, 1)
+    use_conv_encoder: bool = True
+    grid_res: int = 64
+    grid_range: Tuple[float, float] = (0, 30)
 
 # --- Copied from pinn_conv_cnp.py (Adapted) ---
 
@@ -64,41 +65,68 @@ class RBFSetConv(nn.Module):
 
     def forward(self, x_c, y_c, mask: Optional[torch.Tensor] = None):
         """
+        Memory-efficient implementation using chunking over grid points.
         x_c: (B, N, 2) normalized spatial
         y_c: (B, N, 1) smoke values
         """
-        # Distances: (B, 2, N, 1) - (1, 2, 1, M)
-        diff = x_c.permute(0, 2, 1).unsqueeze(-1) - self.grid_points.unsqueeze(2)
-        dists_sq = (diff ** 2).sum(dim=1) # (B, N, M)
+        B, N, _ = x_c.shape
+        M = self.grid_points.shape[-1]
         
-        # Weights (Gaussian kernel)
-        weights = torch.exp(-0.5 * dists_sq / (self.sigma ** 2))
-
-        # Apply mask if provided (True = Padding)
+        # Output buffers
+        # Channels: Density, Value
+        grid_out = torch.zeros(B, 2, M, device=x_c.device)
+        
+        # Chunk size for grid points (M)
+        # Adjust based on memory. 1024 is safe (approx 32x32 block)
+        chunk_size = 1024 
+        
+        # Prepare mask if present
+        mask_expanded = None
         if mask is not None:
-             # mask: (B, N) -> (B, N, 1)
              if mask.dim() == 2:
                   mask = mask.unsqueeze(-1)
-             mask_expanded = mask.float() # (B, N, 1) Ensure float for multiplication
-             # Mask is True (1) for Valid, False (0) for Padding.
-             # We want to keep Valid, zero out Padding.
-             weights = weights * mask_expanded
+             mask_expanded = mask.float() # (B, N, 1)
+
+        # Iterate over grid points in chunks to save memory
+        for i in range(0, M, chunk_size):
+            end = min(i + chunk_size, M)
+            # Slice grid points: (1, 2, chunk)
+            grid_chunk = self.grid_points[..., i:end]
+            
+            # Distances: (B, 2, N, 1) - (1, 2, 1, chunk)
+            # This creates (B, 2, N, chunk) which is much smaller than full (B, 2, N, M)
+            diff = x_c.permute(0, 2, 1).unsqueeze(-1) - grid_chunk.unsqueeze(2)
+            dists_sq = (diff ** 2).sum(dim=1) # (B, N, chunk)
+            
+            # Weights
+            weights = torch.exp(-0.5 * dists_sq / (self.sigma ** 2))
+            
+            # Apply Mask
+            if mask_expanded is not None:
+                weights = weights * mask_expanded
+            
+            # Accumulate Density: sum(weights) -> (B, 1, chunk)
+            density_chunk = weights.sum(dim=1, keepdim=True)
+            
+            # Accumulate Values: features @ weights -> (B, 1, chunk)
+            # features: (B, 1, N)
+            features = y_c.permute(0, 2, 1)
+            value_chunk = torch.bmm(features, weights)
+            
+            # Store in output buffer
+            grid_out[:, 0:1, i:end] = density_chunk
+            grid_out[:, 1:2, i:end] = value_chunk
+
+        # Normalize values by density
+        density = grid_out[:, 0:1, :]
+        weighted_sum = grid_out[:, 1:2, :]
         
-        # Density (sum of weights per grid point)
-        density = weights.sum(dim=1, keepdim=True) # (B, 1, M)
+        # Avoid division by zero
+        normalized_values = weighted_sum / (density + 1e-5)
         
-        # Features: [smoke]
-        features = y_c.permute(0, 2, 1) # (B, 1, N)
+        out = torch.cat([density, normalized_values], dim=1)
         
-        # Weighted sum: (B, 1, N) @ (B, N, M) -> (B, 1, M)
-        weighted_sum = torch.bmm(features, weights)
-        
-        # Normalize by density (Safe division)
-        # Channels: Density, Value
-        out = torch.cat([density, weighted_sum / (density + 1e-5)], dim=1) # (B, 2, M)
-        
-        # Reshape to grid (B, 2, Res, Res)
-        return out.reshape(out.shape[0], 2, self.grid_res, self.grid_res)
+        return out.reshape(B, 2, self.grid_res, self.grid_res)
 
 class ConvDeepSet(nn.Module):
     """Simple 5-layer CNN with residual connections"""
@@ -106,9 +134,11 @@ class ConvDeepSet(nn.Module):
         super().__init__()
         self.net = nn.Sequential(
             nn.Conv2d(in_channels, hidden, 5, padding=2), nn.BatchNorm2d(hidden), nn.ReLU(),
+            nn.AvgPool2d(2), # 64 -> 32
             nn.Conv2d(hidden, hidden, 5, padding=2), nn.BatchNorm2d(hidden), nn.ReLU(),
+            nn.AvgPool2d(2), # 32 -> 16
             nn.Conv2d(hidden, hidden, 5, padding=2), nn.BatchNorm2d(hidden), nn.ReLU(),
-            nn.Conv2d(hidden, hidden, 5, padding=2), nn.BatchNorm2d(hidden), nn.ReLU(),
+            nn.AvgPool2d(2), # 16 -> 8
             nn.Conv2d(hidden, latent_dim, 5, padding=2), 
             nn.BatchNorm2d(latent_dim), nn.Tanh() 
         )
@@ -122,39 +152,39 @@ class ConvEncoder(nn.Module):
         self.config = config
         
         seed_res = config.grid_res
-        self.set_conv = RBFSetConv(grid_res=seed_res, sigma=2.0/seed_res, grid_range=config.grid_range) # Sigma relative to grid?
+        
+        # FIXED: RBFSetConv must handle [-1, 1] range because we normalize inputs to [-1, 1] in forward()
+        self.set_conv = RBFSetConv(grid_res=seed_res, sigma=2.0/seed_res, grid_range=(-1, 1))
         
         # Channels: Density (1) + Smoke (1) = 2
+        # Use simple striding to reduce resolution if needed, but current ConvDeepSet does pooling.
         self.processor = ConvDeepSet(in_channels=2, hidden=config.h_dim, latent_dim=config.h_dim) 
         
-        flat_dim = config.h_dim * seed_res * seed_res
-        self.projector = nn.Sequential(
-            nn.Flatten(),
-            nn.Linear(flat_dim, config.r_dim),
-            nn.ReLU()
-        )
+        # REMOVED PROJECTOR: We now return the grid
+        self.resolution_reduction = 8 # 3 AvgPools of 2
+        self.final_res = seed_res // self.resolution_reduction
 
     def forward(self, obs: Obs) -> torch.Tensor:
         """
         Encode sequence of observations.
         obs.xs: (B, T, P, 1)
+        Returns: (B, T, Channels, H, W)
         """
         B, T, P, _ = obs.xs.shape
         
         # Flatten Batch and Time
         # xs: (B*T, P, 1)
-        xs_flat = obs.xs.view(B*T, P, 1)
-        ys_flat = obs.ys.view(B*T, P, 1)
+        xs_flat = obs.xs.reshape(B*T, P, 1)
+        ys_flat = obs.ys.reshape(B*T, P, 1)
         pts = torch.cat([xs_flat, ys_flat], dim=-1) # (BT, P, 2)
         
-        vals_flat = obs.values.view(B*T, P, 1)
+        vals_flat = obs.values.reshape(B*T, P, 1)
         
         mask_flat = None
         if obs.mask is not None:
-            mask_flat = obs.mask.view(B*T, P) # (BT, P)
+            mask_flat = obs.mask.reshape(B*T, P) # (BT, P)
             
         # Normalize coordinates to [-1, 1]
-        # x_norm = 2 * (x - min) / (max - min) - 1
         pts_norm = 2.0 * (pts / self.config.spatial_max) - 1.0 # Assuming min=0
         
         # Grid Encoding
@@ -162,25 +192,48 @@ class ConvEncoder(nn.Module):
         grid = self.set_conv(pts_norm, vals_flat, mask=mask_flat)
         
         # CNN Processing
-        # latent_grid: (BT, H, Res, Res)
+        # latent_grid: (BT, H, Res/8, Res/8)
         latent_grid = self.processor(grid)
         
-        # Project to vector
-        # r: (BT, r_dim)
-        r = self.projector(latent_grid)
-        
-        # Reshape back to (B, T, r_dim)
-        return r.view(B, T, -1)
+        # Reshape back to (B, T, C, H, W)
+        _, C, H, W = latent_grid.shape
+        return latent_grid.view(B, T, C, H, W)
+
+    def visualize_encoding(self, obs: Obs, save_path="encoder_debug.png"):
+        """Visualization tool (Unchanged logic, just for debugging RBF)"""
+        import matplotlib.pyplot as plt
+        device = obs.xs.device
+        self.eval()
+        with torch.no_grad():
+            b_idx = 0; t_idx = 0
+            xs = obs.xs[b_idx, t_idx].cpu().squeeze().numpy()
+            ys = obs.ys[b_idx, t_idx].cpu().squeeze().numpy()
+            vals = obs.values[b_idx, t_idx].cpu().squeeze().numpy()
+            
+            xs_enc = obs.xs[b_idx:b_idx+1, t_idx:t_idx+1].reshape(1, -1, 1)
+            ys_enc = obs.ys[b_idx:b_idx+1, t_idx:t_idx+1].reshape(1, -1, 1)
+            vals_enc = obs.values[b_idx:b_idx+1, t_idx:t_idx+1].reshape(1, -1, 1)
+            
+            pts = torch.cat([xs_enc, ys_enc], dim=-1)
+            pts_norm = 2.0 * (pts / self.config.spatial_max) - 1.0
+            grid = self.set_conv(pts_norm, vals_enc)
+            grid_np = grid.cpu().numpy()
+            
+            fig, axes = plt.subplots(1, 3, figsize=(15, 5))
+            axes[0].scatter(xs, ys, c=vals, s=10)
+            axes[1].imshow(grid_np[0, 0].T, origin='lower')
+            axes[2].imshow(grid_np[0, 1].T, origin='lower')
+            plt.savefig(save_path)
+            plt.close()
+
 
 # -----------------------------------------------
 
 class Encoder(nn.Module):
-    """Encodes observations into representation r."""
+    """(Deprecated) Vector Encoder."""
     def __init__(self, config: RNPConfig):
         super().__init__()
         self.config = config
-        
-        # Fourier encoding for spatial coordinates
         self.spatial_encoder = ConditionalFourierFeatures(
             input_dim=2,
             use_fourier=config.use_fourier_encoder,
@@ -188,79 +241,61 @@ class Encoder(nn.Module):
             frequency_scale=config.fourier_scale,
             input_max=config.spatial_max
         )
-        
-        # MLP: (fourier_features, value) -> r
         input_dim = self.spatial_encoder.output_dim + 1
         layer_sizes = [input_dim] + [config.h_dim] * config.encoder_num_layers
         self.net = MLP(layer_sizes, config.r_dim)
     
     def forward(self, obs: Obs) -> torch.Tensor:
-        """Encode observation to representation."""
-        # Encode coordinates
-        # obs.xs: (B, T, P, 1) -> cat -> (B, T, P, 2)
         spatial_coords = torch.cat([obs.xs, obs.ys], dim=-1)
         spatial_features = self.spatial_encoder(spatial_coords)
-        
-        # Concatenate with values: (x, y, value)
-        values = obs.values
-        # values shape: (B, T, P, input_dim)
-        inputs = torch.cat([spatial_features, values], dim=-1)
-        
-        # Encode
-        # embeddings shape: (B, T, P, r_dim)
+        inputs = torch.cat([spatial_features, obs.values], dim=-1)
         embeddings = self.net(inputs)
-        
-        # Aggregation step: mean with mask
         if obs.mask is not None:
-            mask_expanded = obs.mask.float()
-            if mask_expanded.dim() == embeddings.dim() - 1:
-                mask_expanded = mask_expanded.unsqueeze(-1)
-                
-            # mask_expanded shape: (B, T, P, 1)
-            # embeddings shape: (B, T, P, r_dim)
+            mask_expanded = obs.mask.float().unsqueeze(-1)
             sum_emb = (embeddings * mask_expanded).sum(dim=-2)
             count = mask_expanded.sum(dim=-2).clamp(min=1.0)
             R = (sum_emb / count)
-            # R shape: (B, T, r_dim)
         else:
-            # print("Warning: No mask provided for RNP encoder")
             R = embeddings.mean(dim=-2)
-        
         return R
 
 
 class Forecaster(nn.Module):
-    """LSTM-based dynamics model."""
+    """Contents ConvLSTM dynamics model."""
     def __init__(self, input_dim, hidden_dim, num_layers=1):
         super().__init__()
-        self.lstm = nn.LSTM(input_dim, hidden_dim, num_layers, batch_first=True)
+        # ConvLSTM expects input_dim as Channels
+        self.params = (input_dim, hidden_dim)
+        self.conv_lstm = ConvLSTM(
+            input_dim=input_dim,
+            hidden_dim=hidden_dim,
+            kernel_size=3,
+            num_layers=num_layers,
+            bias=True,
+            return_all_layers=False
+        )
     
     def forward(self, r_input, prev_hidden, future=0):
         """
         Args:
-            r_input: (B, T, input_dim) or (B, input_dim)
-            prev_hidden: (h, c) each (num_layers, B, hidden_dim)
-            future: unused for now
-        
-        Returns:
-            outputs: (B, T, hidden_dim)
-            state: (h, c)
+            r_input: (B, T, C, H, W)
+            prev_hidden: List of [(h, c)] tuples
         """
-        if r_input.dim() == 2:
-            r_input = r_input.unsqueeze(1)  # (B, 1, input_dim)
-            
-        out, (h, c) = self.lstm(r_input, prev_hidden)
-        # out is (B, T, hidden_dim)
-        return out, (h, c)
+        # ConvLSTM forward
+        last_layer_output, last_state_list = self.conv_lstm(r_input, prev_hidden)
+        
+        return last_layer_output, last_state_list
+
+    def init_hidden(self, batch_size, spatial_size, device):
+        return self.conv_lstm._init_hidden(batch_size, spatial_size, device)
 
 
 class Decoder(nn.Module):
-    """Decodes representation and query to predictions."""
+    """Spatial Decoder using Grid Sample/Interpolation."""
     def __init__(self, config: RNPConfig):
         super().__init__()
         self.config = config
         
-        # Fourier encoding for query coordinates
         self.spatial_encoder = ConditionalFourierFeatures(
             input_dim=2,
             use_fourier=config.use_fourier_decoder,
@@ -269,38 +304,62 @@ class Decoder(nn.Module):
             input_max=config.spatial_max
         )
         
-        # MLP: (h, fourier_features) -> (mu, sigma)
+        # Input to MLP is: Interpolated Feature (h_dim) + Query Pos Encoding
         input_dim = config.h_dim + self.spatial_encoder.output_dim
         layer_sizes = [input_dim] + [config.h_dim] * config.decoder_num_layers
         self.net = MLP(layer_sizes, 2)  # mu, logsigma
     
-    def forward(self, h: torch.Tensor, target_obs: Obs) -> Normal:
+    def forward(self, h_grid: torch.Tensor, target_obs: Obs) -> Normal:
         """
         Args:
-            h: Hidden state sequence (B, T, h_dim)
-            target_obs: Target observation Obs with tensors (B, T, P, 1)
-        
-        Returns:
-            Distribution over predictions
+            h_grid: (B, T, C, H_grid, W_grid) Latent spatiotemporal grid
+            target_obs: Target points (B, T, P, 1)
         """
-        # Encode query coordinates
-        # target_obs.xs: (B, T, P, 1) -> (B, T, P, 2)
+        B, T, P, _ = target_obs.xs.shape
+        _, _, C, Hg, Wg = h_grid.shape
+         
+        # 1. Flatten Batch * Time for efficient processing
+        # h_grid: (BT, C, Hg, Wg)
+        h_flat = h_grid.reshape(B*T, C, Hg, Wg)
+        
+        # 2. Prepare Query Coordinates
+        # (B, T, P, 2)
         coords = torch.cat([target_obs.xs, target_obs.ys], dim=-1)
-        spatial_features = self.spatial_encoder(coords) # (B, T, P, enc_dim)
+        # Flatten: (BT, P, 2)
+        coords_flat = coords.reshape(B*T, P, 2)
         
-        # Expand h to match spatial features (P dimension)
-        # h: (B, T, h_dim) -> (B, T, 1, h_dim) -> (B, T, P, h_dim)
-        if h.dim() == 3: 
-             h_exp = h.unsqueeze(-2).expand(-1, -1, coords.shape[-2], -1)
-        else:
-             raise ValueError(f"Expected h to be 3D (B, T, H), got {h.shape}")
+        # Normalize coordinates to [-1, 1] for grid_sample
+        # Obs are in [0, spatial_max]
+        # grid_sample expects (x, y) in [-1, 1]
+        grid_coords = 2.0 * (coords_flat / self.config.spatial_max) - 1.0
         
-        # Concatenate and decode
-        decoder_in = torch.cat([h_exp, spatial_features], dim=-1)
-        out = self.net(decoder_in) # (B, T, P, 2)
+        # grid_sample expects input grid_coords as (N, H_out, W_out, 2)
+        # Here we treat P as W_out, and H_out=1
+        # (BT, 1, P, 2)
+        grid_coords = grid_coords.unsqueeze(1)
         
-        mu = out[..., 0:1] # (B, T, P, 1)
-        logsigma = out[..., 1:2] # (B, T, P, 1)
+        # 3. Interpolate Features
+        # sampled: (BT, C, 1, P)
+        sampled = F.grid_sample(h_flat, grid_coords, align_corners=True) # align_corners=True matches linspace(-1, 1) usually
+        
+        # Reshape to (BT, P, C)
+        sampled = sampled.squeeze(2).permute(0, 2, 1)
+        
+        # 4. Add Fourier Features (Positional Encoding)
+        # Unflatten coords for FE (or use flat)
+        spatial_features = self.spatial_encoder(coords_flat) # (BT, P, enc_dim)
+        
+        # Concatenate: (BT, P, C + enc_dim)
+        decoder_in = torch.cat([sampled, spatial_features], dim=-1)
+        
+        # 5. Decode
+        out = self.net(decoder_in) # (BT, P, 2)
+        
+        # Reshape back to (B, T, P, 2)
+        out = out.reshape(B, T, P, 2)
+        
+        mu = out[..., 0:1] 
+        logsigma = out[..., 1:2]
         sigma = F.softplus(logsigma) + self.config.min_std
         
         return Normal(mu, sigma)
@@ -308,8 +367,7 @@ class Decoder(nn.Module):
 
 class RNP(nn.Module):
     """
-    Recurrent Neural Process for scalar field prediction.
-    Deterministic model with LSTM dynamics.
+    Recurrent ConvCNP (Refactored).
     """
     def __init__(self, config: RNPConfig):
         super().__init__()
@@ -319,12 +377,10 @@ class RNP(nn.Module):
         if config.use_conv_encoder:
             self.encoder = ConvEncoder(config)
         else:
-            self.encoder = Encoder(config)
+            raise ValueError("Refactored RNP requires use_conv_encoder=True")
         
-        # Forecaster input: r + [optional: action]
-        forecaster_input = config.r_dim
-
-        self.forecaster = Forecaster(forecaster_input, config.h_dim, config.lstm_num_layers)
+        # Forecaster input channels = h_dim from encoder
+        self.forecaster = Forecaster(config.h_dim, config.h_dim, config.lstm_num_layers)
         
         self.decoder = Decoder(config)
         
@@ -332,38 +388,37 @@ class RNP(nn.Module):
     
     def forward(
         self,
-        state: Tuple[torch.Tensor, torch.Tensor],
+        state: List,
         context_obs: Obs,
         target_obs: Optional[Obs] = None
     ) -> RNPOutput:
         """
         Process a sequence of observations.
         """
-        h_prev, c_prev = state
-
+        # state is now a List of (h, c) tuples for ConvLSTM
+        
         # 1. Encode sequence
-        # context_obs contains tensors of shape (B, T, P, C)
-        # Encoder returns (B, T, r_dim)
+        # r_seq: (B, T, C, H, W)
         r_seq = self.encoder(context_obs) 
         
         # 2. Forecaster (Sequence)
-        # r_next_seq: (B, T, h_dim)
-        r_next_seq, (h, c) = self.forecaster(r_seq, (h_prev, c_prev))
+        # r_next_seq: (B, T, C, H, W)
+        r_next_seq, next_state = self.forecaster(r_seq, state)
         
         # 3. Decode
         prediction = None
         if target_obs is not None:
-            # Decode for all time steps provided in target_obs
-            # Assumes target_obs aligns with r_next_seq in length
             prediction = self.decoder(r_next_seq, target_obs)
             
-        return RNPOutput(state=(h, c), prediction=prediction)
+        return RNPOutput(state=next_state, prediction=prediction)
 
-    def init_state(self, batch_size: int, device: torch.device) -> Tuple[torch.Tensor, torch.Tensor]:
-        """Initialize LSTM state."""
-        h = torch.zeros(self.config.lstm_num_layers, batch_size, self.config.h_dim, device=device)
-        c = torch.zeros(self.config.lstm_num_layers, batch_size, self.config.h_dim, device=device)
-        return (h, c)
+    def init_state(self, batch_size: int, device: torch.device) -> List:
+        """Initialize ConvLSTM state."""
+        # Calculate latent resolution
+        res = self.config.grid_res // 8 # Based on ConvEncoder
+        if res < 1: res = 1
+        
+        return self.forecaster.init_hidden(batch_size, (res, res), device)
 
 if __name__ == "__main__":
     import os
@@ -371,50 +426,20 @@ if __name__ == "__main__":
     from src.models.shared.datasets import SequentialDataset, sequential_collate_fn
     from src.models.shared.observations import Obs
     
-    # Path to data
-    data_path = "/Users/emanuelsamir/Documents/dev/cmu/research/experiments/7_safe_nav_smoke/data/playback_data/global_source_400_100_2nd.npz"
+    # Simple test
+    print("Initializing Refactored Spatial RNP...")
+    cfg = RNPConfig(grid_res=64, h_dim=32) # Lower dim for test
+    model = RNP(cfg).cuda()
+    print("Model built.")
     
-    if not os.path.exists(data_path):
-        print(f"Skipping test: Data not found at {data_path}")
-    else:
-        print("--- Testing RNP with SequentialDataset ---")
-        
-        # 1. Dataset
-        seq_dataset = SequentialDataset(data_path, sequence_length=25, max_episodes=5)
-        seq_loader = DataLoader(seq_dataset, batch_size=4, collate_fn=sequential_collate_fn)
-        
-        ctx_seq, trg_seq, idx = next(iter(seq_loader))
-        
-        print(f"Context Batch Shape: {ctx_seq.xs.shape}") # (B, T, P, 1)
-        
-        # 2. Model
-        config = RNPConfig(
-            r_dim=64,
-            h_dim=64,
-            encoder_num_layers=2,
-            decoder_num_layers=2,
-            lstm_num_layers=1,
-            use_fourier_encoder=True,
-            use_fourier_decoder=True,
-            use_conv_encoder=True,
-            grid_res=32,
-            grid_range=(0, 30)
-        )
-        model = RNP(config)
-        
-        # 3. Forward
-        # Init state
-        state = model.init_state(batch_size=4, device=ctx_seq.xs.device)
-        
-        output = model(state, ctx_seq, trg_seq)
-        
-        print("\n--- Model Output ---")
-        if output.prediction is not None:
-             print(f"Prediction Mean Shape: {output.prediction.loc.shape}")
-             print(f"Prediction Std Shape: {output.prediction.scale.shape}")
-             # Check match
-             assert output.prediction.loc.shape == trg_seq.xs.shape
-        
-        print(f"Next State (h) Shape: {output.state[0].shape}")
-        
-        print("Test Passed!")
+    # Dummy Data
+    B, T, P = 2, 5, 100
+    xs = torch.rand(B, T, P, 1).cuda() * 30
+    ys = torch.rand(B, T, P, 1).cuda() * 30
+    val = torch.rand(B, T, P, 1).cuda()
+    obs = Obs(xs=xs, ys=ys, values=val, mask=None, ts=None)
+    
+    state = model.init_state(B, torch.device("cuda"))
+    out = model(state, obs, obs)
+    print("Forward Pass Successful")
+    print("Prediction shape:", out.prediction.loc.shape)

@@ -4,7 +4,7 @@ Clean, standardized structure.
 """
 import torch
 from dataclasses import dataclass
-from typing import Optional, Tuple
+from typing import Optional, Tuple, Union, List
 from torch.distributions import Normal
 
 
@@ -23,7 +23,7 @@ class RNPOutput(ModelOutput):
         state: LSTM state (h, c)
         prediction: Distribution over predictions (Normal)
     """
-    state: Tuple[torch.Tensor, torch.Tensor]
+    state: Union[Tuple[torch.Tensor, torch.Tensor], List[Tuple[torch.Tensor, torch.Tensor]]]
     prediction: Optional[Normal] = None
 
 

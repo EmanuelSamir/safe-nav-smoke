@@ -67,33 +67,39 @@ def log_visualization_to_tensorboard(model, loader, device, writer, epoch):
         output = model(state, context_obs=ctx, target_obs=trg)
         pred_dist = output.prediction
         
-        # Visualize a random time step
-        T = ctx.xs.shape[1]
-        t = np.random.randint(0, T)
-        
-        # Ground Truth
-        # (B, T, P, 1) -> (P,)
-        if trg.mask is not None:
-             mask_t = trg.mask[b_idx, t].squeeze().cpu().numpy()
-        else:
-             mask_t = np.ones_like(trg.xs[b_idx, t].squeeze().cpu().numpy(), dtype=bool)
+        cases = 4
+        fig, axes = plt.subplots(cases, 2, figsize=(10, 3*cases))
 
-        xs = trg.xs[b_idx, t].squeeze().cpu().numpy()[mask_t]
-        ys = trg.ys[b_idx, t].squeeze().cpu().numpy()[mask_t]
-        gt = trg.values[b_idx, t].squeeze().cpu().numpy()[mask_t]
-        
-        # Prediction
-        pr = pred_dist.mean[b_idx, t].squeeze().cpu().numpy()[mask_t]
-        
-        fig, axes = plt.subplots(1, 2, figsize=(10, 5))
-        sc = axes[0].scatter(xs, ys, c=gt, s=20, vmin=0, vmax=1, cmap='viridis')
-        axes[0].set_title(f"GT Frame: {t}")
-        plt.colorbar(sc, ax=axes[0])
-        
-        sc2 = axes[1].scatter(xs, ys, c=pr, s=20, vmin=0, vmax=1, cmap='viridis')
-        axes[1].set_title(f"Pred Frame: {t} | Ctx Len: {ctx.xs.shape}")
-        plt.colorbar(sc2, ax=axes[1])
-        
+        for i in range(cases):
+            # Visualize a random time step
+            T = ctx.xs.shape[1]
+            t = np.random.randint(0, T)
+            
+            # Use different batch index if possible, else wrap around
+            curr_b_idx = i % ctx.xs.shape[0]
+
+            # Ground Truth
+            # (B, T, P, 1) -> (P,)
+            if trg.mask is not None:
+                mask_t = trg.mask[curr_b_idx, t].squeeze().cpu().numpy()
+            else:
+                mask_t = np.ones_like(trg.xs[curr_b_idx, t].squeeze().cpu().numpy(), dtype=bool)
+
+            xs = trg.xs[curr_b_idx, t].squeeze().cpu().numpy()[mask_t]
+            ys = trg.ys[curr_b_idx, t].squeeze().cpu().numpy()[mask_t]
+            gt = trg.values[curr_b_idx, t].squeeze().cpu().numpy()[mask_t]
+            
+            # Prediction
+            pr = pred_dist.mean[curr_b_idx, t].squeeze().cpu().numpy()[mask_t]
+            
+            sc = axes[i, 0].scatter(xs, ys, c=gt, s=20, vmin=0, vmax=1, cmap='viridis')
+            axes[i, 0].set_title(f"GT Frame: {t} | Batch: {curr_b_idx}")
+            plt.colorbar(sc, ax=axes[i, 0])
+            
+            sc2 = axes[i, 1].scatter(xs, ys, c=pr, s=20, vmin=0, vmax=1, cmap='viridis')
+            axes[i, 1].set_title(f"Pred Frame: {t} | Ctx Len: {ctx.xs.shape}")
+            plt.colorbar(sc2, ax=axes[i, 1])
+            
         plt.tight_layout()
         
         # To Tensorboard
@@ -107,11 +113,36 @@ def log_visualization_to_tensorboard(model, loader, device, writer, epoch):
 
 @hydra.main(version_base=None, config_path="../../config/training", config_name="rnp_train")
 def train(cfg: DictConfig):
+    
     # 1. Setup
     print(f"Training RNP with config: {cfg.training.experiment_name}")
     torch.manual_seed(cfg.training.seed)
     np.random.seed(cfg.training.seed)
     random.seed(cfg.training.seed)
+
+    # def print_gpu_memory():
+    #     if torch.cuda.is_available():
+    #         # Memoria total reservada por PyTorch (incluye lo que no se está usando)
+    #         reserved = torch.cuda.memory_reserved(0) / 1e9  # GB
+    #         # Memoria actualmente usada por los tensores
+    #         allocated = torch.cuda.memory_allocated(0) / 1e9  # GB
+    #         # Memoria libre dentro de lo reservado
+    #         free_inside_reserved = reserved - allocated
+            
+    #         print(f"\n--- GPU Memory Report ---")
+    #         print(f"Allocated: {allocated:.2f} GB")
+    #         print(f"Reserved:  {reserved:.2f} GB")
+    #         print(f"Free (in reserved): {free_inside_reserved:.2f} GB")
+    #         print(f"--------------------------\n")
+
+    #         print(f"¿Cuda disponible?: {torch.cuda.is_available()}")
+    #         print(f"GPUs disponibles: {torch.cuda.device_count()}")
+    #         if torch.cuda.is_available():
+    #             print(f"GPU actual: {torch.cuda.current_device()}")
+    #             print(f"Nombre de la GPU: {torch.cuda.get_device_name(0)}")
+
+    # print_gpu_memory()
+    # # output = model(state, context_obs=ctx, target_obs=trg)
     
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     if torch.backends.mps.is_available():
@@ -179,7 +210,7 @@ def train(cfg: DictConfig):
     val_loader = DataLoader(
         val_dataset, 
         batch_size=cfg.training.data.batch_size, 
-        shuffle=False, 
+        shuffle=True, 
         collate_fn=sequential_collate_fn,
         num_workers=cfg.training.data.num_workers
     )
@@ -197,7 +228,10 @@ def train(cfg: DictConfig):
         use_fourier_decoder=model_cfg.get('use_fourier_decoder', False),
         fourier_frequencies=model_cfg.get('fourier_frequencies', 128),
         fourier_scale=model_cfg.get('fourier_scale', 20.0),
-        spatial_max=model_cfg.get('spatial_max', 30.0)
+        spatial_max=model_cfg.get('spatial_max', 30.0),
+        # Conv params
+        grid_res=model_cfg.get('grid_res', 64),
+        grid_range=(0, model_cfg.get('spatial_max', 30.0))
     )
     model = RNP(params).to(device)
     print(f"Model params: {sum(p.numel() for p in model.parameters())}")
