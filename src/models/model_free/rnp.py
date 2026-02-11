@@ -420,6 +420,127 @@ class RNP(nn.Module):
         
         return self.forecaster.init_hidden(batch_size, (res, res), device)
 
+    def forecast(
+        self,
+        context_obs: Obs,
+        horizon: int,
+        grid_res: Optional[int] = None
+    ) -> List[Obs]:
+        """
+        Autoregressive forecasting for H steps.
+        
+        Args:
+           context_obs: Initial context sequence (B, T, P, 1)
+           horizon: Number of steps to forecast
+           grid_res: Resolution for the feedback loop (defaults to config.grid_res)
+           
+        Returns:
+           List of Obs, length H. Each Obs is (B, 1, P_grid, 1)
+        """
+        device = context_obs.xs.device
+        B = context_obs.xs.shape[0]
+        
+        # 1. Warmup
+        state = self.init_state(B, device)
+        
+        # We need the prediction at the last step of context to start the loop
+        # We pass the full context.
+        # Output will be predictions for t=1...T+1 (assuming T input steps)
+        # We only care about the last prediction (T+1) to serve as input for next step.
+        
+        # To get the prediction, we need to query at some locations.
+        # For the autoregressive loop, we need a grid of points to feed back in.
+        if grid_res is None:
+            grid_res = self.config.grid_res
+            
+        # Create grid coordinates
+        # (1, Res, Res, 2)
+        grid_x, grid_y = torch.meshgrid(
+            torch.linspace(0, self.config.spatial_max, grid_res, device=device),
+            torch.linspace(0, self.config.spatial_max, grid_res, device=device),
+            indexing='xy'
+        )
+        # (1, P_grid, 2)
+        grid_pts = torch.stack([grid_x, grid_y], dim=-1).reshape(1, -1, 2)
+        P_grid = grid_pts.shape[1]
+        
+        # Expand for Batch (B, 1, P_grid, 2)
+        # grid_pts is (1, P_grid, 2)
+        query_pts = grid_pts.unsqueeze(1).expand(B, 1, -1, -1)
+        
+        # Create query Obs (dummy values)
+        query_obs = Obs(
+            xs=query_pts[..., 0:1],
+            ys=query_pts[..., 1:2],
+            values=torch.zeros(B, 1, P_grid, 1, device=device),
+            mask=None,
+            ts=None # Time not strictly used in decoder spatial interpolation
+        )
+        
+        # Run Context through Model
+        # output.state is the updated state after context
+        # But we also need the prediction for the FIRST forecast step (which is the output of the last context step)
+        
+        # The forward() method expects target_obs to forecast. 
+        # But forward() aligns target_obs with the sequence. 
+        # If we pass target_obs with T=1, it might mismatch if context is T > 1.
+        
+        # Strategy:
+        # 1. Run encoder on context -> r_seq
+        # 2. Run LSTM -> r_next_seq, last_state
+        # 3. Take last timestep of r_next_seq -> r_last
+        # 4. Decode r_last at query_pts -> pred_0
+        
+        # Encode
+        r_seq = self.encoder(context_obs)
+        r_next_seq, state = self.forecaster(r_seq, state)
+        
+        # Take last latent
+        # r_next_seq: (B, T, C, H, W) -> (B, 1, C, H, W)
+        r_last = r_next_seq[:, -1:, ...]
+        
+        # Decode first prediction
+        dist = self.decoder(r_last, query_obs)
+        pred_mean = dist.mean # (B, 1, P_grid, 1)
+        
+        predictions = []
+        
+        # Prepare first input for the loop
+        # Input for step k is Prediction from step k-1
+        current_input = Obs(
+            xs=query_obs.xs,
+            ys=query_obs.ys,
+            values=pred_mean,
+            mask=None,
+            ts=None
+        )
+        
+        predictions.append(current_input)
+        
+        # Loop for remaining H-1 steps
+        for _ in range(horizon - 1):
+            # Encode single step
+            # current_input is (B, 1, P, 1)
+            r_step = self.encoder(current_input)
+            
+            # LSTM Step
+            r_next, state = self.forecaster(r_step, state)
+            
+            # Decode
+            dist = self.decoder(r_next, query_obs)
+            pred_mean = dist.mean
+            
+            current_input = Obs(
+                xs=query_obs.xs,
+                ys=query_obs.ys,
+                values=pred_mean,
+                mask=None,
+                ts=None
+            )
+            predictions.append(current_input)
+            
+        return predictions
+
 if __name__ == "__main__":
     import os
     from torch.utils.data import DataLoader
@@ -443,3 +564,10 @@ if __name__ == "__main__":
     out = model(state, obs, obs)
     print("Forward Pass Successful")
     print("Prediction shape:", out.prediction.loc.shape)
+
+    # Test Forecast
+    print("\nTesting Forecast...")
+    forecasts = model.forecast(obs, horizon=5, grid_res=32)
+    print(f"Forecast returned {len(forecasts)} frames.")
+    print(f"Frame 0 shape: {forecasts[0].values.shape}")
+
