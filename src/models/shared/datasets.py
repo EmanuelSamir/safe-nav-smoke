@@ -18,31 +18,20 @@ class BaseSmokeDataset(Dataset):
                  train_split: float = 0.8,
                  mode: str = 'train',
                  max_episodes: Optional[int] = None,
-                 data: Optional[np.ndarray] = None,
                  downsample_factor: int = 1):
         
-        if data is None:
-            if not os.path.exists(data_path):
-                raise FileNotFoundError(f"Data not found at {data_path}")
-                
-            loader = np.load(data_path)
-            self.smoke_data = loader['smoke_data'] # (E, T, H, W)
-            self.dt = float(loader.get('dt', 0.1))
-            self.x_size = float(loader.get('x_size', 50.0))
-            self.y_size = float(loader.get('y_size', 50.0))
-            self.res = float(loader.get('resolution', 1.0))
-        else:
-            self.smoke_data = data
-            # Assumed defaults or passed separately if needed, but for now strict optimization
-            # In a real scenario, meta-data should also be passed or stored in class
-            self.dt = 0.1
-            self.x_size = 50.0
-            self.y_size = 50.0
-            self.res = 1.0
+        if not os.path.exists(data_path):
+            raise FileNotFoundError(f"Data not found at {data_path}")
+            
+        loader = np.load(data_path)
+        self.smoke_data = loader['smoke_data'] # (E, T, H, W)
+        self.dt = float(loader.get('dt', 0.1))
+        self.x_size = float(loader.get('x_size', 50.0))
+        self.y_size = float(loader.get('y_size', 50.0))
+        self.res = float(loader.get('resolution', 1.0))
         
         # Downsample if needed
         if downsample_factor > 1:
-            # (E, T, H, W) -> (E, T, H//factor, W//factor)
             self.smoke_data = self.smoke_data[:, :, ::downsample_factor, ::downsample_factor]
             self.res = self.res * downsample_factor
             
@@ -83,16 +72,16 @@ class NonSequentialDataset(BaseSmokeDataset):
                  mode: str = 'train',
                  max_episodes: Optional[int] = None,
                  data: Optional[np.ndarray] = None,
-                 downsample_factor: int = 1):
+                 downsample_factor: int = 1,
+                 normalized_coords: bool = True):
         
         super().__init__(data_path, train_split, mode, max_episodes, data, downsample_factor)
         
         self.ctx_min_pts = int(self.H * self.W * ctx_points_ratios[0])
         self.ctx_max_pts = int(self.H * self.W * ctx_points_ratios[1])
         self.trg_pts = int(self.H * self.W * trg_points_ratio)
-        print("ctx_min_pts: ", self.ctx_min_pts)
-        print("ctx_max_pts: ", self.ctx_max_pts)
-        print("trg_pts: ", self.trg_pts)
+
+        self.normalized_coords = normalized_coords
         self.sequence_length = sequence_length
         self.context_length = context_length
         
@@ -103,6 +92,16 @@ class NonSequentialDataset(BaseSmokeDataset):
         assert trg_points_ratio > max(ctx_points_ratios), f"Target points ratio must be greater than max context points ratio"
 
         self.max_diff_time = sequence_length * self.dt
+        print_status()
+
+    def print_status(self):
+        print("NonSequentialDataset: ")
+        print("ctx_min_pts: ", self.ctx_min_pts)
+        print("ctx_max_pts: ", self.ctx_max_pts)
+        print("trg_pts: ", self.trg_pts)
+        print("sequence_length: ", self.sequence_length)
+        print("context_length: ", self.context_length)
+        print("max_diff_time: ", self.max_diff_time)
 
     def __getitem__(self, idx: int) -> Tuple[Obs, Obs, float]:
         episode = self.smoke_data[idx]
@@ -113,16 +112,13 @@ class NonSequentialDataset(BaseSmokeDataset):
         t_offset = t_start_idx * self.dt
         
         # Indices for context and target
-        # Target always sees full sequence (or whatever future we want to predict)
+        # Target always sees full sequence
         # Context sees only up to context_length if specified
-        
         trg_indices = np.arange(t_start_idx, t_start_idx + self.sequence_length)
         
         if self.context_length is not None:
-            # Context restricted to first N frames of the window
             ctx_indices = np.arange(t_start_idx, t_start_idx + self.context_length)
         else:
-            # Context from full window
             ctx_indices = trg_indices
             
         # 2. Sample points using Relative Time (t - t0)
@@ -140,11 +136,18 @@ class NonSequentialDataset(BaseSmokeDataset):
         x_idx = np.random.randint(0, self.W, num_pts * len(time_indices))
         
         # Convert indices to real coordinates
-        xs = 2.0 * torch.from_numpy(x_idx * self.res).float() / self.x_size - 1.0
-        ys = 2.0 * torch.from_numpy(y_idx * self.res).float() / self.y_size - 1.0
+        if self.normalized_coords:
+            xs = 2.0 * torch.from_numpy(x_idx * self.res).float() / self.x_size - 1.0
+            ys = 2.0 * torch.from_numpy(y_idx * self.res).float() / self.y_size - 1.0
+        else:
+            xs = torch.from_numpy(x_idx * self.res).float()
+            ys = torch.from_numpy(y_idx * self.res).float()
 
         # Relative time: t_real - t_window_start
-        ts = 2.0 * torch.from_numpy(t_idx * self.dt - t_offset).float() / self.max_diff_time - 1.0
+        if self.normalized_coords:
+            ts = 2.0 * torch.from_numpy(t_idx * self.dt - t_offset).float() / self.max_diff_time - 1.0
+        else:
+            ts = torch.from_numpy(t_idx * self.dt - t_offset).float()
         
         # Get smoke values
         vals = torch.from_numpy(episode[t_idx, y_idx, x_idx]).float()
@@ -165,7 +168,8 @@ class SequentialDataset(BaseSmokeDataset):
                  train_split: float = 0.8,
                  mode: str = 'train',
                  max_episodes: Optional[int] = None,
-                 downsample_factor: int = 1):
+                 downsample_factor: int = 1,
+                 normalized_coords: bool = True):
         
         super().__init__(data_path, train_split, mode, max_episodes, data=None, downsample_factor=downsample_factor)
         self.ctx_min_pts = int(self.H * self.W * ctx_points_ratios[0])
@@ -173,33 +177,25 @@ class SequentialDataset(BaseSmokeDataset):
         self.trg_pts = int(self.H * self.W * trg_points_ratio)
         self.sequence_length = sequence_length
         self.forecast_horizon = forecast_horizon
+        self.normalized_coords = normalized_coords
         
         # Ensure we have enough steps for sequence + horizon
         # t ranges from 0 to n_steps - 1
         # if t_start is chosen, we need: t_start + sequence_length + forecast_horizon - 1 < n_steps
         # so t_start < n_steps - sequence_length - forecast_horizon + 1
-        # max_start is exclusive for randint, so: n_steps - sequence_length - forecast_horizon + 1
-        
         assert self.sequence_length + self.forecast_horizon <= self.n_steps, \
             f"Sequence length {self.sequence_length} + Horizon {self.forecast_horizon} > total steps {self.n_steps}"
             
         assert trg_points_ratio > max(ctx_points_ratios), f"Target points ratio must be greater than max context points ratio"
 
     def __getitem__(self, idx: int):
+        """
+        Returns a tuple of (ctx_obs, trg_obs, t_offset)
+        ctx_obs: Obs object with context points
+        trg_obs: Obs object with target points
+        t_offset: float, time offset of the context window
+        """
         episode = self.smoke_data[idx]
-        
-        # Determine valid start range
-        # We need frames: [t, t+1, ..., t+seq_len-1] as inputs
-        # For the last input frame at t+seq_len-1, we need targets up to t+seq_len-1 + horizon.
-        # However, usually we slip by 1.
-        # If we predict *from* t, we predict t+1..t+H.
-        # The loop in training is: for t in range(seq_len):
-        # input: frame t. target: frame t+1...t+H.
-        # So we need indices up to: t_start + seq_len - 1 + H.
-        # Max index available is n_steps - 1.
-        # t_start + seq_len - 1 + H <= n_steps - 1
-        # t_start <= n_steps - seq_len - H
-        
         max_start = self.n_steps - self.sequence_length - self.forecast_horizon + 1
         
         if max_start <= 0:
@@ -223,8 +219,6 @@ class SequentialDataset(BaseSmokeDataset):
             trg_indices = np.arange(t_idx + 1, t_idx + 1 + self.forecast_horizon)
             
             # Sample points at t_idx (spatial locations) but get values for t_idx+1...t_idx+H
-            # We MUST use the SAME spatial locations for all H steps to make it a "forecast" at those locations.
-            # So we pick spatial locations once, and gather values across time.
             trg_obs = self._sample_forecast_points(episode, trg_indices, self.trg_pts)
 
             ctx_obs_seq.append(ctx_obs)
@@ -234,17 +228,20 @@ class SequentialDataset(BaseSmokeDataset):
 
     def _sample_points(self, episode, time_indices, num_pts) -> Obs:
         """Randomly samples (x, y, t, s) points from the grid at specified time steps."""
+        
         # Randomly pick (t, y, x) triplets
         t_idx = np.repeat(time_indices, num_pts)
         y_idx = np.random.randint(0, self.H, num_pts * len(time_indices))
         x_idx = np.random.randint(0, self.W, num_pts * len(time_indices))
         
-        # Convert indices to real coordinates
-        xs = torch.from_numpy(x_idx * self.res).float() / self.x_size
-        ys = torch.from_numpy(y_idx * self.res).float() / self.y_size
+        if self.normalized_coords:
+            xs = 2.0 * torch.from_numpy(x_idx * self.res).float() / self.x_size - 1.0
+            ys = 2.0 * torch.from_numpy(y_idx * self.res).float() / self.y_size - 1.0
+        else:
+            xs = torch.from_numpy(x_idx * self.res).float()
+            ys = torch.from_numpy(y_idx * self.res).float()
         
         # Get smoke values
-        # episode is (T_epis, H, W) -> values (N,)
         vals = torch.from_numpy(episode[t_idx, y_idx, x_idx]).float()
         
         return Obs(xs=xs, ys=ys, values=vals)
@@ -255,18 +252,17 @@ class SequentialDataset(BaseSmokeDataset):
         Returns values for these N points across all time_indices.
         Result values shape: (N, H) where H=len(time_indices)
         """
+
         # Pick spatial locations (N,)
         y_idx = np.random.randint(0, self.H, num_pts)
         x_idx = np.random.randint(0, self.W, num_pts)
         
-        # Convert indices to real coordinates
-        xs = torch.from_numpy(x_idx * self.res).float() / self.x_size
-        ys = torch.from_numpy(y_idx * self.res).float() / self.y_size
-        
-        # Get values for all time_indices at these locations
-        # time_indices is (H,)
-        # episode[time_indices, y_idx, x_idx] won't work directly with broadcasting if we want (H, N)
-        # We want: for each t in time_indices, get vals at (y_idx, x_idx)
+        if self.normalized_coords:
+            xs = 2.0 * torch.from_numpy(x_idx * self.res).float() / self.x_size - 1.0
+            ys = 2.0 * torch.from_numpy(y_idx * self.res).float() / self.y_size - 1.0
+        else:
+            xs = torch.from_numpy(x_idx * self.res).float()
+            ys = torch.from_numpy(y_idx * self.res).float()
         
         # episode index: (T_epis, H, W)
         # We can use fancy indexing if we broadcast correctly.
@@ -323,12 +319,12 @@ def sequential_collate_fn(batch):
             mask_padded[i, length:] = False
         
         # Reshape to (B, T, S_max, FeatureDim)
-        # xs, ys, mask are usually 1 dim feature
+        # xs, ys, mask are 1 dim feature
         xs_final = xs_padded.view(B, T, S_max, 1)
         ys_final = ys_padded.view(B, T, S_max, 1)
         mask_final = mask_padded.view(B, T, S_max, 1)
         
-        # vs might be (B*T, S_max, H) -> (B, T, S_max, H)
+        # Values are (B*T, S_max, H) -> (B, T, S_max, H)
         H_dim = vs_padded.shape[-1]
         vs_final = vs_padded.view(B, T, S_max, H_dim)
 
