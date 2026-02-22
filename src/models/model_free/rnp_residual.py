@@ -39,14 +39,15 @@ class ResidualDecoder(nn.Module):
         # Prediction Network: y_t+1 = f(x_t+1, C_t)
         self.prediction_net = MLP(layer_sizes, 2)  # mu, logsigma
     
-    def forward(self, next_h_grid: torch.Tensor, h_grid: torch.Tensor, target_obs: Obs, context_obs: Obs) -> Normal:
+    def forward(self, next_h_grid: torch.Tensor, h_grid: torch.Tensor, target_obs: Obs, context_obs: Obs, mode: str = "train") -> Normal:
         """
         Args:
             next_h_grid: (B, T, C, H_grid, W_grid) Latent spatiotemporal grid at t+1
             h_grid: (B, T, C, H_grid, W_grid) Latent spatiotemporal grid at t
+            context_obs: Context points (B, 1, P, 2)
             target_obs: Target points (B, 1, P, 2)
+            mode: "train", "eval_delta", "eval_full"
         """
-
 
         def retrieve_input_decoder(h_grid: torch.Tensor, coords: torch.Tensor) -> torch.Tensor:
             B, T, P, _ = coords.shape # Use shape from coords itself
@@ -64,76 +65,74 @@ class ResidualDecoder(nn.Module):
             # Normalize coordinates to [-1, 1] for grid_sample
             grid_coords = 2.0 * (coords_flat - self.config.spatial_min) / (self.config.spatial_max - self.config.spatial_min) - 1.0
         
-            # grid_sample expects input grid_coords as (N, H_out, W_out, 2)
-            # Here we treat P as W_out, and H_out=1
             # (BT, 1, P, 2)
             grid_coords = grid_coords.unsqueeze(1)
         
             # 3. Interpolate Features
-            # sampled: (BT, C, 1, P). Grid coords must be in [-1, 1]
+            # sampled: (BT, C, 1, P). 
             sampled = F.grid_sample(h_flat, grid_coords, align_corners=True)
 
             # Reshape to (BT, P, C)
             sampled = sampled.squeeze(2).permute(0, 2, 1)
         
             # 4. Add Fourier Features (Positional Encoding).
-            # Unflatten coords for FE (or use flat)
             spatial_features = self.spatial_encoder(coords_flat) # (BT, P, enc_dim)
 
             return sampled, spatial_features
-        
-        # 5. Decode. Two steps decoding
-        target_coords = torch.cat([target_obs.xs, target_obs.ys], dim=-1)
-        context_coords = torch.cat([context_obs.xs, context_obs.ys], dim=-1)
 
-        target_sampled, target_spatial_features = retrieve_input_decoder(next_h_grid, target_coords)
-        context_sampled, context_spatial_features = retrieve_input_decoder(h_grid, context_coords)
+        if mode == "train":
+            # 5. Decode. Two steps decoding
+            target_coords = torch.cat([target_obs.xs, target_obs.ys], dim=-1)
+            context_coords = torch.cat([context_obs.xs, context_obs.ys], dim=-1)
 
-        # Correct prediction at t
-        prediction_t_in = torch.cat([context_sampled, context_spatial_features], dim=-1)
-        prediction_t_out = self.prediction_net(prediction_t_in) # (BT, P, 2)
-        B, T, P, _ = context_coords.shape
-        prediction_t_out = prediction_t_out.reshape(B, T, P, 2)
+            target_sampled, target_spatial_features = retrieve_input_decoder(next_h_grid, target_coords)
+            context_sampled, context_spatial_features = retrieve_input_decoder(h_grid, context_coords)
 
-        # Correct prediction at t+1. Notice the detach() call.
-        prediction_tp1_in = torch.cat([target_sampled, target_spatial_features], dim=-1)
-        prediction_tp1_out = self.prediction_net(prediction_tp1_in).detach() # (BT, P, 2)
-        B, T, P, _ = target_coords.shape
-        prediction_tp1_out = prediction_tp1_out.reshape(B, T, P, 2)
+            # Correct prediction at t
+            prediction_t_in = torch.cat([context_sampled, context_spatial_features], dim=-1)
+            prediction_t_out = self.prediction_net(prediction_t_in) # (BT, P, 2)
+            B, T, P, _ = context_coords.shape
+            prediction_t_out = prediction_t_out.reshape(B, T, P, 2)
 
-        # Residual Network: delta_t+1 = y_t+1 - y_t = g(x_t+1, C_t)
-        residual_tp1_in = torch.cat([target_sampled, target_spatial_features], dim=-1)
-        residual_tp1_out = self.residual_net(residual_tp1_in) # (BT, P, 2)
-        residual_tp1_out = residual_tp1_out.reshape(B, T, P, 2)
-        
-        # Reshape back to (B, T, P, 2)
-        out_t_mu = prediction_t_out[..., 0:1]
-        out_t_logsigma = prediction_t_out[..., 1:2]
-        sigma_t = F.softplus(out_t_logsigma) + self.config.min_std
-        out_t_dist = Normal(out_t_mu, sigma_t)
+            # Correct prediction at t+1. Notice the detach() call.
+            prediction_tp1_in = torch.cat([target_sampled, target_spatial_features], dim=-1)
+            prediction_tp1_out = self.prediction_net(prediction_tp1_in).detach() # (BT, P, 2)
+            B, T, P, _ = target_coords.shape
+            prediction_tp1_out = prediction_tp1_out.reshape(B, T, P, 2)
 
-        out_tp1_mu = prediction_tp1_out[..., 0:1] + residual_tp1_out[..., 0:1]
-        sigma_tp1_base = F.softplus(prediction_tp1_out[..., 1:2]) + self.config.min_std
-        sigma_residual = F.softplus(residual_tp1_out[..., 1:2]) + self.config.min_std
-        out_tp1_sigma = torch.sqrt(torch.pow(sigma_tp1_base, 2) + torch.pow(sigma_residual, 2) + 1e-8)
-        out_tp1_dist = Normal(out_tp1_mu, out_tp1_sigma)
+            # Residual Network: delta_t+1 = y_t+1 - y_t = g(x_t+1, C_t)
+            residual_tp1_in = torch.cat([target_sampled, target_spatial_features], dim=-1)
+            residual_tp1_out = self.residual_net(residual_tp1_in) # (BT, P, 2)
+            residual_tp1_out = residual_tp1_out.reshape(B, T, P, 2)
+            
+            # Reshape back to (B, T, P, 2)
+            out_t_mu = prediction_t_out[..., 0:1]
+            out_t_logsigma = prediction_t_out[..., 1:2]
+            sigma_t = F.softplus(out_t_logsigma) + self.config.min_std
+            out_t_dist = Normal(out_t_mu, sigma_t)
 
-        out = [out_t_dist, out_tp1_dist]
-        
-        # Check if we want components for analysis
-        # (We attach them to the distribution object or return extra?)
-        # Let's return a dict if requested? But signature is fixed in RNP?
-        # Actually RNPResidual calls this. We can change RNPResidual to handle it.
-        # But for minimal changes, let's attach components to the distribution object? 
-        # (Dirty but works for analysis script)
-        
-        out_tp1_dist.components = {
-            'pred_mu': prediction_tp1_out[..., 0:1],
-            'delta_mu': residual_tp1_out[..., 0:1],
-            'pred_sigma': sigma_tp1_base,
-            'delta_sigma': sigma_residual
-        }
-        
+            out_tp1_mu = prediction_tp1_out[..., 0:1] + residual_tp1_out[..., 0:1]
+            sigma_tp1_base = F.softplus(prediction_tp1_out[..., 1:2]) + self.config.min_std
+            sigma_residual = F.softplus(residual_tp1_out[..., 1:2]) + self.config.min_std
+            out_tp1_sigma = torch.sqrt(torch.pow(sigma_tp1_base, 2) + torch.pow(sigma_residual, 2) + 1e-8)
+            out_tp1_dist = Normal(out_tp1_mu, out_tp1_sigma)
+
+            out = [out_t_dist, out_tp1_dist]
+            
+            # Check if we want components for analysis
+            # (We attach them to the distribution object or return extra?)
+            # Let's return a dict if requested? But signature is fixed in RNP?
+            # Actually RNPResidual calls this. We can change RNPResidual to handle it.
+            # But for minimal changes, let's attach components to the distribution object? 
+            # (Dirty but works for analysis script)
+            
+            out_tp1_dist.components = {
+                'pred_mu': prediction_tp1_out[..., 0:1],
+                'delta_mu': residual_tp1_out[..., 0:1],
+                'pred_sigma': sigma_tp1_base,
+                'delta_sigma': sigma_residual
+            }
+            
         return out
 
 
@@ -197,112 +196,96 @@ class RNPResidual(nn.Module):
             
         return RNPOutput(state=next_state, prediction=prediction)
 
-    def forecast(
+    def autoregressive_forecast(
         self,
+        state, 
         context_obs: Obs,
-        n_horizons: int,
-    ) -> List[Obs]:
+        target_obs: Obs,
+        horizon: int,
+        num_samples: int = 1,
+    ) -> List[Dict[str, Obs]]:
         """
-        Autoregressive forecasting for H steps for whole map.
+        Autoregressive forecasting for H steps.
         
         Args:
-           context_obs: Initial context sequence (B, T, P, 1)
-           n_horizons: Number of steps for horizon to forecast
+           state: Initial state (can be None, will be initialized)
+           context_obs: Context sequence (B, T, P, 1). Includes values
+           target_obs: Target points (B, 1, P, 1). Used for query coordinates
+           horizon: Number of steps to forecast
+           num_samples: Number of samples to draw (if > 1, expands batch size)
         Returns:
-           List of Obs, length H. Each Obs is (B, 1, P_grid, 1)
+           List of Dict, length horizon. Each element contains 'sample', 'mean' and 'std' Obs.
         """
         device = context_obs.xs.device
         B = context_obs.xs.shape[0]
         
-        # 1. Warmup
-        state = self.init_state(B, device)
-            
-        # Create grid coordinates
-        # (1, Res, Res, 2)
-        grid_x, grid_y = torch.meshgrid(
-            torch.linspace(self.config.spatial_min, self.config.spatial_max, self.config.grid_res, device=device),
-            torch.linspace(self.config.spatial_min, self.config.spatial_max, self.config.grid_res, device=device),
-            indexing='xy'
-        )
+        if num_samples > 1:
+            context_obs = Obs(
+                xs=context_obs.xs.repeat_interleave(num_samples, dim=0),
+                ys=context_obs.ys.repeat_interleave(num_samples, dim=0),
+                values=context_obs.values.repeat_interleave(num_samples, dim=0),
+                mask=context_obs.mask.repeat_interleave(num_samples, dim=0) if context_obs.mask is not None else None,
+                ts=context_obs.ts.repeat_interleave(num_samples, dim=0) if context_obs.ts is not None else None
+            )
+            target_obs = Obs(
+                xs=target_obs.xs.repeat_interleave(num_samples, dim=0),
+                ys=target_obs.ys.repeat_interleave(num_samples, dim=0),
+                values=target_obs.values.repeat_interleave(num_samples, dim=0) if target_obs.values is not None else None,
+                mask=target_obs.mask.repeat_interleave(num_samples, dim=0) if target_obs.mask is not None else None,
+                ts=target_obs.ts.repeat_interleave(num_samples, dim=0) if target_obs.ts is not None else None
+            )
+            B = B * num_samples
+        
+        if state is None:
+            state = self.init_state(B, device)
 
-        # (1, P_grid, 2)
-        grid_pts = torch.stack([grid_x, grid_y], dim=-1).reshape(1, -1, 2)
-        P_grid = grid_pts.shape[1]
+        T_ctx = context_obs.xs.shape[1]
         
-        # Expand for Batch (B, 1, P_grid, 2)
-        query_pts = grid_pts.unsqueeze(1).expand(B, 1, -1, -1)
+        # 1. Encode Context Autoregressively
+        for t in range(T_ctx - 1):
+            ctx_t = slice_obs(context_obs, t, t+1)
+            out = self(state, ctx_t, None)
+            state = out.state
+            
+        current_input = slice_obs(context_obs, T_ctx-1, T_ctx) 
         
-        query_obs = Obs(
-            xs=query_pts[..., 0:1],
-            ys=query_pts[..., 1:2],
-            values=torch.zeros(B, 1, P_grid, 1, device=device),
-            mask=None,
-            ts=None # Time not strictly used in decoder spatial interpolation
-        )
-        
-        # Encode
-        r_step = self.encoder(context_obs)
-        # Remove time dim for Forecaster
-        r_step_sq = r_step.squeeze(1)
-        r_next, state = self.forecaster(r_step_sq, state)
-        
-        # Add time dim back
-        r_next_expanded = r_next.unsqueeze(1)
-        
+        T_trg = target_obs.xs.shape[1]
         predictions = []
-
-        current_input = context_obs
+        steps_generated = 0
         
-        while len(predictions) < n_horizons:
-            # Decode
-            # next_h_grid = r_next_expanded (state t+1)
-            # h_grid = r_step (context t)
-            # target_obs = query_obs (where we want to predict)
-            # context_obs = current_input (what we just encoded)
+        while steps_generated < horizon:
+            # Prepare Query for this step
+            t_idx = min(steps_generated, T_trg - 1)
+            trg_step = slice_obs(target_obs, t_idx, t_idx+1)
             
-            dists = self.decoder(r_next_expanded, r_step, query_obs, current_input)
+            # Forward pass
+            out = self(state, current_input, trg_step)
+            state = out.state
             
             # dists is [dist_t, dist_tp1]
-            # dist_t predicts mean at t (should be close to current_input.values)
-            # dist_tp1 predicts mean at t+1 (residual + prediction)
-            dist_tp1 = dists[1]
+            dist_tp1 = out.prediction[1]
             
-            # Convert to Obs and append
-            chunk_predictions = []
-            
-            # dist_tp1 is Normal(mu, sigma)
-            # We assume forecast_horizon is 1 for ResidualDecoder
-            pred_mean = dist_tp1.mean # (B, 1, P_grid, 1)
-            obs_pred = Obs(
-                xs=query_obs.xs,
-                ys=query_obs.ys,
-                values=pred_mean,
-                mask=None,
-                ts=None
+            s = dist_tp1.sample()
+            m = dist_tp1.mean
+            std = dist_tp1.stddev
+                
+            obs_sample = Obs(
+                xs=trg_step.xs, ys=trg_step.ys, values=s, mask=trg_step.mask, ts=trg_step.ts
             )
-            chunk_predictions.append(obs_pred)
+            obs_mean = Obs(
+                xs=trg_step.xs, ys=trg_step.ys, values=m, mask=trg_step.mask, ts=trg_step.ts
+            )
+            obs_std = Obs(
+                xs=trg_step.xs, ys=trg_step.ys, values=std, mask=trg_step.mask, ts=trg_step.ts
+            )
             
-            # Add to total predictions
-            predictions.extend(chunk_predictions)
+            predictions.append({'sample': obs_sample, 'mean': obs_mean, 'std': obs_std})
+            steps_generated += 1
             
-            if len(predictions) >= n_horizons:
-                break
+            # Autoregressive Update
+            current_input = obs_sample
             
-            # If we need more steps, we must advance the state using the predictions we just made.
-            # We treat the predicted sequence as the input for the next steps.
-            # We must iterate through the chunk to update the LSTM state step-by-step.
-            for obs_pred in chunk_predictions:
-                 # Encode single step
-                 r_step = self.encoder(obs_pred)
-                 r_step_sq = r_step.squeeze(1)
-                 
-                 # LSTM Step
-                 r_next, state = self.forecaster(r_step_sq, state)
-                 
-            # After loop, r_next corresponds to the latent at the end of the chunk.
-            r_next_expanded = r_next.unsqueeze(1)
-            
-        return predictions[:n_horizons]
+        return predictions
 
 if __name__ == "__main__":
     import os

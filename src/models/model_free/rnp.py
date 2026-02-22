@@ -26,7 +26,7 @@ class RNPConfig:
     lstm_num_layers: int = 1
     min_std: float = 0.01
     
-    # Fourier Features if enabled
+    # Fourier Features: if size is 0, no fourier features are used
     decoder_fourier_size: int = 128
     decoder_fourier_scale: float = 20.0
     
@@ -34,8 +34,9 @@ class RNPConfig:
     grid_res: int = 64
     grid_range: Tuple[float, float] = (0, 30)
 
+    # Just modify these parameters if dataset is different from the one used here
     spatial_max: float = 1.0
-    spatial_min: float = 0.0
+    spatial_min: float = -1.0
 
 # --- Copied from pinn_conv_cnp.py (Adapted) ---
 
@@ -183,33 +184,6 @@ class ConvEncoder(nn.Module):
         _, C, H, W = latent_grid.shape
         return latent_grid.view(B, T, C, H, W)
 
-    def visualize_encoding(self, obs: Obs, save_path="encoder_debug.png"):
-        """Visualization tool (Unchanged logic, just for debugging RBF)"""
-        import matplotlib.pyplot as plt
-        device = obs.xs.device
-        self.eval()
-        with torch.no_grad():
-            b_idx = 0; t_idx = 0
-            xs = obs.xs[b_idx, t_idx].cpu().squeeze().numpy()
-            ys = obs.ys[b_idx, t_idx].cpu().squeeze().numpy()
-            vals = obs.values[b_idx, t_idx].cpu().squeeze().numpy()
-            
-            xs_enc = obs.xs[b_idx:b_idx+1, t_idx:t_idx+1].reshape(1, -1, 1)
-            ys_enc = obs.ys[b_idx:b_idx+1, t_idx:t_idx+1].reshape(1, -1, 1)
-            vals_enc = obs.values[b_idx:b_idx+1, t_idx:t_idx+1].reshape(1, -1, 1)
-            
-            pts = torch.cat([xs_enc, ys_enc], dim=-1)
-            pts_norm = 2.0 * (pts - self.config.spatial_min) / (self.config.spatial_max - self.config.spatial_min) - 1.0
-            grid = self.set_conv(pts_norm, vals_enc)
-            grid_np = grid.cpu().numpy()
-            
-            fig, axes = plt.subplots(1, 3, figsize=(15, 5))
-            axes[0].scatter(xs, ys, c=vals, s=10)
-            axes[1].imshow(grid_np[0, 0].T, origin='lower')
-            axes[2].imshow(grid_np[0, 1].T, origin='lower')
-            plt.savefig(save_path)
-            plt.close()
-
 
 class Forecaster(nn.Module):
     """Contents ConvLSTM dynamics model (Single Step)."""
@@ -289,22 +263,19 @@ class Decoder(nn.Module):
         h_flat = h_grid.reshape(B*T, C, Hg, Wg)
         
         # 2. Prepare Query Coordinates
-        # (B, T, P, 2)
         coords = torch.cat([target_obs.xs, target_obs.ys], dim=-1)
 
         # Flatten: (BT, P, 2)
         coords_flat = coords.reshape(B*T, P, 2)
         
         # Normalize coordinates to [-1, 1] for grid_sample
-        grid_coords = 2.0 * (coords_flat - self.config.spatial_min) / (self.config.spatial_max - self.config.spatial_min) - 1.0
-        
+        grid_coords = 2.0 * (coords_flat - self.config.spatial_min) / (self.config.spatial_max - self.config.spatial_min) - 1.0     
         # grid_sample expects input grid_coords as (N, H_out, W_out, 2)
-        # Here we treat P as W_out, and H_out=1
         # (BT, 1, P, 2)
         grid_coords = grid_coords.unsqueeze(1)
         
         # 3. Interpolate Features
-        # sampled: (BT, C, 1, P). Grid coords must be in [-1, 1]
+        # sampled: (BT, C, 1, P)
         sampled = F.grid_sample(h_flat, grid_coords, align_corners=True)
 
         # Reshape to (BT, P, C)
@@ -349,7 +320,7 @@ class RNP(nn.Module):
     def init_state(self, batch_size: int, device: torch.device) -> List:
         """Initialize ConvLSTM state."""
         # Calculate latent resolution
-        res = self.config.grid_res // 8 # Based on ConvEncoder
+        res = self.config.grid_res // self.encoder.resolution_reduction # Based on ConvEncoder, 3 avg pools of 2
         if res < 1: res = 1
         
         return self.forecaster.init_hidden(batch_size, (res, res), device)
@@ -358,7 +329,7 @@ class RNP(nn.Module):
         self,
         state: List,
         context_obs: Obs,
-        target_obs: Optional[Obs] = None
+        target_obs: Optional[Obs] = None,
     ) -> RNPOutput:
         """
         Process a SINGLE step of observations.
@@ -391,98 +362,94 @@ class RNP(nn.Module):
             
         return RNPOutput(state=next_state, prediction=[prediction])
 
-    def forecast(
+    def autoregressive_forecast(
         self,
+        state, 
         context_obs: Obs,
-        n_horizons: int,
-    ) -> List[Obs]:
+        target_obs: Obs,
+        horizon: int,
+        num_samples: int = 1,
+    ) -> List[Dict[str, Obs]]:
         """
-        Autoregressive forecasting for H steps for whole map.
+        Autoregressive forecasting for H steps.
         
         Args:
-           context_obs: Initial context sequence (B, T, P, 1)
-           n_horizons: Number of steps for horizon to forecast
+           state: Initial state (can be None, will be initialized)
+           context_obs: Context sequence (B, T, P, 1). Includes values
+           target_obs: Target points (B, 1, P, 1). Used for query coordinates
+           horizon: Number of steps to forecast
+           num_samples: Number of samples to draw (if > 1, expands batch size)
         Returns:
-           List of Obs, length H. Each Obs is (B, 1, P_grid, 1)
+           List of Dict, length horizon. Each element contains 'sample', 'mean' and 'std' Obs.
         """
         device = context_obs.xs.device
         B = context_obs.xs.shape[0]
         
-        # 1. Warmup
-        state = self.init_state(B, device)
-            
-        # Create grid coordinates
-        # (1, Res, Res, 2)
-        grid_x, grid_y = torch.meshgrid(
-            torch.linspace(self.config.spatial_min, self.config.spatial_max, self.config.grid_res, device=device),
-            torch.linspace(self.config.spatial_min, self.config.spatial_max, self.config.grid_res, device=device),
-            indexing='xy'
-        )
+        if num_samples > 1:
+            context_obs = Obs(
+                xs=context_obs.xs.repeat_interleave(num_samples, dim=0),
+                ys=context_obs.ys.repeat_interleave(num_samples, dim=0),
+                values=context_obs.values.repeat_interleave(num_samples, dim=0),
+                mask=context_obs.mask.repeat_interleave(num_samples, dim=0) if context_obs.mask is not None else None,
+                ts=context_obs.ts.repeat_interleave(num_samples, dim=0) if context_obs.ts is not None else None
+            )
+            target_obs = Obs(
+                xs=target_obs.xs.repeat_interleave(num_samples, dim=0),
+                ys=target_obs.ys.repeat_interleave(num_samples, dim=0),
+                values=target_obs.values.repeat_interleave(num_samples, dim=0) if target_obs.values is not None else None,
+                mask=target_obs.mask.repeat_interleave(num_samples, dim=0) if target_obs.mask is not None else None,
+                ts=target_obs.ts.repeat_interleave(num_samples, dim=0) if target_obs.ts is not None else None
+            )
+            B = B * num_samples
+        
+        if state is None:
+            state = self.init_state(B, device)
 
-        # (1, P_grid, 2)
-        grid_pts = torch.stack([grid_x, grid_y], dim=-1).reshape(1, -1, 2)
-        P_grid = grid_pts.shape[1]
+        T_ctx = context_obs.xs.shape[1]
         
-        # Expand for Batch (B, 1, P_grid, 2)
-        query_pts = grid_pts.unsqueeze(1).expand(B, 1, -1, -1)
+        # 1. Encode Context Autoregressively
+        for t in range(T_ctx - 1):
+            ctx_t = slice_obs(context_obs, t, t+1)
+            out = self(state, ctx_t, None)
+            state = out.state
+            
+        current_input = slice_obs(context_obs, T_ctx-1, T_ctx) 
         
-        query_obs = Obs(
-            xs=query_pts[..., 0:1],
-            ys=query_pts[..., 1:2],
-            values=torch.zeros(B, 1, P_grid, 1, device=device),
-            mask=None,
-            ts=None # Time not strictly used in decoder spatial interpolation
-        )
-        
-        # Encode
-        r_step = self.encoder(context_obs)
-        # Remove time dim for Forecaster
-        r_step_sq = r_step.squeeze(1)
-        r_next, state = self.forecaster(r_step_sq, state)
-        
-        # Add time dim back
-        r_next_expanded = r_next.unsqueeze(1)
-        
+        T_trg = target_obs.xs.shape[1]
         predictions = []
+        steps_generated = 0
         
-        while len(predictions) < n_horizons:
-            # Decode current latent -> List[Normal] of length forecast_horizon
-            dists = self.decoder(r_next_expanded, query_obs)
+        while steps_generated < horizon:
+            # Prepare Query for this step
+            t_idx = min(steps_generated, T_trg - 1)
+            trg_step = slice_obs(target_obs, t_idx, t_idx+1)
             
-            # Convert to Obs and append
-            chunk_predictions = []
-            for dist in dists:
-                pred_mean = dist.mean # (B, 1, P_grid, 1)
-                obs_pred = Obs(
-                    xs=query_obs.xs,
-                    ys=query_obs.ys,
-                    values=pred_mean,
-                    mask=None,
-                    ts=None
-                )
-                chunk_predictions.append(obs_pred)
+            # Forward pass
+            out = self(state, current_input, trg_step)
+            state = out.state
             
-            # Add to total predictions
-            predictions.extend(chunk_predictions)
+            dist = out.prediction[-1]
+            s = dist.sample()
+            m = dist.mean
+            std = dist.stddev
+                
+            obs_sample = Obs(
+                xs=trg_step.xs, ys=trg_step.ys, values=s, mask=trg_step.mask, ts=trg_step.ts
+            )
+            obs_mean = Obs(
+                xs=trg_step.xs, ys=trg_step.ys, values=m, mask=trg_step.mask, ts=trg_step.ts
+            )
+            obs_std = Obs(
+                xs=trg_step.xs, ys=trg_step.ys, values=std, mask=trg_step.mask, ts=trg_step.ts
+            )
             
-            if len(predictions) >= n_horizons:
-                break
+            predictions.append({'sample': obs_sample, 'mean': obs_mean, 'std': obs_std})
+            steps_generated += 1
             
-            # If we need more steps, we must advance the state using the predictions we just made.
-            # We treat the predicted sequence as the input for the next steps.
-            # We must iterate through the chunk to update the LSTM state step-by-step.
-            for obs_pred in chunk_predictions:
-                 # Encode single step
-                 r_step = self.encoder(obs_pred)
-                 r_step_sq = r_step.squeeze(1)
-                 
-                 # LSTM Step
-                 r_next, state = self.forecaster(r_step_sq, state)
-                 
-            # After loop, r_next corresponds to the latent at the end of the chunk.
-            r_next_expanded = r_next.unsqueeze(1)
+            # Autoregressive Update
+            current_input = obs_sample
             
-        return predictions[:n_horizons]
+        return predictions
 
 if __name__ == "__main__":
     import os

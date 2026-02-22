@@ -9,6 +9,7 @@ def init_weights(m):
         nn.init.xavier_normal_(m.weight)
         if m.bias is not None:
             m.bias.data.fill_(0)
+
 class MLP(nn.Module):
     """Simple MLP."""
     def __init__(self, layer_sizes, output_dim, activation=nn.ReLU):

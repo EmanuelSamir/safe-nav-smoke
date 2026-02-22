@@ -164,149 +164,102 @@ class RNPMultistep(nn.Module):
             
         return RNPOutput(state=next_state, prediction=prediction)
 
-    def forecast(
+    def autoregressive_forecast(
         self,
+        state, 
         context_obs: Obs,
-        n_horizons: int,
-    ) -> List[Obs]:
+        target_obs: Obs,
+        horizon: int,
+        num_samples: int = 1,
+    ) -> List[Dict[str, Obs]]:
         """
-        Autoregressive forecasting for H steps for whole map.
+        Autoregressive forecasting for H steps.
         
         Args:
-           context_obs: Initial context sequence (B, T, P, 1)
-           n_horizons: Number of steps for horizon to forecast
+           state: Initial state (can be None, will be initialized)
+           context_obs: Context sequence (B, T, P, 1). Includes values
+           target_obs: Target points (B, 1, P, 1). Used for query coordinates
+           horizon: Number of steps to forecast
+           num_samples: Number of samples to draw (if > 1, expands batch size)
+        Returns:
+           List of Dict, length horizon. Each element contains 'sample', 'mean' and 'std' Obs.
         """
         device = context_obs.xs.device
         B = context_obs.xs.shape[0]
         
-        # 1. Warmup
-        state = self.init_state(B, device)
-            
-        # Create grid coordinates
-        # (1, Res, Res, 2)
-        grid_x, grid_y = torch.meshgrid(
-            torch.linspace(self.config.spatial_min, self.config.spatial_max, self.config.grid_res, device=device),
-            torch.linspace(self.config.spatial_min, self.config.spatial_max, self.config.grid_res, device=device),
-            indexing='xy'
-        )
+        if num_samples > 1:
+            context_obs = Obs(
+                xs=context_obs.xs.repeat_interleave(num_samples, dim=0),
+                ys=context_obs.ys.repeat_interleave(num_samples, dim=0),
+                values=context_obs.values.repeat_interleave(num_samples, dim=0),
+                mask=context_obs.mask.repeat_interleave(num_samples, dim=0) if context_obs.mask is not None else None,
+                ts=context_obs.ts.repeat_interleave(num_samples, dim=0) if context_obs.ts is not None else None
+            )
+            target_obs = Obs(
+                xs=target_obs.xs.repeat_interleave(num_samples, dim=0),
+                ys=target_obs.ys.repeat_interleave(num_samples, dim=0),
+                values=target_obs.values.repeat_interleave(num_samples, dim=0) if target_obs.values is not None else None,
+                mask=target_obs.mask.repeat_interleave(num_samples, dim=0) if target_obs.mask is not None else None,
+                ts=target_obs.ts.repeat_interleave(num_samples, dim=0) if target_obs.ts is not None else None
+            )
+            B = B * num_samples
+        
+        if state is None:
+            state = self.init_state(B, device)
 
-        # (1, P_grid, 2)
-        grid_pts = torch.stack([grid_x, grid_y], dim=-1).reshape(1, -1, 2)
-        P_grid = grid_pts.shape[1]
-        
-        # Expand for Batch (B, 1, P_grid, 2)
-        query_pts = grid_pts.unsqueeze(1).expand(B, 1, -1, -1)
-        
-        query_obs = Obs(
-            xs=query_pts[..., 0:1],
-            ys=query_pts[..., 1:2],
-            values=torch.zeros(B, 1, P_grid, 1, device=device),
-            mask=None,
-            ts=None
-        )
-        
-        # Encode Context Sequence
-        # We need to process the context sequence to update the LSTM state
-        # In `rnp.py`, `forecast` iterates over T? No, it takes context_obs.
-        # But `encoder` takes (B, T, ...). `forecaster` is single step.
-        # We need to run the LSTM over the context_obs sequence.
-        
-        # Split context obs into steps
         T_ctx = context_obs.xs.shape[1]
         
-        # To strictly follow RNP pattern, we should iterate. 
-        # But ConvEncoder processes (B, T...) efficiently?
-        # No, ConvEncoder output is (B, T, C, H, W).
-        
-        r_seq = self.encoder(context_obs) # (B, T, C, H, W)
-        
-        # Run LSTM over context
-        for t in range(T_ctx):
-            r_step_sq = r_seq[:, t]
-            r_next, state = self.forecaster(r_step_sq, state)
+        # 1. Encode Context Autoregressively
+        for t in range(T_ctx - 1):
+            ctx_t = slice_obs(context_obs, t, t+1)
+            out = self(state, ctx_t, None)
+            state = out.state
             
-        # r_next is now the latent state at T.
-        r_next_expanded = r_next.unsqueeze(1)
+        current_input = slice_obs(context_obs, T_ctx-1, T_ctx) 
         
+        T_trg = target_obs.xs.shape[1]
         predictions = []
+        steps_generated = 0
         
-        # Current input for next step (for autoregression if needed beyond H)
-        # But wait, our decoder outputs H steps at once!
-        # So at step T, we predict T+1...T+H directly.
-        # If n_horizons <= H_model, we are done in one shot.
-        
-        dists = self.decoder(r_next_expanded, query_obs) # List of H dists
-        
-        # Collect first batch of predictions
-        chunk_preds = []
-        for dist in dists:
-            pred_mean = dist.mean # (B, 1, P, 1)
-            chunk_preds.append(
-                Obs(xs=query_obs.xs, ys=query_obs.ys, values=pred_mean)
-            )
+        while steps_generated < horizon:
+            # Prepare Query for this step
+            t_idx = min(steps_generated, T_trg - 1)
+            trg_step = slice_obs(target_obs, t_idx, t_idx+1)
             
-        predictions.extend(chunk_preds)
-        
-        # If n_horizons > self.forecast_horizon, we need to autoregress.
-        # We need to feed the prediction at T+1 back into the model to update state to T+1.
-        # Then we can predict T+2...T+2+H.
-        # But wait, we already predicted T+2...T+H from state T.
-        # Using state T+1 (derived from predicton T+1) likely yields better T+2 predictions?
-        # Or maybe our model is trained to predict H steps from ANY state.
-        
-        # SIMPLE STRATEGY: 
-        # Just use the H predictions we got.
-        # If we need more, we take the LAST prediction (T+H), encode it, update state, and predict H more.
-        # But we need intermediate states too if we want to slide the window.
-        
-        # Let's support naive sliding window:
-        # 1. Output H preds.
-        # 2. Take 1st pred (T+1). Encode it. Update LSTM -> State T+1.
-        # 3. Predict H preds from State T+1 (T+2...T+1+H).
-        # We can either replace the old T+2 or keep the old one. 
-        # Standard approach: Sliding window. We only keep the immediate next step from each expansion usually, or we keep blocks.
-        # User said: "Para el forecast sí puedes hacer autoregression, pero si ya tienes H pasos listos, quizá puedas hacer ensemble o similar, ya depende de ti."
-        # I will perform block generation if needed, but for now assuming n_horizons == forecast_horizon mostly.
-        
-        # If we need more steps:
-        if len(predictions) < n_horizons:
-             # We need to advance state.
-             # Use the predictions we just generated to advance state.
-             # We can advance state by 1 step, then predict again.
-             
-             # Current encoded input was from T.
-             # We want state at T+1. We need input at T+1.
-             # Input at T+1 is the prediction at T+1 (index 0).
-             
-             current_idx = 0
-             while len(predictions) < n_horizons:
-                 next_input_obs = predictions[current_idx] # Prediction for T+1
-                 
-                 # Encode
-                 r_step = self.encoder(next_input_obs)
-                 r_step_sq = r_step.squeeze(1)
-                 
-                 # Update State
-                 r_next, state = self.forecaster(r_step_sq, state)
-                 r_next_expanded = r_next.unsqueeze(1)
-                 
-                 # Predict H steps
-                 dists_next = self.decoder(r_next_expanded, query_obs)
-                 
-                 # Append these new predictions (shifted by current time)
-                 # We already have predictions up to T+H.
-                 # New predictions are T+2...T+1+H.
-                 # We extend standard list.
-                 # Ideally we fuse them, but simply appending specific ones is easier.
-                 # Let's just append the ones we don't have yet.
-                 
-                 # Actually, simpler: just step 1 by 1 and collect the first horizon prediction always?
-                 # No, we trained for H steps. We should efficiently use them?
-                 # But sticking to user request "al final usaré H=5".
-                 # I will return the first H predictions from the first shot, and if more are needed, 
-                 # I'll rely on the autoregressive loop using the first head.
-                 
-                 # For now, just break if we have enough.
-                 break
-                 
-        return predictions[:n_horizons]
+            # Forward pass
+            out = self(state, current_input, trg_step)
+            state = out.state
+            
+            dists = out.prediction
+            
+            chunk_samples = []
+            chunk_means = []
+            chunk_stds = []
+            for dist in dists:
+                s = dist.sample()
+                m = dist.mean
+                std = dist.stddev
+                
+                chunk_samples.append(s)
+                chunk_means.append(m)
+                chunk_stds.append(std)
+                
+            for s, m, std in zip(chunk_samples, chunk_means, chunk_stds):
+                obs_sample = Obs(xs=trg_step.xs, ys=trg_step.ys, values=s, mask=trg_step.mask, ts=trg_step.ts)
+                obs_mean = Obs(xs=trg_step.xs, ys=trg_step.ys, values=m, mask=trg_step.mask, ts=trg_step.ts)
+                obs_std = Obs(xs=trg_step.xs, ys=trg_step.ys, values=std, mask=trg_step.mask, ts=trg_step.ts)
+                
+                predictions.append({'sample': obs_sample, 'mean': obs_mean, 'std': obs_std})
+                
+            steps_generated += len(chunk_samples)
+            
+            if steps_generated < horizon:
+                # Feedback loop for Multistep (updates state)
+                for pred_vals in chunk_samples:
+                     obs_in = Obs(xs=trg_step.xs, ys=trg_step.ys, values=pred_vals)
+                     out = self(state, obs_in, None)
+                     state = out.state
+                
+                current_input = Obs(xs=trg_step.xs, ys=trg_step.ys, values=chunk_samples[-1])
+            
+        return predictions[:horizon]

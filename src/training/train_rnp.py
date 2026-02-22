@@ -18,12 +18,11 @@ from PIL import Image
 # Imports
 from src.models.model_free.rnp import RNP, RNPConfig
 from src.models.shared.datasets import SequentialDataset, sequential_collate_fn
-from pathlib import Path# Fixed import assumption
-from src.models.shared.optimizer import LinearBetaScheduler
+from pathlib import Path
+from src.models.shared.schedulers import LinearBetaScheduler
+from src.models.shared.observations import Obs, slice_obs
 
 log = logging.getLogger(__name__)
-
-from src.models.shared.observations import Obs, slice_obs
 
 def save_checkpoint(model, optimizer, epoch, loss, params, path):
     torch.save({
@@ -202,7 +201,7 @@ def train(cfg: DictConfig):
         decoder_num_layers=model_cfg.get('num_layers', 3), 
         lstm_num_layers=model_cfg.lstm_layers,
         decoder_fourier_size=model_cfg.get('decoder_fourier_size', 128),
-        decoder_fourier_scale=model_cfg.get('decoder_fourier_scale', 20.0),
+        decoder_fourier_scale=model_cfg.get('decoder_fourier_scale', 10.0),
     )
 
     model = RNP(params).to(device)
