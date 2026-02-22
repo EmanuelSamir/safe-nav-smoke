@@ -37,11 +37,7 @@ class FourierFeatures(nn.Module):
         self.input_max = input_max
         
         # Random frequency matrix B ~ N(0, σ²I) 
-        # Registered as buffer (not trainable, but part of model state)
-        B = torch.randn(input_dim, num_frequencies) * frequency_scale
-        # Explicitly ensure it's not trainable (though buffer default is usually no grad)
-        B.requires_grad = False
-        self.register_buffer('B', B)
+        self.register_buffer('B', torch.randn(input_dim, num_frequencies) * frequency_scale)
         
         # Output dimension: 2 * num_frequencies (sin + cos)
         self.output_dim = num_frequencies * 2
@@ -114,3 +110,20 @@ class ConditionalFourierFeatures(nn.Module):
     
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         return self.encoder(x)
+
+
+if __name__ == "__main__":
+    # Test FourierFeatures
+    import numpy as np
+    fourier_features = FourierFeatures(input_dim=2, num_frequencies=10, frequency_scale=20.0, input_max=10.0)
+    x = 10*torch.tensor(np.stack([np.linspace(0, 1, 10), np.linspace(0, 1, 10)], axis=1), dtype=torch.float32)
+    features = fourier_features(x)
+    print(f"Input shape: {x}")
+    print(f"Output shape: {features.shape}")
+    print(f"Output: {features}")
+
+    # Test ConditionalFourierFeatures
+    conditional_fourier_features = ConditionalFourierFeatures(input_dim=2, use_fourier=True, num_frequencies=128, frequency_scale=20.0, input_max=100.0)
+    features = conditional_fourier_features(x)
+    print(f"Conditional output shape: {features.shape}")
+    print(f"Conditional output: {features}")

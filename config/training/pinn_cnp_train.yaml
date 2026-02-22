@@ -7,7 +7,7 @@ training:
   
   data:
     data_path: "data/playback_data/global_source_400_100_2nd.npz"
-    batch_size: 4
+    batch_size: 8
     train_split: 0.9
     max_samples: null
     context_frames: 10
@@ -18,18 +18,12 @@ training:
   model:
     latent_dim: 128
     hidden_dim: 128
-    out_mode: "lite"
-    use_fourier_spatial: true
-    use_fourier_temporal: true
-    fourier_frequencies: 128
-    fourier_scale: 20.0
-    spatial_max: 30.0
-    temporal_max: 10.0
-    aggregator: "mean"
+    fourier_mapping_size: 32
+    aggregator: "attention"
     
   optimizer:
-    lr: 1e-4
-    max_epochs: 50
+    lr: 5e-3
+    max_epochs: 500
     grad_clip: 1.0
 
   loss:

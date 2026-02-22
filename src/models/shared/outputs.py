@@ -24,7 +24,7 @@ class RNPOutput(ModelOutput):
         prediction: Distribution over predictions (Normal)
     """
     state: Union[Tuple[torch.Tensor, torch.Tensor], List[Tuple[torch.Tensor, torch.Tensor]]]
-    prediction: Optional[Normal] = None
+    prediction: Optional[List[Normal]] = None
 
 
 @dataclass

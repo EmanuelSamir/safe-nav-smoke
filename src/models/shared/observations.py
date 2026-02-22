@@ -60,3 +60,14 @@ class Obs:
             mask=self.mask.swapaxes(0, 1) if self.mask is not None else None,
             ts=self.ts.swapaxes(0, 1) if self.ts is not None else None
         )
+
+def slice_obs(obs, start=0, end=None):
+    """Helper to slice Obs tensors in time dimension (dim 1)."""
+    sl = slice(start, end)
+    return Obs(
+        xs=obs.xs[:, sl],
+        ys=obs.ys[:, sl],
+        ts=obs.ts[:, sl] if obs.ts is not None else None,
+        values=obs.values[:, sl] if obs.values is not None else None,
+        mask=obs.mask[:, sl] if obs.mask is not None else None
+    )

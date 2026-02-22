@@ -99,17 +99,7 @@ class ConvLSTM(nn.Module):
             output_inner = []
             
             for t_idx in range(t):
-                # Input to this layer at time t
-                # If layer=0, it's the input tensor slice
-                # If layer>0, it's the output of previous layer at time t (which we haven't computed fully yet? wait)
-                # Standard LSTM stacking: Layer2 takes sequence output of Layer1
-                if layer_idx == 0:
-                     inp = cur_layer_input[:, t_idx, :, :, :]
-                else:
-                     # For subsequent layers, we need the output of the previous layer at this time step
-                     # But we are iterating layers then time? No, usually time then layers, or layers then time.
-                     # If we iterate layers outer loop, we need full sequence from prev layer.
-                     inp = cur_layer_input[:, t_idx, :, :, :]
+                inp = cur_layer_input[:, t_idx, :, :, :]
                 
                 h_c = self.cell_list[layer_idx](inp, h_c)
                 output_inner.append(h_c[0])

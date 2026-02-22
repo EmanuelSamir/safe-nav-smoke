@@ -1,0 +1,55 @@
+# Configuration for Multi-Step RNP
+training:
+  experiment_name: "rnp_multistep_experiment"
+  output_dir: "outputs/training/rnp_multistep"
+  seed: 42
+  
+  data:
+    data_path: "data/playback_data/global_source_400_100_2nd.npz"
+    batch_size: 8
+    train_split: 0.9
+    max_samples: null
+    
+    # Context (10) + Horizon (5) = 15. 
+    # Or whatever the user wants. Parameterizable.
+    context_length: 10
+    
+    # We set sequence_length in dataset to be sufficient.
+    # Dataset needs total length.
+    sequence_length: 24 # Still used by dataset loader? Or we overwrite it? 
+    # In train_rnp_multistep.py we calculate total_seq_len = ctx + horizon.
+    # So this key might be redundant or used for checking.
+    
+    num_workers: 0
+    info_ratio_per_frame: 0.2
+    epoch_sample_ratio: 0.1
+
+  model:
+    embed_dim: 128
+    hidden_dim: 128
+    num_layers: 3
+    lstm_layers: 1
+    use_fourier_encoder: true
+    use_fourier_decoder: true
+    fourier_frequencies: 128
+    fourier_scale: 20.0
+    spatial_max: 1.0
+    grid_res: 64 # Reduce to 64 for speed, user script had 128
+    
+    # New Params
+    forecast_horizon: 5
+    residual_dynamics: false
+    
+  optimizer:
+    lr: 1e-3
+    min_lr: 1e-5
+    max_epochs: 400
+    grad_clip: 1.0
+
+  checkpoint:
+    save_top_k: 3
+    monitor: "val_ll"
+    mode: "max"
+
+  visualizer:
+    visualize_every: 1

@@ -12,15 +12,129 @@ import os
 from tqdm import tqdm
 from pathlib import Path
 import logging
+from io import BytesIO
+from PIL import Image
+import torchvision.transforms as transforms
+import matplotlib.pyplot as plt
 
 from src.models.model_based.pinn_cnp import PINN_CNP
-from src.models.model_based.utils import ObsPINN
-from src.models.model_based.dataset import GlobalSmokeDataset, pinn_collate_fn
+from src.models.shared.datasets import NonSequentialDataset, nonsequential_collate_fn
+from src.models.shared.observations import Obs
 from src.models.model_based.losses import BlindDiscoveryLoss
-from src.utils.eval_protocol import evaluate_10_15_protocol, evaluate_forecast_protocol
-from src.utils.visualize import log_pinn_fields, log_physics_params
+from src.utils.visualize import log_physics_params
 
 log = logging.getLogger(__name__)
+
+def visualize_results(model, loader, device, writer, epoch, num_samples=4):
+    """
+    Visualize predictions vs ground truth.
+    """
+    model.eval()
+    dataset = loader.dataset
+    H, W = dataset.H, dataset.W
+    res = dataset.res
+    
+    # Get a batch
+    try:
+        batch = next(iter(loader))
+    except StopIteration:
+        return
+        
+    ctx, trg, t0, _ = batch 
+    
+    # Process up to num_samples
+    B = ctx.xs.shape[0]
+    n_vis = min(B, num_samples)
+    print("n_vis: ", n_vis)
+    
+    # Dense Query Grid
+    x_range = np.linspace(-1, 1, W) # Normalized version
+    y_range = np.linspace(-1, 1, H)
+    grid_x, grid_y = np.meshgrid(x_range, y_range)
+    flat_x = torch.from_numpy(grid_x.flatten()).float().to(device).unsqueeze(0).unsqueeze(-1) # (1, P, 1)
+    flat_y = torch.from_numpy(grid_y.flatten()).float().to(device).unsqueeze(0).unsqueeze(-1)
+    
+    fig, axes = plt.subplots(n_vis, 4, figsize=(20, 5 * n_vis))
+    if n_vis == 1: axes = axes.reshape(1, -1)
+
+    for ax in axes.flatten():
+        ax.set_aspect(H/W)
+    
+    for i in range(n_vis):
+        
+        unique_ts = torch.unique(trg.ts[i])
+        if len(unique_ts) == 0: continue
+        
+        # Pick last time
+        t_val = unique_ts[-1].item()
+        
+        # Query Model at t_val (Dense)
+        flat_t = torch.full_like(flat_x, t_val)
+        query = Obs(xs=flat_x, ys=flat_y, ts=flat_t, values=None) # (1, P) but we need (B, P) if batching, or just 1
+        
+        # Context for this sample
+        # ctx is (B, N_ctx)
+        ctx_sample = Obs(
+            xs=ctx.xs[i:i+1].to(device),
+            ys=ctx.ys[i:i+1].to(device),
+            ts=ctx.ts[i:i+1].to(device),
+            values=ctx.values[i:i+1].to(device),
+            mask=ctx.mask[i:i+1].to(device) if ctx.mask is not None else None
+        )
+        
+        with torch.no_grad():
+            output = model(ctx_sample, query)
+            
+        pred_grid = output.smoke_dist.loc.reshape(H, W).cpu().numpy()
+        
+        # Ground Truth at this time
+        # We need the full grid from the dataset really, or reconstruction from trg points
+        # But trg points might be sparse.
+        # Let's use the sparse points we have in trg matching t_val
+        
+        gt_xs = trg.xs[i].cpu().numpy()
+        gt_ys = trg.ys[i].cpu().numpy()
+        gt_vals = trg.values[i].cpu().numpy()
+        
+        # Plot Context (All times)
+        ctx_xs = ctx.xs[i].cpu().numpy()
+        ctx_ys = ctx.ys[i].cpu().numpy()
+        ctx_ts = ctx.ts[i].cpu().numpy()
+        
+        sc0 = axes[i, 0].scatter(ctx_xs, ctx_ys, c=ctx_ts, cmap='viridis', s=5)
+        axes[i, 0].set_title("Context (Color=Time)")
+        plt.colorbar(sc0, ax=axes[i, 0])
+
+        # Plot GT Sparse
+        sc1 = axes[i, 1].scatter(gt_xs, gt_ys, c=gt_vals, cmap='viridis', vmin=0, vmax=1, s=10)
+        axes[i, 1].set_title(f"GT Sparse (t={t_val:.2f})")
+        plt.colorbar(sc1, ax=axes[i, 1])
+
+        # Plot Pred Dense
+        im2 = axes[i, 2].imshow(pred_grid, origin='lower', extent=[0, W*res, 0, H*res], cmap='viridis', vmin=0, vmax=1)
+        axes[i, 2].set_title(f"Pred Dense (t={t_val:.2f})")
+        plt.colorbar(im2, ax=axes[i, 2])
+        
+        # Plot Error (if we have enough GT coverage to approximate, otherwise skip or do point error)
+        # Let's map GT sparse to grid for error? Hard if sparse.
+        # Just show Pred again or Velocity
+        if output.u is not None:
+            u_grid = output.u.reshape(H, W).cpu().numpy()
+            v_grid = output.v.reshape(H, W).cpu().numpy()
+            # Subsample for quiver
+            skip = 4
+            X, Y = np.meshgrid(x_range, y_range)
+            axes[i, 3].quiver(X[::skip, ::skip], Y[::skip, ::skip], u_grid[::skip, ::skip], v_grid[::skip, ::skip])
+            axes[i, 3].set_title("Velocity Field")
+    
+    plt.tight_layout()
+    buf = BytesIO()
+    plt.savefig(buf, format='png')
+    buf.seek(0)
+    img = Image.open(buf)
+    writer.add_image("Val/Visualization", transforms.ToTensor()(img), epoch)
+    plt.close()
+
 
 @hydra.main(version_base=None, config_path="../../config", config_name="training/pinn_cnp_train")
 def main(cfg: DictConfig):
@@ -28,7 +142,8 @@ def main(cfg: DictConfig):
     torch.manual_seed(cfg.training.seed)
     device = torch.device("cuda" if torch.cuda.is_available() else "mps" if torch.backends.mps.is_available() else "cpu")
     
-    output_dir = cfg.hydra.runtime.output_dir
+    from hydra.core.hydra_config import HydraConfig
+    output_dir = HydraConfig.get().runtime.output_dir
     
     # Create subdirectories
     log_dir = os.path.join(output_dir, "logs")
@@ -43,32 +158,40 @@ def main(cfg: DictConfig):
     if not os.path.exists(data_path):
         raise FileNotFoundError(f"Data path {data_path} does not exist")
     
-    train_ds = GlobalSmokeDataset(
+    # New Dataset Configuration
+    train_ds = NonSequentialDataset(
         data_path=str(data_path),
-        context_frames=10,
-        target_frames=15,
-        info_ratio_per_frame=0.2,
+        sequence_length=25,
+        context_length=10, # First 10 frames for context
         mode='train',
-        max_samples=cfg.training.data.get("max_samples", None)
+        train_split=0.8,
+        ctx_points_ratios=(0.3,0.5), #(0.005, 0.01),
+        trg_points_ratio=1.0,
+        max_episodes=cfg.training.data.get("max_samples", None),
+        downsample_factor=cfg.training.data.get("downsample_factor", 5)
     )
     
-    val_ds = GlobalSmokeDataset(
+    val_ds = NonSequentialDataset(
         data_path=str(data_path),
-        context_frames=10,
-        target_frames=15,
-        info_ratio_per_frame=0.2,
+        sequence_length=25,
+        context_length=10,
         mode='val',
-        max_samples=cfg.training.data.get("max_samples", None)
+        train_split=0.8,
+        ctx_points_ratios=(0.3,0.5),
+        trg_points_ratio=1.0,
+        max_episodes=cfg.training.data.get("max_samples", None),
+        downsample_factor=cfg.training.data.get("downsample_factor", 5)
     )
     
-    train_loader = DataLoader(train_ds, batch_size=4, shuffle=True, collate_fn=pinn_collate_fn)
-    val_loader = DataLoader(val_ds, batch_size=4, shuffle=False, collate_fn=pinn_collate_fn)
+    train_loader = DataLoader(train_ds, batch_size=cfg.training.data.batch_size, shuffle=True, collate_fn=nonsequential_collate_fn)
+    val_loader = DataLoader(val_ds, batch_size=cfg.training.data.batch_size, shuffle=False, collate_fn=nonsequential_collate_fn) # Batch 1 for val usually safer for visualization
     
     # 3. Model & Losses
-    # Use "full" mode for BlindDiscoveryLoss (Navier-Stokes)
     hyper_params = {
-        "latent_dim": 128, "hidden_dim": 128, "out_mode": "lite",
-        "aggregator_type": cfg.training.model.get("aggregator", "attention")
+        "latent_dim": cfg.training.model.latent_dim,
+        "hidden_dim": cfg.training.model.hidden_dim,
+        "fourier_mapping_size": cfg.training.model.fourier_mapping_size,
+        "aggregator_type": cfg.training.model.aggregator
     }
     model = PINN_CNP(**hyper_params).to(device)
     
@@ -81,7 +204,6 @@ def main(cfg: DictConfig):
         list(model.parameters()) + list(physics_loss_fn.parameters()), 
         lr=cfg.training.optimizer.lr
     )
-    # Scheduler para bajar el LR cuando el error se estanca
     scheduler = optim.lr_scheduler.ReduceLROnPlateau(optimizer, mode='min', factor=0.5, patience=20)
     
     # 4. Training Loop
@@ -92,26 +214,26 @@ def main(cfg: DictConfig):
         train_mse, train_phys = 0, 0
         
         pbar = tqdm(train_loader, desc=f"Epoch {epoch}")
-        for context, target, total, inflow_map, ep_idx, t0 in pbar:
+        for batch in pbar:
+            # Unpack NonSequential Collate
+            # batch is (ctx, trg, t0) where ctx and trg are Obs
+            context, target, t0, _ = batch
+            
             context = context.to(device)
             target = target.to(device)
             
             optimizer.zero_grad()
             
-            # Forward pass
+            # Forward pass: Query points are the target points
+            # We want to predict values at target locations
             output = model(context, target)
             
             # 1. Data Loss (MSE on smoke)
-            # ObsPINN target.values are the real smoke values
-            pred_s = output.smoke_dist.loc
-            loss_mse = torch.mean((pred_s.squeeze(-1) - target.values)**2)
-            
+            loss_mse = -output.smoke_dist.log_prob(target.values).mean()
+
             # 2. Physics Loss
-            # We need to reshape for the loss function which expects (TotalPoints, Dim)
-            # and coordinated for derivatives
-            B, N, _ = output.u.shape
-            
             # Flatten batch for PDE calculation
+            # output.u etc are (B, N, 1) -> (B*N, 1)
             pred_tensor = torch.cat([
                 output.u.view(-1, 1), 
                 output.v.view(-1, 1), 
@@ -123,149 +245,64 @@ def main(cfg: DictConfig):
             # Use the exact coords tensor that has requires_grad=True
             coords_tensor = output.coords.view(-1, 3)
             
-            loss_pde, pde_stats = physics_loss_fn(pred_tensor, coords_tensor)
+            # loss_pde, pde_stats = physics_loss_fn(pred_tensor, coords_tensor)
             
             mse_w = cfg.training.loss.mse_weight
-            pde_w = cfg.training.loss.pde_weight
-            total_loss = mse_w * loss_mse + pde_w * loss_pde # Scaling
+            # pde_w = cfg.training.loss.pde_weight
+            total_loss = mse_w * loss_mse 
             
             total_loss.backward()
             optimizer.step()
             
             train_mse += loss_mse.item()
-            train_phys += loss_pde.item()
-            pbar.set_postfix({'MSE': loss_mse.item(), 'PDE': loss_pde.item()})
+            # train_phys += loss_pde.item()
+            pbar.set_postfix({'MSE': loss_mse.item()})
             
         # Logging
         avg_mse = train_mse / len(train_loader)
-        avg_phys = train_phys / len(train_loader)
+        # avg_phys = train_phys / len(train_loader)
         writer.add_scalar("Train/MSE", avg_mse, epoch)
-        writer.add_scalar("Train/PDE", avg_phys, epoch)
-        # Log PDE Internals
-        for stat_name, stat_val in pde_stats.items():
-            writer.add_scalar(f"PDE_Stats/{stat_name}", stat_val, epoch)
+        # writer.add_scalar("Train/PDE", avg_phys, epoch)
+        
+        # for stat_name, stat_val in pde_stats.items():
+        #     writer.add_scalar(f"PDE_Stats/{stat_name}", stat_val, epoch)
         log_physics_params(physics_loss_fn, writer, epoch)
         
         # --- VAL ---
         model.eval()
         val_mse = 0
         with torch.no_grad():
-            for context, target, total, inflow_map, ep_idx, t0 in val_loader:
-                output = model(context.to(device), target.to(device))
-                mse = torch.mean((output.smoke_dist.loc.squeeze(-1) - target.values.to(device))**2)
+            for batch in val_loader:
+                context, target, t0, _ = batch
+                context = context.to(device)
+                target = target.to(device)
+                
+                output = model(context, target)
+                mse = -output.smoke_dist.log_prob(target.values).mean()
                 val_mse += mse.item()
         
         avg_val_mse = val_mse / len(val_loader)
         writer.add_scalar("Val/MSE", avg_val_mse, epoch)
         log.info(f"Epoch {epoch}: Train MSE={avg_mse:.6f}, Val MSE={avg_val_mse:.6f}")
         
-        # Step del scheduler
         scheduler.step(avg_val_mse)
         writer.add_scalar("Train/LR", optimizer.param_groups[0]['lr'], epoch)
         
         if avg_val_mse < best_val:
             best_val = avg_val_mse
-            save_name = f"best_pinn_m{int(mse_w)}_p{int(pde_w)}.pt"
-            # Updated Save Logic
+            save_name = f"best_pinn_m{int(mse_w)}.pt"#_p{int(pde_w)}.pt"
             checkpoint = {
                 'epoch': epoch,
                 'state_dict': model.state_dict(),
                 'hyper_parameters': hyper_params,
                 'best_val_mse': best_val,
-                'optimizer_state_dict': optimizer.state_dict()
+                'optimizer_state_dict': optimizer.state_dict(),
+                # 'physics_params': physics_loss_fn.state_dict()
             }
             torch.save(checkpoint, os.path.join(ckpt_dir, save_name))
             
         if epoch % 1 == 0:
-            log_pinn_fields(model, val_loader, device, writer, epoch, name="Val")
-            evaluate_10_15_protocol(model, val_ds, device, writer, epoch, model_type="model_based")
-
-        # Full Dataset Benchmark 10->15
-        proto_mse = evaluate_forecast_protocol(model, val_loader, device, model_type="model_based")
-        writer.add_scalar("Protocol_10_15/Dataset_MSE", proto_mse, epoch)
-        log.info(f"Protocol 10-15 MSE: {proto_mse:.4f}")
-
-def visualize_pinn(model, loader, device, writer, epoch):
-    
-    model.eval()
-    
-    # Select random sample from entire dataset
-    dataset = loader.dataset
-    idx = np.random.randint(0, len(dataset))
-    sample = dataset[idx]
-    
-    # Collate (expects list of samples)
-    if 'pinn_collate_fn' in globals():
-        collate_fn = pinn_collate_fn
-    else:
-        from src.models.model_based.dataset import pinn_collate_fn as collate_fn
-        
-    batch = collate_fn([sample])
-    context, target, total = batch[:3] # Ignore extra returns if any
-    
-    # Get metadata for dense query
-    H, W = dataset.H, dataset.W
-    res = dataset.res
-    
-    batch_size = context.xs.shape[0] # Should be 1
-    sample_idx = 0
-    
-    # Pick a random timestamp from the target sequence of this sample
-    # target.ts is (B, N)
-    unique_ts = torch.unique(target.ts[sample_idx])
-    # Filter out padding or invalid if any? Usually just valid times.
-    t_val = unique_ts[np.random.randint(0, len(unique_ts))].item()
-    
-    # GT Cloud at this specific time
-    # We find points that are close to t_val (float comparison tolerance)
-    time_mask = torch.abs(target.ts[sample_idx] - t_val) < 1e-4
-    gt_xs = target.xs[sample_idx][time_mask].cpu().numpy()
-    gt_ys = target.ys[sample_idx][time_mask].cpu().numpy()
-    gt_vals = target.values[sample_idx][time_mask].cpu().numpy()
-    
-    # Dense Query at t_val
-    x_range = np.arange(W) * res
-    y_range = np.arange(H) * res
-    grid_x, grid_y = np.meshgrid(x_range, y_range)
-    flat_x = torch.from_numpy(grid_x.flatten()).float().to(device).unsqueeze(0)
-    flat_y = torch.from_numpy(grid_y.flatten()).float().to(device).unsqueeze(0)
-    flat_t = torch.full_like(flat_x, t_val)
-    
-    query = ObsPINN(xs=flat_x, ys=flat_y, ts=flat_t)
-    
-    # Context for this sample
-    ctx_sample = ObsPINN(
-        xs=context.xs[sample_idx:sample_idx+1].to(device),
-        ys=context.ys[sample_idx:sample_idx+1].to(device),
-        ts=context.ts[sample_idx:sample_idx+1].to(device),
-        values=context.values[sample_idx:sample_idx+1].to(device)
-    )
-    
-    with torch.no_grad():
-        output = model(ctx_sample, query)
-        
-    pred_grid = output.smoke_dist.loc.reshape(H, W).cpu().numpy()
-    
-    fig, axes = plt.subplots(1, 2, figsize=(12, 5))
-    
-    # Plot GT as scatter 
-    # Use bounds [0, W*res]
-    sc1 = axes[0].scatter(gt_xs, gt_ys, c=gt_vals, cmap='plasma', vmin=0, vmax=1)
-    axes[0].set_xlim(0, W*res)
-    axes[0].set_ylim(0, H*res)
-    axes[0].set_title(f"GT Sparse (t={t_val:.2f})")
-    plt.colorbar(sc1, ax=axes[0])
-    
-    # Plot Dense Pred as Image
-    im2 = axes[1].imshow(pred_grid, origin='lower', extent=[0, W*res, 0, H*res], cmap='plasma', vmin=0, vmax=1)
-    axes[1].set_title(f"PINN Dense Pred (t={t_val:.2f})")
-    plt.colorbar(im2, ax=axes[1])
-    
-    buf = BytesIO()
-    plt.savefig(buf, format='png')
-    buf.seek(0)
-    writer.add_image("Val/GlobalForecasting", transforms.ToTensor()(Image.open(buf)), epoch)
-    plt.close()
+            visualize_results(model, val_loader, device, writer, epoch)
 
 if __name__ == "__main__":
     main()

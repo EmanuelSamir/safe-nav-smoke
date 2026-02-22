@@ -22,6 +22,24 @@ class MLP(nn.Module):
     
     def forward(self, x):
         return self.net(x)
+
+class FourierFeatureEncoder(nn.Module):
+    def __init__(self, input_dim=1, mapping_size=32, scale=10.0):
+        super().__init__()
+        self.input_dim = input_dim
+        self.mapping_size = mapping_size
+        self.scale = scale
+        self.output_dim = 2 * mapping_size
+        # B is sampled from Gaussian distribution N(0, scale^2) = scale * N(0, 1)
+        self.register_buffer('B', torch.randn(input_dim, mapping_size) * scale)
+
+    def forward(self, x):
+        # x: (..., input_dim)
+        # B: (input_dim, mapping_size)
+        # proj: (..., mapping_size)
+        proj = torch.matmul(x, self.B)
+        return torch.cat([torch.sin(proj), torch.cos(proj)], dim=-1)
+
 class SoftplusSigma(nn.Module):
     """Helper to convert raw network output to a valid standard deviation."""
     def __init__(self, min_std: float = 0.1, scale: float = 0.9):
@@ -51,7 +69,7 @@ class AttentionAggregator(nn.Module):
         
         if mask is not None:
             # Compute a masked mean to serve as initial Query
-            valid_mask = (~mask).float().unsqueeze(-1)
+            valid_mask = (mask).float().unsqueeze(-1)
             q = (r_i * valid_mask).sum(dim=1, keepdim=True) / valid_mask.sum(dim=1, keepdim=True).clamp(min=1.0)
         else:
             q = r_i.mean(dim=1, keepdim=True)
@@ -61,7 +79,7 @@ class AttentionAggregator(nn.Module):
         V = self.value_proj(r_i)
 
         # MHA output: (B, 1, h_dim)
-        attn_out, _ = self.attn(Q, K, V, key_padding_mask=mask)
+        attn_out, _ = self.attn(Q, K, V, key_padding_mask=~mask)
         return self.out_proj(attn_out.squeeze(1))
 
 class ResidualBlock(nn.Module):
@@ -86,7 +104,7 @@ class MeanAggregator(nn.Module):
         
     def forward(self, r_i: torch.Tensor, mask: Optional[torch.Tensor] = None) -> torch.Tensor:
         if mask is not None:
-            valid_mask = (~mask).float().unsqueeze(-1) # (B, N, 1)
+            valid_mask = (mask).float().unsqueeze(-1) # (B, N, 1)
             # Sum / Count
             return (r_i * valid_mask).sum(dim=1) / valid_mask.sum(dim=1).clamp(min=1.0)
         else:

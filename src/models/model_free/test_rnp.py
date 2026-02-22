@@ -112,16 +112,6 @@ def main():
     
     # Sampling helper
     def get_context_obs(ep_idx, t_current):
-        """
-        Construct context Obs for episode[ep_idx] from t=0 to t_current (inclusive? no, usually exclusive in python range)
-        Let's say t_current is the index of the frame we want to predict NEXT? 
-        No, t_current is the current time step. We have observed up to t_current.
-        We forecast t_current+1, ...
-        So sequence is 0..t_current.
-        """
-        # To match training distribution, we should sample sparse points.
-        # However, for 'visualizing' what the model can do given history, 
-        # usually we give it reasonable data. Let's use 20% points.
         
         ep = smoke_data[ep_idx] # (T_total, H, W)
         
@@ -132,7 +122,7 @@ def main():
         
         # We can implement a fast sampler or dense-to-sparse
         # For simplicity, let's randomly sample N points per frame.
-        num_points = int(H_grid * W_grid * 0.15) 
+        num_points = int(H_grid * W_grid * 0.5) 
         
         # Vectorized sampling
         # We need (1, T_seq, num_points, 1)

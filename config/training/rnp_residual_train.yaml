@@ -1,8 +1,8 @@
 # @package _global_
 # Configuration for RNP (Recurrent Neural Process)
 training:
-  experiment_name: "rnp_experiment"
-  output_dir: "outputs/training/rnp"
+  experiment_name: "rnp_residual_experiment"
+  output_dir: "outputs/training/rnp_residual"
   seed: 42
   
   data:

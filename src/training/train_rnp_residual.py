@@ -16,7 +16,8 @@ from io import BytesIO
 from PIL import Image
 
 # Imports
-from src.models.model_free.rnp import RNP, RNPConfig
+from src.models.model_free.rnp_residual import RNPResidual
+from src.models.model_free.rnp import RNPConfig
 from src.models.shared.datasets import SequentialDataset, sequential_collate_fn
 from pathlib import Path# Fixed import assumption
 from src.models.shared.optimizer import LinearBetaScheduler
@@ -64,7 +65,7 @@ def log_visualization_to_tensorboard(model, loader, device, writer, epoch):
             output = model(state, context_obs=ctx_t, target_obs=trg_t)
             state = output.state
 
-            predictions.append(output.prediction[0])
+            predictions.append(output.prediction[1])
         
         cases = 4
         fig, axes = plt.subplots(cases, 3, figsize=(15, 3*cases))
@@ -99,7 +100,7 @@ def log_visualization_to_tensorboard(model, loader, device, writer, epoch):
             sc2 = axes[i, 1].scatter(xs, ys, c=pr, s=20, vmin=0, vmax=1, cmap='rainbow')
             axes[i, 1].set_title(f"Pred Frame: {t_vis} | Ctx Len: {ctx.xs.shape}")
             plt.colorbar(sc2, ax=axes[i, 1])
-            
+
             sc3 = axes[i, 2].scatter(xs, ys, c=pr_std, s=20, vmin=0, vmax=1, cmap='rainbow')
             axes[i, 2].set_title(f"Pred Std Frame: {t_vis} | Ctx Len: {ctx.xs.shape}")
             plt.colorbar(sc3, ax=axes[i, 2])
@@ -115,7 +116,7 @@ def log_visualization_to_tensorboard(model, loader, device, writer, epoch):
         writer.add_image("Val/Prediction", image_tensor, epoch)
         plt.close()
 
-@hydra.main(version_base=None, config_path="../../config/training", config_name="rnp_train")
+@hydra.main(version_base=None, config_path="../../config/training", config_name="rnp_residual_train")
 def train(cfg: DictConfig):
     
     # 1. Setup
@@ -205,7 +206,7 @@ def train(cfg: DictConfig):
         decoder_fourier_scale=model_cfg.get('decoder_fourier_scale', 20.0),
     )
 
-    model = RNP(params).to(device)
+    model = RNPResidual(params).to(device)
     print(f"Model params: {sum(p.numel() for p in model.parameters())}")
 
     # 4. Optimizer
@@ -263,29 +264,38 @@ def train(cfg: DictConfig):
                 # Forward pass (single step)
                 output = model(state, context_obs=ctx_t, target_obs=trg_t)
                 state = output.state # Update state for next step
-
-                assert len(output.prediction) == 1, "This script only supports single step predictions"
                 
-                pred_dist = output.prediction[0]
+                pred_dist_t = output.prediction[0]
+                pred_dist_tp1 = output.prediction[1]
                 
                 # Loss Calculation (One Step)
-                gt_val = trg_t.values # (B, 1, P, 1)
+                gt_val = ctx_t.values # (B, 1, P, 1)
                 
                 # Log Prob: (B, 1, P, 1)
-                ll_per_point = pred_dist.log_prob(gt_val)
-
-                prev_pred_obs = trg_t
-                prev_pred_obs.values = pred_dist.sample()
+                ll_per_point_t = pred_dist_t.log_prob(gt_val)
                     
+                if ctx_t.mask is not None:
+                     mask = ctx_t.mask.float() # (B, 1, P, 1)
+                     count = mask.sum(dim=-2).clamp(min=1.0) # (B, 1, 1)
+                     ll_step_t = (ll_per_point_t * mask).sum(dim=-2) / count
+                else:
+                     ll_step_t = ll_per_point_t.mean(dim=-2)
+
+                gt_val = trg_t.values # (B, 1, P, 1)
+                ll_per_point_tp1 = pred_dist_tp1.log_prob(gt_val)
+
                 if trg_t.mask is not None:
                      mask = trg_t.mask.float() # (B, 1, P, 1)
                      count = mask.sum(dim=-2).clamp(min=1.0) # (B, 1, 1)
-                     ll_step = (ll_per_point * mask).sum(dim=-2) / count
+                     ll_step_tp1 = (ll_per_point_tp1 * mask).sum(dim=-2) / count
                 else:
-                     ll_step = ll_per_point.mean(dim=-2)
+                     ll_step_tp1 = ll_per_point_tp1.mean(dim=-2)
+
+                prev_pred_obs = trg_t
+                prev_pred_obs.values = pred_dist_tp1.sample()
                 
                 # ll_step is (B, 1, 1). Mean over batch.
-                loss_over_time += -ll_step.mean()
+                loss_over_time += -ll_step_t.mean() - ll_step_tp1.mean()
 
             ratio_force /= T
             print(f"Ratio force: {ratio_force}")
@@ -334,7 +344,7 @@ def train(cfg: DictConfig):
 
                     output = model(state, context_obs=ctx_t, target_obs=trg_t)
                     state = output.state
-                    pred_dist = output.prediction[0]
+                    pred_dist = output.prediction[1]
                     
                     gt_val = trg_t.values
                     ll_per_point = pred_dist.log_prob(gt_val)

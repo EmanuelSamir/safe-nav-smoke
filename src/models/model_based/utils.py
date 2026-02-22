@@ -4,7 +4,7 @@ from typing import Optional
 from torch.distributions import Normal
 
 @dataclass
-class Output:
+class PINNOutput:
     """Complete model output for evaluation and physics."""
     smoke_dist: Normal          # Probability distribution for s
     u: torch.Tensor             # Velocity Field X
