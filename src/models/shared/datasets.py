@@ -171,7 +171,7 @@ class SequentialDataset(BaseSmokeDataset):
                  downsample_factor: int = 1,
                  normalized_coords: bool = True):
         
-        super().__init__(data_path, train_split, mode, max_episodes, data=None, downsample_factor=downsample_factor)
+        super().__init__(data_path, train_split, mode, max_episodes, downsample_factor=downsample_factor)
         self.ctx_min_pts = int(self.H * self.W * ctx_points_ratios[0])
         self.ctx_max_pts = int(self.H * self.W * ctx_points_ratios[1])
         self.trg_pts = int(self.H * self.W * trg_points_ratio)

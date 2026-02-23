@@ -19,7 +19,7 @@ from PIL import Image
 from src.models.model_free.rnp_multistep import RNPMultistep, RNPConfig
 from src.models.shared.datasets import SequentialDataset, sequential_collate_fn
 from pathlib import Path
-from src.models.shared.optimizer import LinearBetaScheduler
+from src.models.shared.schedulers import LinearBetaScheduler
 
 log = logging.getLogger(__name__)
 
@@ -194,8 +194,7 @@ def train(cfg: DictConfig):
     seq_len = cfg.training.data.sequence_length
     max_episodes = cfg.training.data.get("max_samples", None)
     
-    # User specified default H=5
-    forecast_horizon = 5 # Can be parameterized in config later
+    forecast_horizon = cfg.training.model.get("forecast_horizon", 5)
     
     train_dataset = SequentialDataset(
         data_path=str(data_path),
@@ -253,6 +252,12 @@ def train(cfg: DictConfig):
 
     # 5. Training Loop
     best_val_ll = -float('inf')
+    sampling_scheduler = LinearBetaScheduler(
+        beta_start=cfg.training.sampling.beta_start,
+        beta_end=cfg.training.sampling.beta_end,
+        num_steps=cfg.training.sampling.warmup_epochs
+    )
+
     
     for epoch in range(opt_cfg.max_epochs):
         model.train()
@@ -266,12 +271,6 @@ def train(cfg: DictConfig):
             ctx = ctx.to(device)
             trg = trg.to(device)
 
-            # In training loop:
-            # We iterate over the sequence length T of the CONTEXT.
-            # For each step t, we have a target observation that contains H steps.
-            # SequentialDataset returns length T lists. 
-            # collate_fn stacks them into (B, T, ...) tensors.
-            
             optimizer.zero_grad()
             
             # Init state
@@ -281,6 +280,9 @@ def train(cfg: DictConfig):
             loss_over_time = 0
             
             # Iterate time steps
+            predictions_buffer = {} # maps t -> list of prediction Obs or values
+            ratio_force = 0
+            
             for t in range(T):
                 # Slice single step
                 ctx_t = slice_obs(ctx, t, t+1)
@@ -288,6 +290,18 @@ def train(cfg: DictConfig):
                 # Target contains H steps of values. 
                 # Shape: (B, 1, P, H) if properly collated.
                 trg_t = slice_obs(trg, t, t+1) 
+                
+                # Check Scheduler for Scheduled Sampling
+                # Available predictions for step t
+                if t in predictions_buffer and len(predictions_buffer[t]) > 0:
+                    rand_number = random.random()
+                    if rand_number < sampling_scheduler.update(epoch):
+                        # Randomly pick from previous predictions for time t
+                        sampled_idx = random.randint(0, len(predictions_buffer[t]) - 1)
+                        
+                        # Use predicted Obs as context for current step
+                        ctx_t = predictions_buffer[t][sampled_idx]
+                        ratio_force += 1
                 
                 # Forward pass (single step input, multi-step output)
                 output = model(state, context_obs=ctx_t, target_obs=trg_t)
@@ -301,13 +315,7 @@ def train(cfg: DictConfig):
                 step_loss = 0
                 
                 if trg_t.mask is not None:
-                     mask = trg_t.mask.float() # (B, 1, P, 1) or (B, 1, P, H)?
-                     # Mask logic in collate fn: mask is (B, T, P, 1) usually.
-                     # But if values are (B, T, P, H), mask might need expansion or is shared?
-                     # In _sample_forecast_points, we use SAME spatial locations.
-                     # So mask is valid for all H steps (temporal mask).
-                     # Wait, `mask` in `Obs` is usually for spatial padding.
-                     # Yes, `mask` is (B, 1, P, 1). It applies to all H steps because spatial locations are same.
+                     mask = trg_t.mask.float() # (B, 1, P, 1) or (B, 1, P, H)
                      count = mask.sum(dim=-2).clamp(min=1.0) # (B, 1, 1, 1)
                 
                 for h_idx in range(forecast_horizon):
@@ -328,12 +336,39 @@ def train(cfg: DictConfig):
                          
                     step_loss += -ll_step_h.mean()
                 
-                # Average loss over horizon? Or Sum?
-                # User says: "visualizacion sí que muestre los H predicted mean y var con su respectivo GT"
-                # Usually we sum NLL over steps.
                 step_loss = step_loss / forecast_horizon
                 
                 loss_over_time += step_loss
+                
+                # Store predictions for future steps in the buffer (detached samples)
+                with torch.no_grad():
+                    for h_idx in range(forecast_horizon):
+                        pred_t = t + 1 + h_idx
+                        if pred_t not in predictions_buffer:
+                            predictions_buffer[pred_t] = []
+                        
+                        sampled_vals = predictions[h_idx].sample() # usually (B, 1, P, 1) or (B, P, 1)
+                        
+                        # We must assure shape matches context expectations (B, 1, P, 1)
+                        if sampled_vals.dim() == 3: # (B, P, 1) -> (B, 1, P, 1)
+                             sampled_vals = sampled_vals.unsqueeze(1)
+                        elif sampled_vals.dim() == 2: # (B, P) -> (B, 1, P, 1)
+                             sampled_vals = sampled_vals.unsqueeze(1).unsqueeze(-1)
+                        elif sampled_vals.shape[1] > 1: # if for some reason it's (B, T, P, 1)
+                             sampled_vals = sampled_vals[:, 0:1, :, :]
+                             
+                        pred_obs = Obs(
+                            xs=trg_t.xs,
+                            ys=trg_t.ys,
+                            values=sampled_vals,
+                            mask=trg_t.mask,
+                            ts=trg_t.ts
+                        )
+                        predictions_buffer[pred_t].append(pred_obs)
+                
+                # Clear memory for current step t
+                if t in predictions_buffer:
+                    del predictions_buffer[t]
 
             # Average loss over sequence time steps
             loss = loss_over_time / T
@@ -345,7 +380,10 @@ def train(cfg: DictConfig):
             train_loss += loss.item()
             train_ll += -loss.item() # This is approximate
 
-            pbar.set_postfix({'loss': loss.item()})
+            pbar.set_postfix({
+                'loss': loss.item(),
+                'force_ratio': f"{ratio_force}/{T}"
+            })
             
         avg_train_loss = train_loss / len(train_loader)
         scheduler.step()

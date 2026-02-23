@@ -12,7 +12,6 @@ import argparse
 sys.path.append(os.getcwd())
 
 from src.models.model_free.rnp import RNP, RNPConfig
-from src.models.model_free.rnp_residual import RNPResidual
 from src.models.model_free.rnp_multistep import RNPMultistep
 from src.models.shared.observations import Obs, slice_obs
 
@@ -42,121 +41,6 @@ def get_dense_query_obs(B, device, x_size, y_size, res_val, H_grid, W_grid):
         ts=None
     )
 
-def autoregressive_rollout(model, context_obs, horizon, H_grid, W_grid, x_size, y_size, res_val, model_type='rnp', num_samples=1):
-    start_time = time.time()
-    
-    B = num_samples
-    device = context_obs.xs.device
-    
-    ctx = Obs(
-        xs=context_obs.xs.expand(B, -1, -1, -1),
-        ys=context_obs.ys.expand(B, -1, -1, -1),
-        values=context_obs.values.expand(B, -1, -1, -1),
-        mask=context_obs.mask,
-        ts=context_obs.ts
-    )
-    
-    state = model.init_state(batch_size=B, device=device)
-    
-    T_ctx = ctx.xs.shape[1]
-    
-    for t in range(T_ctx):
-        r_step = model.encoder(slice_obs(ctx, t, t+1))
-        r_step_sq = r_step.squeeze(1)
-        _, state = model.forecaster(r_step_sq, state)
-        
-    query_obs = get_dense_query_obs(B, device, x_size, y_size, res_val, H_grid, W_grid)
-    
-    current_input = slice_obs(ctx, T_ctx-1, T_ctx) 
-    
-    trajectories = [] 
-    
-    steps_generated = 0
-    
-    while steps_generated < horizon:
-        r_step = model.encoder(current_input)
-        r_step_sq = r_step.squeeze(1)
-        
-        r_next, state = model.forecaster(r_step_sq, state)
-        r_next_expanded = r_next.unsqueeze(1)
-        
-        if model_type == 'multistep':
-            dists = model.decoder(r_next_expanded, query_obs)
-            chunk_samples = []
-            for dist in dists:
-                if num_samples > 1:
-                    s = dist.sample()
-                else:
-                    s = dist.mean
-                chunk_samples.append(s)
-                
-            trajectories.extend(chunk_samples)
-            steps_generated += len(chunk_samples)
-            
-            if steps_generated < horizon:
-                for pred_vals in chunk_samples:
-                     obs_in = Obs(xs=query_obs.xs, ys=query_obs.ys, values=pred_vals)
-                     r_s = model.encoder(obs_in)
-                     r_s_sq = r_s.squeeze(1)
-                     _, state = model.forecaster(r_s_sq, state)
-                
-                current_input = Obs(xs=query_obs.xs, ys=query_obs.ys, values=chunk_samples[-1])
-
-        else:
-            if 'residual' in model_type:
-                dists = model.decoder(r_next_expanded, r_step, query_obs, current_input)
-                dist_tp1 = dists[1]
-                
-                if model_type == 'residual_delta':
-                    if steps_generated == 0:
-                        if num_samples > 1:
-                            s = dist_tp1.sample()
-                        else:
-                            s = dist_tp1.mean
-                    else:
-                        comps = getattr(dist_tp1, 'components', None)
-                        if comps is None:
-                            raise RuntimeError("Residual model did not return components!")
-                            
-                        delta_mu = comps['delta_mu']
-                        delta_sigma = comps['delta_sigma']
-                        
-                        dist_delta = torch.distributions.Normal(delta_mu, delta_sigma)
-                        
-                        if num_samples > 1:
-                            delta = dist_delta.sample()
-                        else:
-                            delta = delta_mu
-                            
-                        s = current_input.values + delta
-                else:
-                    if num_samples > 1:
-                        s = dist_tp1.sample()
-                    else:
-                        s = dist_tp1.mean
-            else:
-                dist = model.decoder(r_next_expanded, query_obs)
-                if num_samples > 1:
-                    s = dist.sample()
-                else:
-                    s = dist.mean
-            
-            trajectories.append(s)
-            steps_generated += 1
-            
-            current_input = Obs(xs=query_obs.xs, ys=query_obs.ys, values=s)
-            
-    trajectories = trajectories[:horizon]
-    
-    stack = torch.stack([t.squeeze(1) for t in trajectories], dim=1) 
-    
-    # Reshape to (num_samples, horizon, H, W)
-    stack_imgs = stack.squeeze(-1).view(num_samples, horizon, H_grid, W_grid).detach().cpu().numpy()
-    
-    end_time = time.time()
-    latency_ms = ((end_time - start_time) * 1000.0) / num_samples
-    
-    return stack_imgs, latency_ms
 
 def load_data(data_path):
     print(f"Loading data from {data_path}...")
@@ -196,7 +80,6 @@ def get_context_obs(ep_data, t_end, device, x_size, res_val, y_size):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--ckpt_rnp', type=str, required=True)
-    parser.add_argument('--ckpt_res', type=str, required=True)
     parser.add_argument('--ckpt_multi', type=str, required=True)
     
     parser.add_argument('--data_path', type=str, required=True)
@@ -236,13 +119,12 @@ def main():
     models = {}
     configs = {}
     models['rnp'], configs['rnp'] = load_model('RNP', RNP, args.ckpt_rnp)
-    models['residual'], configs['residual'] = load_model('Residual', RNPResidual, args.ckpt_res)
     models['multistep'], configs['multistep'] = load_model('Multistep', RNPMultistep, args.ckpt_multi)
 
     smoke_data, x_size, y_size, res_val = load_data(args.data_path)
     _, H_grid, W_grid = smoke_data[0].shape
     
-    metric_keys = ['rnp', 'residual', 'residual_delta', 'multistep']
+    metric_keys = ['rnp', 'multistep']
     indices = np.linspace(0, len(smoke_data)-1, args.num_episodes, dtype=int)
     
     for ep_idx in tqdm(indices, desc="Episodes"):
@@ -274,28 +156,41 @@ def main():
             gt_frames_horizon = ep_data[t_current+1 : t_current+1+args.horizon]
             save_dict[f't_{t_current}_gt_horizon'] = gt_frames_horizon
             
+            query_obs = get_dense_query_obs(1, device, x_size, y_size, res_val, H_grid, W_grid)
+            
             for m_name in metric_keys:
-                if m_name == 'multistep':
-                    model = models['multistep']
-                    model_type = 'multistep'
-                elif m_name == 'residual':
-                    model = models['residual']
-                    model_type = 'residual'
-                elif m_name == 'residual_delta':
-                    model = models['residual']
-                    model_type = 'residual_delta'
-                else:
-                    model = models['rnp']
-                    model_type = 'rnp'
+                model = models[m_name]
                 
-                preds_samples, lat = autoregressive_rollout(
-                    model, ctx_obs, args.horizon, H_grid, W_grid, x_size, y_size, res_val, 
-                    model_type=model_type, num_samples=args.num_samples
-                )
+                t0_model = time.time()
+                with torch.no_grad():
+                    preds = model.autoregressive_forecast(
+                        state=None,
+                        context_obs=ctx_obs,
+                        target_obs=query_obs,
+                        horizon=args.horizon,
+                        num_samples=args.num_samples
+                    )
+                latency_ms = ((time.time() - t0_model) * 1000.0) / args.num_samples
                 
-                # Predictions are of shape (num_samples, horizon, H, W)
-                save_dict[f't_{t_current}_{m_name}_preds'] = preds_samples
-                save_dict[f't_{t_current}_{m_name}_latency'] = lat
+                sample_imgs, mean_imgs, std_imgs = [], [], []
+                
+                for step_preds in preds:
+                    s_vals = step_preds['sample'].values.squeeze(1).squeeze(-1)
+                    m_vals = step_preds['mean'].values.squeeze(1).squeeze(-1)
+                    std_vals = step_preds['std'].values.squeeze(1).squeeze(-1)
+                    
+                    sample_imgs.append(s_vals.view(args.num_samples, H_grid, W_grid).detach().cpu().numpy())
+                    mean_imgs.append(m_vals.view(args.num_samples, H_grid, W_grid).detach().cpu().numpy())
+                    std_imgs.append(std_vals.view(args.num_samples, H_grid, W_grid).detach().cpu().numpy())
+                
+                sample_imgs = np.stack(sample_imgs, axis=1)
+                mean_imgs = np.stack(mean_imgs, axis=1)
+                std_imgs = np.stack(std_imgs, axis=1)
+                
+                save_dict[f't_{t_current}_{m_name}_sample'] = sample_imgs
+                save_dict[f't_{t_current}_{m_name}_mean'] = mean_imgs
+                save_dict[f't_{t_current}_{m_name}_std'] = std_imgs
+                save_dict[f't_{t_current}_{m_name}_latency'] = latency_ms
 
         out_file = out_dir / f"ep_{ep_idx}_rollouts.npz"
         np.savez_compressed(out_file, **save_dict)

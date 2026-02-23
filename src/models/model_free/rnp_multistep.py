@@ -67,8 +67,6 @@ class MultiStepDecoder(nn.Module):
         # Normalize coordinates to [-1, 1] for grid_sample
         grid_coords = 2.0 * (coords_flat - self.config.spatial_min) / (self.config.spatial_max - self.config.spatial_min) - 1.0
         
-        # grid_sample expects input grid_coords as (N, H_out, W_out, 2)
-        # Here we treat P as W_out, and H_out=1
         # (BT, 1, P, 2)
         grid_coords = grid_coords.unsqueeze(1)
         
@@ -80,7 +78,6 @@ class MultiStepDecoder(nn.Module):
         sampled = sampled.squeeze(2).permute(0, 2, 1)
         
         # 4. Add Fourier Features (Positional Encoding).
-        # Unflatten coords for FE (or use flat)
         spatial_features = self.spatial_encoder(coords_flat) # (BT, P, enc_dim)
         
         # Concatenate: (BT, P, C + enc_dim)
@@ -122,7 +119,7 @@ class RNPMultistep(nn.Module):
     def init_state(self, batch_size: int, device: torch.device) -> List:
         """Initialize ConvLSTM state."""
         # Calculate latent resolution
-        res = self.config.grid_res // 8 # Based on ConvEncoder
+        res = self.config.grid_res // self.encoder.resolution_reduction # Based on ConvEncoder
         if res < 1: res = 1
         
         return self.forecaster.init_hidden(batch_size, (res, res), device)
@@ -138,8 +135,8 @@ class RNPMultistep(nn.Module):
         
         Args:
             state: List of (h, c) tuples
-            context_obs: (B, 1, P, 1) - Single step context at time t
-            target_obs: (B, 1, P, 1) - Targets. Note that values here might be (B, 1, P, H) but we only use XS/YS for query.
+            context_obs: (B, 1, P, 2) - Single step context at time t
+            target_obs: (B, 1, P, 2) - Target points. Note that values here might be (B, 1, P, H) but we only use XS/YS for query.
         """
         
         # 1. Encode single step

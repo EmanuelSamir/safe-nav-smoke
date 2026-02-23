@@ -213,9 +213,9 @@ def train(cfg: DictConfig):
     scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=opt_cfg.max_epochs, eta_min=opt_cfg.min_lr)
 
     sampling_scheduler = LinearBetaScheduler(
-        beta_start=opt_cfg.sampling.beta_start,
-        beta_end=opt_cfg.sampling.beta_end,
-        num_steps=opt_cfg.sampling.warmup_epochs
+        beta_start=cfg.training.sampling.beta_start,
+        beta_end=cfg.training.sampling.beta_end,
+        num_steps=cfg.training.sampling.warmup_epochs
     )
 
     # 5. Training Loop
@@ -287,7 +287,6 @@ def train(cfg: DictConfig):
                 loss_over_time += -ll_step.mean()
 
             ratio_force /= T
-            print(f"Ratio force: {ratio_force}")
 
             # Average loss over time steps (or sum? Backprop through time)
             # Standard is mean over time
@@ -300,7 +299,7 @@ def train(cfg: DictConfig):
             train_loss += loss.item()
             train_ll += -loss.item()
 
-            pbar.set_postfix({'loss': loss.item()})
+            pbar.set_postfix({'loss': loss.item(), 'ratio_force': ratio_force})
             
         avg_train_loss = train_loss / len(train_loader)
         avg_train_ll = train_ll / len(train_loader)
