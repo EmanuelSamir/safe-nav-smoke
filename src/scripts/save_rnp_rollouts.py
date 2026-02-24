@@ -8,6 +8,8 @@ import logging
 import time
 import argparse
 
+import matplotlib.pyplot as plt
+
 # Add src to path
 sys.path.append(os.getcwd())
 
@@ -16,31 +18,6 @@ from src.models.model_free.rnp_multistep import RNPMultistep
 from src.models.shared.observations import Obs, slice_obs
 
 log = logging.getLogger(__name__)
-
-def get_dense_query_obs(B, device, x_size, y_size, res_val, H_grid, W_grid):
-    xs_idx, ys_idx = np.meshgrid(np.arange(W_grid), np.arange(H_grid))
-    xs_flat = xs_idx.flatten()
-    ys_flat = ys_idx.flatten()
-    
-    xs_norm = (xs_flat * res_val) / x_size
-    ys_norm = (ys_flat * res_val) / y_size
-    
-    xs_t = torch.from_numpy(xs_norm).float().to(device)
-    ys_t = torch.from_numpy(ys_norm).float().to(device)
-    
-    xs_t = xs_t.view(1, 1, -1, 1).expand(B, -1, -1, -1)
-    ys_t = ys_t.view(1, 1, -1, 1).expand(B, -1, -1, -1)
-    
-    P = xs_t.shape[2]
-    
-    return Obs(
-        xs=xs_t,
-        ys=ys_t,
-        values=torch.zeros(B, 1, P, 1, device=device),
-        mask=None,
-        ts=None
-    )
-
 
 def load_data(data_path):
     print(f"Loading data from {data_path}...")
@@ -57,35 +34,41 @@ def load_data(data_path):
         print(f"Error loading data: {e}")
         sys.exit(1)
 
-def get_context_obs(ep_data, t_end, device, x_size, res_val, y_size):
-    frames = ep_data[:t_end+1] 
-    T, H_grid, W_grid = frames.shape
-    num_points = int(H_grid * W_grid * 0.5)
+def get_dense_obs(ep_data, t_step, device, x_size, res_val, y_size, context=True):
+    frame = ep_data[t_step:t_step+1] # (1, H, W)
+    T, H_grid, W_grid = frame.shape
+
+    y_idxs = np.arange(H_grid)
+    x_idxs = np.arange(W_grid)
+    y_idxs, x_idxs = np.meshgrid(y_idxs, x_idxs, indexing='ij')
+    y_idxs = y_idxs.flatten()
+    x_idxs = x_idxs.flatten()
     
-    y_idxs = np.random.randint(0, H_grid, size=(T, num_points))
-    x_idxs = np.random.randint(0, W_grid, size=(T, num_points))
+    t_range = np.zeros(len(x_idxs), dtype=int) # Since first dim is 1 (batch size)
+    if context:
+        vals = frame[t_range, y_idxs, x_idxs] 
+    else:
+        vals = np.zeros_like(x_idxs)
     
-    t_range = np.arange(T)[:, None]
-    vals = frames[t_range, y_idxs, x_idxs] 
+    xs_norm = 2.0 * (x_idxs * res_val) / (x_size) - 1.0
+    ys_norm = 2.0 * (y_idxs * res_val) / (y_size) - 1.0
     
-    xs_norm = (x_idxs * res_val) / x_size
-    ys_norm = (y_idxs * res_val) / y_size
-    
-    xs = torch.from_numpy(xs_norm).float().unsqueeze(0).unsqueeze(-1).to(device)
-    ys = torch.from_numpy(ys_norm).float().unsqueeze(0).unsqueeze(-1).to(device)
-    vals_t = torch.from_numpy(vals).float().unsqueeze(0).unsqueeze(-1).to(device)
+    # xs shape to be (B=1, T=1, P, 1)
+    xs = torch.from_numpy(xs_norm).float().unsqueeze(0).unsqueeze(0).unsqueeze(-1).to(device)
+    ys = torch.from_numpy(ys_norm).float().unsqueeze(0).unsqueeze(0).unsqueeze(-1).to(device)
+    vals_t = torch.from_numpy(vals).float().unsqueeze(0).unsqueeze(0).unsqueeze(-1).to(device)
     
     return Obs(xs=xs, ys=ys, values=vals_t)
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument('--ckpt_rnp', type=str, required=True)
-    parser.add_argument('--ckpt_multi', type=str, required=True)
+    parser.add_argument('--ckpt', type=str, required=True)
+    parser.add_argument('--model_type', type=str, required=True)
     
     parser.add_argument('--data_path', type=str, required=True)
     parser.add_argument('--output_dir', type=str, default='saved_rollouts')
     parser.add_argument('--horizon', type=int, default=15)
-    parser.add_argument('--num_episodes', type=int, default=10)
+    parser.add_argument('--num_episodes', type=int, default=None)
     parser.add_argument('--stride', type=int, default=3, help='Stride for rolling forecast')
     parser.add_argument('--num_samples', type=int, default=10, help='Number of predictive samples to save')
 
@@ -116,16 +99,21 @@ def main():
         model.eval()
         return model, cfg
 
-    models = {}
-    configs = {}
-    models['rnp'], configs['rnp'] = load_model('RNP', RNP, args.ckpt_rnp)
-    models['multistep'], configs['multistep'] = load_model('Multistep', RNPMultistep, args.ckpt_multi)
+    if args.model_type == 'rnp':
+        model, cfg = load_model('RNP', RNP, args.ckpt)
+    elif args.model_type == 'multistep':
+        model, cfg = load_model('Multistep', RNPMultistep, args.ckpt)
+    else:
+        raise ValueError(f"Unknown model type: {args.model_type}")
 
     smoke_data, x_size, y_size, res_val = load_data(args.data_path)
     _, H_grid, W_grid = smoke_data[0].shape
     
-    metric_keys = ['rnp', 'multistep']
-    indices = np.linspace(0, len(smoke_data)-1, args.num_episodes, dtype=int)
+    if args.num_episodes:
+        min_ep = min((args.num_episodes, len(smoke_data)))
+        indices = np.random.choice(len(smoke_data), min_ep, replace=False)
+    else:
+        indices = range(len(smoke_data))
     
     for ep_idx in tqdm(indices, desc="Episodes"):
         ep_data = smoke_data[ep_idx]
@@ -141,57 +129,73 @@ def main():
         stride = args.stride
         time_steps = list(range(t_start, t_end, stride))
         
-        # Save array structure with gt_data and predictions
+        # Save array structure — no full gt_data to keep files small
         save_dict = {
             'ep_idx': ep_idx,
             'time_steps': np.array(time_steps),
-            'gt_data': ep_data,
         }
         
-        for t_current in tqdm(time_steps, desc=f"Ep {ep_idx} (Stride {stride})", leave=False):
+        # Initialize state for this episode
+        running_state = model.init_state(1, device)
+
+        # We step through time sequentially 
+        for t_current in tqdm(range(t_end), desc=f"Ep {ep_idx} (Stepping)", leave=False):
             t0 = time.time()
-            ctx_obs = get_context_obs(ep_data, t_current, device, x_size, res_val, y_size)
+            ctx_obs = get_dense_obs(ep_data, t_current, device, x_size, res_val, y_size, context=True)
             print(f"  [Time] Context: {time.time()-t0:.3f}s")
             
-            gt_frames_horizon = ep_data[t_current+1 : t_current+1+args.horizon]
-            save_dict[f't_{t_current}_gt_horizon'] = gt_frames_horizon
-            
-            query_obs = get_dense_query_obs(1, device, x_size, y_size, res_val, H_grid, W_grid)
-            
-            for m_name in metric_keys:
-                model = models[m_name]
+            # 1. Update running states with the real ground truth at t_current
+            with torch.no_grad():
+                # Target is None because we only want to update the recurrent state
+                out = model(running_state, context_obs=ctx_obs, target_obs=None)
+                running_state = out.state
+                     
+            # 2. If it's time to evaluate / save rollout based on stride
+            if t_current >= t_start and (t_current - t_start) % stride == 0:
+                gt_frames_horizon = ep_data[t_current+1 : t_current+1+args.horizon]
+                save_dict[f't_{t_current}_gt_horizon'] = gt_frames_horizon.astype(np.float16)
+                
+                query_obs = get_dense_obs(ep_data, t_current, device, x_size, res_val, y_size, context=False)
                 
                 t0_model = time.time()
                 with torch.no_grad():
+                    def clone_state(state):
+                        if state is None: return None
+                        # state is List[Tuple[Tensor, Tensor]], one (h, c) per ConvLSTM layer
+                        return [(layer[0].clone(), layer[1].clone()) for layer in state]
+                    
+                    state_clone = clone_state(running_state)
+                    
                     preds = model.autoregressive_forecast(
-                        state=None,
+                        state=state_clone,
                         context_obs=ctx_obs,
                         target_obs=query_obs,
                         horizon=args.horizon,
                         num_samples=args.num_samples
                     )
+                    
                 latency_ms = ((time.time() - t0_model) * 1000.0) / args.num_samples
                 
+                # Save samples + ensemble mean/std, all in float16
                 sample_imgs, mean_imgs, std_imgs = [], [], []
-                
                 for step_preds in preds:
-                    s_vals = step_preds['sample'].values.squeeze(1).squeeze(-1)
-                    m_vals = step_preds['mean'].values.squeeze(1).squeeze(-1)
-                    std_vals = step_preds['std'].values.squeeze(1).squeeze(-1)
-                    
-                    sample_imgs.append(s_vals.view(args.num_samples, H_grid, W_grid).detach().cpu().numpy())
-                    mean_imgs.append(m_vals.view(args.num_samples, H_grid, W_grid).detach().cpu().numpy())
-                    std_imgs.append(std_vals.view(args.num_samples, H_grid, W_grid).detach().cpu().numpy())
+                    # After delayed batch expansion: (num_samples, 1, P, 1)
+                    s_vals   = step_preds['sample'].values.squeeze(-1).squeeze(1)  # (num_samples, P)
+                    m_vals   = step_preds['mean'].values.squeeze(-1).squeeze(1)   # (num_samples, P) ensemble mean
+                    std_vals = step_preds['std'].values.squeeze(-1).squeeze(1)   # (num_samples, P) ensemble std
+                    sample_imgs.append(s_vals.view(args.num_samples, H_grid, W_grid).detach().cpu().to(torch.float16).numpy())
+                    mean_imgs.append(m_vals.view(H_grid, W_grid).detach().cpu().to(torch.float16).numpy())
+                    std_imgs.append(std_vals.view(H_grid, W_grid).detach().cpu().to(torch.float16).numpy())
                 
-                sample_imgs = np.stack(sample_imgs, axis=1)
-                mean_imgs = np.stack(mean_imgs, axis=1)
-                std_imgs = np.stack(std_imgs, axis=1)
+                # (horizon, num_samples, H, W) for samples; (horizon, H, W) for mean/std
+                sample_imgs = np.stack(sample_imgs, axis=0)
+                mean_imgs   = np.stack(mean_imgs, axis=0)
+                std_imgs    = np.stack(std_imgs, axis=0)
                 
-                save_dict[f't_{t_current}_{m_name}_sample'] = sample_imgs
-                save_dict[f't_{t_current}_{m_name}_mean'] = mean_imgs
-                save_dict[f't_{t_current}_{m_name}_std'] = std_imgs
-                save_dict[f't_{t_current}_{m_name}_latency'] = latency_ms
-
+                save_dict[f't_{t_current}_{args.model_type}_sample'] = sample_imgs
+                save_dict[f't_{t_current}_{args.model_type}_mean'] = mean_imgs
+                save_dict[f't_{t_current}_{args.model_type}_std'] = std_imgs
+                save_dict[f't_{t_current}_{args.model_type}_latency'] = latency_ms                
         out_file = out_dir / f"ep_{ep_idx}_rollouts.npz"
         np.savez_compressed(out_file, **save_dict)
         

@@ -1,0 +1,50 @@
+# @package _global_
+# FNO2d with uncertainty-aware input (2 channels: mean + std).
+#
+# During teacher-forcing  : input = (GT_frame , zeros)
+# During scheduled sampling: input = (pred_mu  , pred_sigma)
+#
+# This lets the model learn to propagate its own predicted uncertainty
+# through the autoregressive rollout chain.
+training:
+  experiment_name: "fno_uncertainty"
+  output_dir: "outputs/training/fno_uncertainty"
+  seed: 42
+
+  data:
+    data_path: "data/playback_data/global_source_400_100_2nd.npz"
+    batch_size: 16
+    train_split: 0.9
+    max_samples: null
+    sequence_length: 24
+    num_workers: 0
+
+  model:
+    modes1: 12
+    modes2: 12
+    width: 32
+    n_layers: 4
+    use_grid: true
+    min_std: 1e-4
+    forecast_horizon: 1
+    use_uncertainty_input: true   # 2-channel input: (mean, std)
+
+  optimizer:
+    lr: 1e-3
+    min_lr: 1e-5
+    max_epochs: 200
+    grad_clip: 1.0
+
+  sampling:
+    beta_start: 0.0
+    beta_end: 0.8
+    warmup_epochs: 50
+    use_mean: false   # Ignored when use_uncertainty_input=True; std passed explicitly
+
+  checkpoint:
+    save_top_k: 3
+    monitor: "val_nll"
+    mode: "min"
+
+  visualizer:
+    visualize_every: 1

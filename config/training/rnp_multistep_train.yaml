@@ -15,8 +15,8 @@ training:
   model:
     hidden_dim: 128
     num_layers: 3
-    lstm_layers: 1
-    decoder_fourier_size: 128
+    lstm_layers: 2
+    decoder_fourier_size: 64
     decoder_fourier_scale: 20.0
     forecast_horizon: 5
     
@@ -28,7 +28,7 @@ training:
 
   sampling:
     beta_start: 0.0 # Depend first to learn next step
-    beta_end: 0.5  # Depend on learning longer sequences
+    beta_end: 0.7  # Depend on learning longer sequences
     warmup_epochs: 100
 
   visualizer:

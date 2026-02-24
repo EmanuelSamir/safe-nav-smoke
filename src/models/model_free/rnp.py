@@ -12,7 +12,7 @@ from torch.distributions import Normal
 # Removed Obs import as requested
 from src.models.shared.outputs import RNPOutput
 from src.models.shared.layers import MLP, init_weights, FourierFeatureEncoder
-from src.models.shared.observations import Obs
+from src.models.shared.observations import Obs, slice_obs
 from src.models.shared.conv_lstm import ConvLSTMCell
 
 
@@ -384,71 +384,62 @@ class RNP(nn.Module):
         """
         device = context_obs.xs.device
         B = context_obs.xs.shape[0]
-        
+
+        T_ctx = context_obs.xs.shape[1]
+
+        # 1. Encode Context with B=1 (cheap — no expansion yet)
+        for t in range(T_ctx - 1):
+            ctx_t = slice_obs(context_obs, t, t+1)
+            out = self(state, ctx_t, None)
+            state = out.state
+
+        current_input = slice_obs(context_obs, T_ctx-1, T_ctx)
+
+        # 2. Delayed Batch Expansion: split state into num_samples independent trajectories
         if num_samples > 1:
-            context_obs = Obs(
-                xs=context_obs.xs.repeat_interleave(num_samples, dim=0),
-                ys=context_obs.ys.repeat_interleave(num_samples, dim=0),
-                values=context_obs.values.repeat_interleave(num_samples, dim=0),
-                mask=context_obs.mask.repeat_interleave(num_samples, dim=0) if context_obs.mask is not None else None,
-                ts=context_obs.ts.repeat_interleave(num_samples, dim=0) if context_obs.ts is not None else None
+            state = [(layer[0].repeat_interleave(num_samples, dim=0),
+                      layer[1].repeat_interleave(num_samples, dim=0)) for layer in state]
+            current_input = Obs(
+                xs=current_input.xs.repeat_interleave(num_samples, dim=0),
+                ys=current_input.ys.repeat_interleave(num_samples, dim=0),
+                values=current_input.values.repeat_interleave(num_samples, dim=0),
+                mask=current_input.mask.repeat_interleave(num_samples, dim=0) if current_input.mask is not None else None,
+                ts=current_input.ts.repeat_interleave(num_samples, dim=0) if current_input.ts is not None else None,
             )
             target_obs = Obs(
                 xs=target_obs.xs.repeat_interleave(num_samples, dim=0),
                 ys=target_obs.ys.repeat_interleave(num_samples, dim=0),
                 values=target_obs.values.repeat_interleave(num_samples, dim=0) if target_obs.values is not None else None,
                 mask=target_obs.mask.repeat_interleave(num_samples, dim=0) if target_obs.mask is not None else None,
-                ts=target_obs.ts.repeat_interleave(num_samples, dim=0) if target_obs.ts is not None else None
+                ts=target_obs.ts.repeat_interleave(num_samples, dim=0) if target_obs.ts is not None else None,
             )
-            B = B * num_samples
-        
-        if state is None:
-            state = self.init_state(B, device)
 
-        T_ctx = context_obs.xs.shape[1]
-        
-        # 1. Encode Context Autoregressively
-        for t in range(T_ctx - 1):
-            ctx_t = slice_obs(context_obs, t, t+1)
-            out = self(state, ctx_t, None)
-            state = out.state
-            
-        current_input = slice_obs(context_obs, T_ctx-1, T_ctx) 
-        
         T_trg = target_obs.xs.shape[1]
         predictions = []
         steps_generated = 0
-        
+
         while steps_generated < horizon:
-            # Prepare Query for this step
             t_idx = min(steps_generated, T_trg - 1)
             trg_step = slice_obs(target_obs, t_idx, t_idx+1)
-            
-            # Forward pass
+
             out = self(state, current_input, trg_step)
             state = out.state
-            
+
             dist = out.prediction[-1]
-            s = dist.sample()
-            m = dist.mean
+            s   = dist.sample()  # (num_samples, 1, P, 1) — one per independent trajectory
+            m   = dist.mean
             std = dist.stddev
-                
-            obs_sample = Obs(
-                xs=trg_step.xs, ys=trg_step.ys, values=s, mask=trg_step.mask, ts=trg_step.ts
-            )
-            obs_mean = Obs(
-                xs=trg_step.xs, ys=trg_step.ys, values=m, mask=trg_step.mask, ts=trg_step.ts
-            )
-            obs_std = Obs(
-                xs=trg_step.xs, ys=trg_step.ys, values=std, mask=trg_step.mask, ts=trg_step.ts
-            )
-            
+
+            obs_sample = Obs(xs=trg_step.xs, ys=trg_step.ys, values=s,   mask=trg_step.mask, ts=trg_step.ts)
+            obs_mean   = Obs(xs=trg_step.xs, ys=trg_step.ys, values=m,   mask=trg_step.mask, ts=trg_step.ts)
+            obs_std    = Obs(xs=trg_step.xs, ys=trg_step.ys, values=std, mask=trg_step.mask, ts=trg_step.ts)
+
             predictions.append({'sample': obs_sample, 'mean': obs_mean, 'std': obs_std})
             steps_generated += 1
-            
-            # Autoregressive Update
+
+            # Each trajectory feeds its own sample back independently
             current_input = obs_sample
-            
+
         return predictions
 
 if __name__ == "__main__":

@@ -82,16 +82,13 @@ class GaussianProcess(BaseModel):
 
     def predict(self, x):
         if not self.online:
-            # y_pred, std = self.model.predict(x, return_std=True)
             res = self.model.predict(x, what=['mean', 'mse'])
             y_pred = res['mean']
-            std = np.sqrt(res['mse']) #res['mse']#
+            std = np.sqrt(res['mse']) 
         else:
             res = self.model.predict(x, what=['mean', 'mse'])
             y_pred = res['mean']
-            std = np.sqrt(res['mse']) #res['mse']#
-            # if self.n_seen > 1:
-            #     std *= np.sqrt(self.M2 / (self.n_seen - 1))
+            std = np.sqrt(res['mse']) 
         return y_pred, std
 
     def score(self, x, y_true):

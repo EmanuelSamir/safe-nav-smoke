@@ -1,0 +1,41 @@
+# @package _global_
+# Configuration for FNO2d (Fourier Neural Operator)
+training:
+  experiment_name: "fno_experiment"
+  output_dir: "outputs/training/fno"
+  seed: 42
+
+  data:
+    data_path: "data/playback_data/global_source_400_100_2nd.npz"
+    batch_size: 16
+    train_split: 0.9
+    max_samples: null
+    sequence_length: 24
+    num_workers: 0
+
+  model:
+    modes1: 12          # Fourier modes dim-1
+    modes2: 12          # Fourier modes dim-2
+    width: 32           # Latent channel width
+    n_layers: 4         # Number of spectral blocks
+    use_grid: true      # Concatenate (x,y) coordinate grid to input
+
+  optimizer:
+    lr: 1e-3
+    min_lr: 1e-5
+    max_epochs: 200
+    grad_clip: 1.0
+
+  sampling:
+    beta_start: 0.0    # Start fully teacher-forced
+    beta_end: 0.75     # Ramp up to 75 % scheduled sampling
+    warmup_epochs: 100
+    use_mean: true
+
+  checkpoint:
+    save_top_k: 3
+    monitor: "val_mse"
+    mode: "min"
+
+  visualizer:
+    visualize_every: 1

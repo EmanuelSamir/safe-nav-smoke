@@ -169,7 +169,8 @@ class SequentialDataset(BaseSmokeDataset):
                  mode: str = 'train',
                  max_episodes: Optional[int] = None,
                  downsample_factor: int = 1,
-                 normalized_coords: bool = True):
+                 normalized_coords: bool = True,
+                 dense: bool = False):
         
         super().__init__(data_path, train_split, mode, max_episodes, downsample_factor=downsample_factor)
         self.ctx_min_pts = int(self.H * self.W * ctx_points_ratios[0])
@@ -178,6 +179,7 @@ class SequentialDataset(BaseSmokeDataset):
         self.sequence_length = sequence_length
         self.forecast_horizon = forecast_horizon
         self.normalized_coords = normalized_coords
+        self.dense = dense
         
         # Ensure we have enough steps for sequence + horizon
         # t ranges from 0 to n_steps - 1
@@ -186,14 +188,35 @@ class SequentialDataset(BaseSmokeDataset):
         assert self.sequence_length + self.forecast_horizon <= self.n_steps, \
             f"Sequence length {self.sequence_length} + Horizon {self.forecast_horizon} > total steps {self.n_steps}"
             
-        assert trg_points_ratio > max(ctx_points_ratios), f"Target points ratio must be greater than max context points ratio"
+        if not dense:
+            assert trg_points_ratio > max(ctx_points_ratios), f"Target points ratio must be greater than max context points ratio"
+
+        # Pre-build a fixed (H*W, 2) coordinate grid for dense mode
+        if self.dense:
+            yi, xi = np.meshgrid(np.arange(self.H), np.arange(self.W), indexing='ij')  # (H, W)
+            if self.normalized_coords:
+                xs_grid = (2.0 * xi * self.res / self.x_size - 1.0).astype(np.float32)  # (H, W)
+                ys_grid = (2.0 * yi * self.res / self.y_size - 1.0).astype(np.float32)
+            else:
+                xs_grid = (xi * self.res).astype(np.float32)
+                ys_grid = (yi * self.res).astype(np.float32)
+            # Flatten to (H*W,)
+            self._xs_grid = torch.from_numpy(xs_grid.ravel())
+            self._ys_grid = torch.from_numpy(ys_grid.ravel())
 
     def __getitem__(self, idx: int):
         """
-        Returns a tuple of (ctx_obs, trg_obs, t_offset)
-        ctx_obs: Obs object with context points
-        trg_obs: Obs object with target points
-        t_offset: float, time offset of the context window
+        Returns a tuple of (ctx_obs_seq, trg_obs_seq, t_start_idx).
+
+        Sparse mode (dense=False):
+            Each element of the sequences is an Obs with randomly sampled
+            spatial points (variable-length, padded by the collate_fn).
+
+        Dense mode (dense=True):
+            Each element contains the *full* H×W grid flattened to (H*W,).
+            ctx_obs at t has values at t; trg_obs at t has values at t+1
+            (or t+1..t+H for forecast_horizon>1, stored in values last dim).
+            Use `dense_sequential_collate_fn` with this mode.
         """
         episode = self.smoke_data[idx]
         max_start = self.n_steps - self.sequence_length - self.forecast_horizon + 1
@@ -202,27 +225,25 @@ class SequentialDataset(BaseSmokeDataset):
              raise ValueError(f"Sequence + Horizon too long for data steps {self.n_steps}")
              
         t_start_idx = np.random.randint(0, max_start)
-        
-        # We generate a sequence of length `sequence_length`
         frame_indices = np.arange(t_start_idx, t_start_idx + self.sequence_length)
         
         ctx_obs_seq = []
         trg_obs_seq = []
         
-        for t_idx in frame_indices:
-            # Context: just single frame at t_idx
-            num_ctx_pts = np.random.randint(self.ctx_min_pts, self.ctx_max_pts + 1) 
-            ctx_obs = self._sample_points(episode, [t_idx], num_ctx_pts)
-            
-            # Target: H frames starting from t_idx + 1
-            # We want to predict t+1, t+2, ..., t+H given context at t
-            trg_indices = np.arange(t_idx + 1, t_idx + 1 + self.forecast_horizon)
-            
-            # Sample points at t_idx (spatial locations) but get values for t_idx+1...t_idx+H
-            trg_obs = self._sample_forecast_points(episode, trg_indices, self.trg_pts)
-
-            ctx_obs_seq.append(ctx_obs)
-            trg_obs_seq.append(trg_obs)
+        if self.dense:
+            for t_idx in frame_indices:
+                ctx_obs = self._dense_frame(episode, t_idx)
+                trg_obs = self._dense_forecast_frames(episode, t_idx)
+                ctx_obs_seq.append(ctx_obs)
+                trg_obs_seq.append(trg_obs)
+        else:
+            for t_idx in frame_indices:
+                num_ctx_pts = np.random.randint(self.ctx_min_pts, self.ctx_max_pts + 1)
+                ctx_obs = self._sample_points(episode, [t_idx], num_ctx_pts)
+                trg_indices = np.arange(t_idx + 1, t_idx + 1 + self.forecast_horizon)
+                trg_obs = self._sample_forecast_points(episode, trg_indices, self.trg_pts)
+                ctx_obs_seq.append(ctx_obs)
+                trg_obs_seq.append(trg_obs)
             
         return ctx_obs_seq, trg_obs_seq, t_start_idx
 
@@ -279,7 +300,71 @@ class SequentialDataset(BaseSmokeDataset):
         
         return Obs(xs=xs, ys=ys, values=vals)
 
+    def _dense_frame(self, episode: np.ndarray, t_idx: int) -> Obs:
+        """Returns the full H×W grid at time t_idx as a flat Obs.
+        xs, ys: (H*W,)  values: (H*W,)
+        """
+        frame = torch.from_numpy(episode[t_idx].ravel().astype(np.float32))  # (H*W,)
+        return Obs(xs=self._xs_grid, ys=self._ys_grid, values=frame)
+
+    def _dense_forecast_frames(self, episode: np.ndarray, t_idx: int) -> Obs:
+        """Returns full H×W grids for t_idx+1 .. t_idx+forecast_horizon.
+        xs, ys: (H*W,)   values: (H*W, forecast_horizon)
+        """
+        frames = []
+        for h in range(1, self.forecast_horizon + 1):
+            frame = episode[t_idx + h].ravel().astype(np.float32)  # (H*W,)
+            frames.append(frame)
+        vals = torch.from_numpy(np.stack(frames, axis=-1))  # (H*W, H)
+        return Obs(xs=self._xs_grid, ys=self._ys_grid, values=vals)
+
+def dense_sequential_collate_fn(batch):
+    """
+    Collate function for SequentialDataset(dense=True).
+
+    All observations share the same fixed H*W grid, so we can stack directly
+    without padding.  Returns Obs tensors of shape:
+        xs, ys :  (B, T, H*W, 1)
+        values :  (B, T, H*W, 1)  [ctx]  or  (B, T, H*W, forecast_horizon)  [trg]
+        mask   :  None  (no padding needed – all points are always valid)
+    """
+    ctx_seq_list, trg_seq_list, idx = zip(*batch)
+    B = len(batch)
+    T = len(ctx_seq_list[0])
+
+    def process_sequences(sequences):
+        # sequences: list[list[Obs]]  shape: B x T
+        # Each Obs: xs (P,), ys (P,), values (P,) or (P, H_fcast)
+        xs_bt, ys_bt, vs_bt = [], [], []
+        for seq in sequences:               # iterate over batch items
+            xs_t, ys_t, vs_t = [], [], []
+            for obs in seq:                 # iterate over time steps
+                xs_t.append(obs.xs)         # (P,)
+                ys_t.append(obs.ys)
+                v = obs.values
+                if v.dim() == 1:
+                    v = v.unsqueeze(-1)     # (P, 1)
+                vs_t.append(v)
+            xs_bt.append(torch.stack(xs_t))   # (T, P)
+            ys_bt.append(torch.stack(ys_t))
+            vs_bt.append(torch.stack(vs_t))   # (T, P) or (T, P, H_fcast)
+
+        xs = torch.stack(xs_bt).unsqueeze(-1)  # (B, T, P, 1)
+        ys = torch.stack(ys_bt).unsqueeze(-1)  # (B, T, P, 1)
+        # vs: (B, T, P) or (B, T, P, H_fcast)
+        vs = torch.stack(vs_bt)
+        if vs.dim() == 3:
+            vs = vs.unsqueeze(-1)              # (B, T, P, 1)
+        # mask is None — every point is valid in dense mode
+        return Obs(xs=xs, ys=ys, values=vs, mask=None)
+
+    collated_ctx = process_sequences(ctx_seq_list)
+    collated_trg = process_sequences(trg_seq_list)
+    return collated_ctx, collated_trg, torch.tensor(idx)
+
+
 def sequential_collate_fn(batch):
+
     ctx_seq_list, trg_seq_list, idx = zip(*batch)
     
     B = len(batch)           # Tamaño del batch

@@ -347,7 +347,7 @@ def train(cfg: DictConfig):
                         if pred_t not in predictions_buffer:
                             predictions_buffer[pred_t] = []
                         
-                        sampled_vals = predictions[h_idx].sample() # usually (B, 1, P, 1) or (B, P, 1)
+                        sampled_vals = predictions[h_idx].mean # usually (B, 1, P, 1) or (B, P, 1)
                         
                         # We must assure shape matches context expectations (B, 1, P, 1)
                         if sampled_vals.dim() == 3: # (B, P, 1) -> (B, 1, P, 1)
