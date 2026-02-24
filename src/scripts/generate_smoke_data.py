@@ -17,9 +17,9 @@ def main():
     args = parser.parse_args()
 
     # Parameters
-    NUM_EPISODES = 3 if args.test else 400
+    NUM_EPISODES = 3 if args.test else 100
     EPISODE_STEPS = 100
-    OUTPUT_PATH = "data/global_source_400_100_2nd.npz"
+    OUTPUT_PATH = "data/test_global_source_100_100.npz"
     
     # Ensure data directory exists
     os.makedirs(os.path.dirname(OUTPUT_PATH), exist_ok=True)
@@ -54,8 +54,8 @@ def main():
         episode_blobs = []
         for _ in range(num_blobs):
             for _ in range(100): # Attempts to find a valid position
-                x_c = np.random.uniform(4, x_size - 4)
-                y_c = np.random.uniform(4, y_size - 4)
+                x_c = np.random.uniform(2, x_size - 2)
+                y_c = np.random.uniform(2, y_size - 2)
                 
                 # Check distance to existing blobs
                 valid_pos = True
