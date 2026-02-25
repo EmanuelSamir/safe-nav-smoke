@@ -1,0 +1,45 @@
+# @package _global_
+# TemporalFNO — spatiotemporal, h_ctx context frames → h_pred future distributions
+#
+# Architecture:
+#   Factored 3D conv (temporal) + FNO spectral 2D (spatial) + Fourier time encoding
+#
+# Inference: autoregressive in chunks of h_pred; slide context window by h_pred
+training:
+  experiment_name: "temporal_fno"
+  seed: 42
+
+  data:
+    data_path: "data/playback_data/global_source_400_100_2nd.npz"
+    batch_size: 8
+    train_split: 0.9
+    max_samples: null
+    sequence_length: 30    # must be > h_ctx + h_pred  (10 + 1 = 11 → 30 gives plenty)
+    num_workers: 0
+
+  model:
+    h_ctx: 10              # Context frames fed to the model each forward pass
+    h_pred: 1              # Future frames predicted per forward pass (autoregressive in inference)
+    modes1: 12
+    modes2: 12
+    width: 32
+    n_temporal_layers: 2   # 3D factored temporal conv layers
+    n_spectral_layers: 4   # FNO spectral 2D layers
+    use_grid: true         # Append (x,y) spatial grid after temporal fusion
+    use_time: true         # Append Fourier time embedding to each context frame
+    time_dim: 8            # Fourier embedding dimension (must be even)
+    min_std: 1.0e-4
+
+  optimizer:
+    lr: 1.0e-3
+    min_lr: 1.0e-5
+    max_epochs: 200
+    grad_clip: 1.0
+
+  checkpoint:
+    save_top_k: 3
+    monitor: "val_nll"
+    mode: "min"
+
+  visualizer:
+    visualize_every: 5

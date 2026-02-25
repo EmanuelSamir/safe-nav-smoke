@@ -4,23 +4,25 @@ save_rollouts.py — Unified rollout generator for all trained models.
 Supports:
   --model_type rnp            : RNP (recurrent, stateful)
   --model_type rnp_multistep  : RNP Multistep
-  --model_type fno            : FNO2d (stateless, single-step or multistep)
+  --model_type fno            : FNO2d (stateless, 1-frame seed)
+  --model_type fno_3d         : FNO3d (h_ctx-frame seed, true 3D spectral conv)
 
 Output per episode (compressed NPZ):
   ep_idx                                 : int
   time_steps                             : (N,)  int
   t_{t}_gt_horizon                       : (horizon, H, W)  float16
-  t_{t}_{model_type}_sample              : (horizon, num_samples, H, W)  float16
-  t_{t}_{model_type}_mean                : (horizon, H, W)  float16
-  t_{t}_{model_type}_std                 : (horizon, H, W)  float16
-  t_{t}_{model_type}_latency             : float  ms/sample
+  t_{t}_{tag}_sample                     : (horizon, num_samples, H, W)  float16
+  t_{t}_{tag}_mean                       : (horizon, H, W)  float16
+  t_{t}_{tag}_std                        : (horizon, H, W)  float16
+  t_{t}_{tag}_latency                    : float  ms/sample
 
 Usage:
   python src/scripts/save_rollouts.py \
-      --model_type fno \
-      --ckpt outputs/2026-02-24/03-48-53/checkpoints/best_model.pt \
-      --data_path data/playback_data/global_source_400_100_2nd.npz \
-      --output_dir saved_rollouts/fno_bias
+      --model_type fno_3d \
+      --ckpt outputs/2026-02-24/XX/checkpoints/best_model.pt \
+      --data_path data/playback_data/test_global_source_100_100.npz \
+      --output_dir saved_rollouts/fno_3d_h10p5 \
+      --tag fno_3d
 """
 
 import sys
@@ -117,7 +119,6 @@ def load_fno(path: str, device):
     ckpt = torch.load(path, map_location=device, weights_only=False)
     hp   = ckpt['hyper_parameters']
 
-    # Supports both flat and nested (hydra) checkpoint formats
     if isinstance(hp, dict) and 'training' in hp:
         m = hp['training']['model']
     else:
@@ -142,6 +143,36 @@ def load_fno(path: str, device):
     return model
 
 
+def _load_temporal_model(path: str, device, model_cls, cfg_cls, label: str):
+    """Generic loader for FNO3d and TemporalFNO (same checkpoint structure)."""
+    print(f"Loading {label} from {path}...")
+    ckpt = torch.load(path, map_location=device, weights_only=False)
+    hp   = ckpt['hyper_parameters']
+
+    if isinstance(hp, dict) and 'training' in hp:
+        m = hp['training']['model']
+    else:
+        m = hp if isinstance(hp, dict) else {}
+
+    # Build config — accept any subset of fields the checkpoint may have
+    import dataclasses
+    valid_fields = {f.name for f in dataclasses.fields(cfg_cls)}
+    cfg_kwargs = {k: v for k, v in m.items() if k in valid_fields}
+    cfg = cfg_cls(**cfg_kwargs)
+
+    model = model_cls(cfg)
+    model.load_state_dict(ckpt['model_state_dict'])
+    model.to(device).eval()
+    print(f"  {label}  h_ctx={cfg.h_ctx}  h_pred={cfg.h_pred}  "
+          f"params={sum(p.numel() for p in model.parameters()):,}")
+    return model
+
+
+def load_fno_3d(path: str, device):
+    from src.models.model_free.fno_3d import FNO3d, FNO3dConfig
+    return _load_temporal_model(path, device, FNO3d, FNO3dConfig, "FNO3d")
+
+
 # ---------------------------------------------------------------------------
 # Per-model rollout helpers
 # ---------------------------------------------------------------------------
@@ -149,15 +180,12 @@ def load_fno(path: str, device):
 def fno_rollout(model, ep_data, t_current: int, horizon: int,
                 num_samples: int, H_grid: int, W_grid: int, device):
     """
-    Stateless FNO rollout from frame t_current.
-    Returns (sample_imgs, mean_imgs, std_imgs, latency_ms).
-      sample_imgs : (horizon, num_samples, H, W)  float16 numpy
-      mean_imgs   : (horizon, H, W)               float16 numpy
-      std_imgs    : (horizon, H, W)               float16 numpy
+    Stateless FNO2d rollout from a single frame at t_current.
+    seed: (1, H, W, 1)  — one smoke frame
     """
-    frame = ep_data[t_current]                                        # (H, W)
+    frame = ep_data[t_current]                                   # (H, W)
     seed  = torch.tensor(frame, dtype=torch.float32, device=device)
-    seed  = seed.unsqueeze(0).unsqueeze(-1)                           # (1, H, W, 1)
+    seed  = seed.unsqueeze(0).unsqueeze(-1)                      # (1, H, W, 1)
 
     t0 = time.time()
     with torch.no_grad():
@@ -165,10 +193,48 @@ def fno_rollout(model, ep_data, t_current: int, horizon: int,
             seed, horizon=horizon, num_samples=num_samples)
     latency_ms = (time.time() - t0) * 1000.0 / num_samples
 
-    sample_imgs = np.stack([p['sample'] for p in preds], axis=0)  # (H, num_samples, H, W)
-    mean_imgs   = np.stack([p['mean']   for p in preds], axis=0)  # (H, H, W)
-    std_imgs    = np.stack([p['std']    for p in preds], axis=0)  # (H, H, W)
+    sample_imgs = np.stack([p['sample'] for p in preds], axis=0)  # (horizon, S, H, W)
+    mean_imgs   = np.stack([p['mean']   for p in preds], axis=0)  # (horizon, H, W)
+    std_imgs    = np.stack([p['std']    for p in preds], axis=0)  # (horizon, H, W)
+    return sample_imgs, mean_imgs, std_imgs, latency_ms
 
+
+def temporal_fno_rollout(model, ep_data, t_current: int, horizon: int,
+                          num_samples: int, H_grid: int, W_grid: int, device):
+    """
+    Rollout for TemporalFNO / FNO3d which need h_ctx consecutive frames.
+
+    Builds seed_frames = ep_data[t_current-h_ctx+1 : t_current+1]  (h_ctx, H, W)
+    If t_current < h_ctx-1 the window is zero-padded at the start.
+    seed_t_start is the absolute index of seed_frames[0].
+    """
+    h_ctx = model.cfg.h_ctx
+
+    t_left   = t_current - h_ctx + 1
+    t_left_c = max(0, t_left)               # clamp to valid range
+
+    frames = ep_data[t_left_c : t_current + 1].astype(np.float32)   # (<=h_ctx, H, W)
+
+    # Zero-pad if episode starts in the middle of the context window
+    if t_left < 0:
+        pad = np.zeros((-t_left, H_grid, W_grid), dtype=np.float32)
+        frames = np.concatenate([pad, frames], axis=0)               # (h_ctx, H, W)
+
+    seed = torch.tensor(frames, dtype=torch.float32, device=device).unsqueeze(0)  # (1, h_ctx, H, W)
+
+    t0 = time.time()
+    with torch.no_grad():
+        preds = model.autoregressive_forecast(
+            seed,
+            seed_t_start=t_left_c,
+            horizon=horizon,
+            num_samples=num_samples,
+        )
+    latency_ms = (time.time() - t0) * 1000.0 / num_samples
+
+    sample_imgs = np.stack([p['sample'] for p in preds], axis=0)  # (horizon, S, H, W)
+    mean_imgs   = np.stack([p['mean']   for p in preds], axis=0)  # (horizon, H, W)
+    std_imgs    = np.stack([p['std']    for p in preds], axis=0)  # (horizon, H, W)
     return sample_imgs, mean_imgs, std_imgs, latency_ms
 
 
@@ -221,7 +287,8 @@ def rnp_rollout(model, ep_data, t_current: int, horizon: int,
 def main():
     parser = argparse.ArgumentParser(description="Save autoregressive rollouts for any model.")
     parser.add_argument('--ckpt',          type=str, required=True,  help="Path to model checkpoint (.pt)")
-    parser.add_argument('--model_type',    type=str, required=True,  help="rnp | rnp_multistep | fno")
+    parser.add_argument('--model_type',    type=str, required=True,
+                        help="rnp | rnp_multistep | fno | fno_3d")
     parser.add_argument('--data_path',     type=str, required=True,  help="Path to .npz dataset")
     parser.add_argument('--output_dir',    type=str, default='saved_rollouts')
     parser.add_argument('--horizon',       type=int, default=15,     help="Rollout horizon (steps)")
@@ -241,9 +308,13 @@ def main():
     out_dir.mkdir(parents=True, exist_ok=True)
 
     # ---- Load model --------------------------------------------------------
-    is_fno = args.model_type == 'fno'
+    is_fno      = args.model_type == 'fno'
+    is_temporal = args.model_type == 'fno_3d'
+
     if is_fno:
         model = load_fno(args.ckpt, device)
+    elif is_temporal:
+        model = load_fno_3d(args.ckpt, device)
     else:
         model = load_rnp(args.ckpt, args.model_type, device)
 
@@ -274,7 +345,7 @@ def main():
         }
 
         # ---- RNP: sequential state update ----------------------------------
-        if not is_fno:
+        if not is_fno and not is_temporal:
             running_state = model.init_state(1, device)
 
             for t_current in tqdm(range(t_end), desc=f"Ep {ep_idx}", leave=False):
@@ -298,13 +369,28 @@ def main():
                     save_dict[f't_{t_current}_{tag}_std']     = std_imgs
                     save_dict[f't_{t_current}_{tag}_latency'] = lat
 
-        # ---- FNO: stateless, evaluate at each stride step ------------------
-        else:
+        # ---- FNO2d: stateless, 1-frame seed --------------------------------
+        elif is_fno:
             for t_current in tqdm(time_steps, desc=f"Ep {ep_idx}", leave=False):
                 gt = ep_data[t_current+1 : t_current+1+args.horizon]
                 save_dict[f't_{t_current}_gt_horizon'] = gt.astype(np.float16)
 
                 sample_imgs, mean_imgs, std_imgs, lat = fno_rollout(
+                    model, ep_data, t_current, args.horizon, args.num_samples,
+                    H_grid, W_grid, device)
+
+                save_dict[f't_{t_current}_{tag}_sample']  = sample_imgs
+                save_dict[f't_{t_current}_{tag}_mean']    = mean_imgs
+                save_dict[f't_{t_current}_{tag}_std']     = std_imgs
+                save_dict[f't_{t_current}_{tag}_latency'] = lat
+
+        # ---- TemporalFNO / FNO3d: stateless, h_ctx-frame seed --------------
+        else:   # is_temporal
+            for t_current in tqdm(time_steps, desc=f"Ep {ep_idx}", leave=False):
+                gt = ep_data[t_current+1 : t_current+1+args.horizon]
+                save_dict[f't_{t_current}_gt_horizon'] = gt.astype(np.float16)
+
+                sample_imgs, mean_imgs, std_imgs, lat = temporal_fno_rollout(
                     model, ep_data, t_current, args.horizon, args.num_samples,
                     H_grid, W_grid, device)
 

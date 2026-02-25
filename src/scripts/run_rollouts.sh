@@ -6,7 +6,7 @@
 set -e
 
 PYTHON=/home/emunoz/dev/safe-nav-smoke/.env/bin/python
-export CUDA_VISIBLE_DEVICES=4
+export CUDA_VISIBLE_DEVICES=0
 export PYTHONPATH=/home/emunoz/dev/safe-nav-smoke
 
 DATA_PATH="/home/emunoz/dev/safe-nav-smoke/data/playback_data/test_global_source_100_100.npz"
@@ -22,12 +22,16 @@ CKPT_MS_BIAS="/home/emunoz/dev/safe-nav-smoke/outputs/2026-02-22/21-24-49-multis
 CKPT_MS_NO_BIAS="/home/emunoz/dev/safe-nav-smoke/outputs/2026-02-23/17-12-19_multistep_no_bias/checkpoints/best_model.pt"
 
 # ---- FNO checkpoints (fill in after training) ------------------------------
-CKPT_FNO_BIAS=""          # e.g. outputs/2026-02-24/.../checkpoints/best_model.pt
-CKPT_FNO_NO_BIAS=""
-CKPT_FNO_MS_H3=""
-CKPT_FNO_MS_H5=""
-CKPT_FNO_MS_H8=""
-CKPT_FNO_UNCERTAINTY=""
+CKPT_FNO_BIAS="/home/emunoz/dev/safe-nav-smoke/outputs/2026-02-24/02-57-09_fno_bias/checkpoints/best_model.pt"          # e.g. outputs/2026-02-24/.../checkpoints/best_model.pt
+CKPT_FNO_NO_BIAS="/home/emunoz/dev/safe-nav-smoke/outputs/2026-02-24/03-48-53_fno_no_bias/checkpoints/best_model.pt"
+CKPT_FNO_MS_H3="/home/emunoz/dev/safe-nav-smoke/outputs/2026-02-24/04-40-00_fno_ms_h3/checkpoints/best_model.pt"
+CKPT_FNO_MS_H5="/home/emunoz/dev/safe-nav-smoke/outputs/2026-02-24/05-57-25_fno_ms_h5/checkpoints/best_model.pt"
+CKPT_FNO_MS_H8="/home/emunoz/dev/safe-nav-smoke/outputs/2026-02-24/07-32-09_fno_ms_h8/checkpoints/best_model.pt"
+CKPT_FNO_BIAS_SAMPLE="/home/emunoz/dev/safe-nav-smoke/outputs/2026-02-24/11-11-09_fno_bias_sample/checkpoints/best_model.pt"
+CKPT_FNO_UNCERTAINTY="/home/emunoz/dev/safe-nav-smoke/outputs/2026-02-24/11-48-29_fno_uncertainty/checkpoints/best_model.pt"
+
+# ---- FNO3D checkpoints (fill in after training) ----------------------------
+CKPT_FNO3D="/home/emunoz/dev/safe-nav-smoke/outputs/2026-02-24/14-10-03_fno_3d/checkpoints/best_model.pt"   # e.g. outputs/2026-02-24/XX_fno_3d/checkpoints/best_model.pt
 
 # ---------------------------------------------------------------------------
 
@@ -71,13 +75,18 @@ run_rollout() {
 # run_rollout "$CKPT_MS_BIAS"     "rnp_multistep" "saved_rollouts/ms_bias"        "ms_bias"
 # run_rollout "$CKPT_MS_NO_BIAS"  "rnp_multistep" "saved_rollouts/ms_no_bias"     "ms_no_bias"
 
-# ---- FNO -------------------------------------------------------------------
-run_rollout "$CKPT_FNO_BIAS"        "fno" "saved_rollouts/fno_bias"        "fno_bias"
-run_rollout "$CKPT_FNO_NO_BIAS"     "fno" "saved_rollouts/fno_no_bias"     "fno_no_bias"
-run_rollout "$CKPT_FNO_MS_H3"       "fno" "saved_rollouts/fno_ms_h3"       "fno_ms_h3"
-run_rollout "$CKPT_FNO_MS_H5"       "fno" "saved_rollouts/fno_ms_h5"       "fno_ms_h5"
-run_rollout "$CKPT_FNO_MS_H8"       "fno" "saved_rollouts/fno_ms_h8"       "fno_ms_h8"
-run_rollout "$CKPT_FNO_UNCERTAINTY" "fno" "saved_rollouts/fno_uncertainty"  "fno_uncertainty"
+# ---- FNO2d -----------------------------------------------------------------
+# run_rollout "$CKPT_FNO_BIAS"        "fno" "saved_rollouts/fno_bias"        "fno_bias"
+# run_rollout "$CKPT_FNO_NO_BIAS"     "fno" "saved_rollouts/fno_no_bias"     "fno_no_bias"
+# run_rollout "$CKPT_FNO_MS_H3"       "fno" "saved_rollouts/fno_ms_h3"       "fno_ms_h3"
+# run_rollout "$CKPT_FNO_MS_H5"       "fno" "saved_rollouts/fno_ms_h5"       "fno_ms_h5"
+# run_rollout "$CKPT_FNO_MS_H8"       "fno" "saved_rollouts/fno_ms_h8"       "fno_ms_h8"
+# run_rollout "$CKPT_FNO_BIAS_SAMPLE" "fno" "saved_rollouts/fno_bias_sample"
+# run_rollout "$CKPT_FNO_UNCERTAINTY" "fno" "saved_rollouts/fno_uncertainty"  "fno_uncertainty"
+
+# ---- FNO3D -----------------------------------------------------------------
+run_rollout "$CKPT_FNO3D" "fno_3d" "saved_rollouts/fno_3d" "fno_3d"
 
 echo ""
 echo "All rollouts saved."
+

@@ -1,0 +1,49 @@
+# @package _global_
+# FNO-3D: True 3D spectral convolution over (T × H × W)
+#
+# SpectralConv3d applies rfftn jointly in time+space,
+# learning cross-frequency correlations like diagonal space-time waves.
+#
+# h_ctx frames → 3D FFT → truncate (modes_t, modes_h, modes_w) →
+# multiply complex weights → IFFT → temporal aggregate → h_pred distributions
+training:
+  experiment_name: "fno_3d"
+  seed: 42
+
+  data:
+    data_path: "data/playback_data/global_source_400_100_2nd.npz"
+    batch_size: 8
+    train_split: 0.9
+    max_samples: null
+    sequence_length: 30    # > h_ctx + h_pred  (10 + 5 = 15 → 30 works)
+    num_workers: 0
+
+  model:
+    h_ctx:  5    # Context frames  (T dimension of the 3D volume)
+    h_pred:  5    # Future frames per forward pass  (autoregressive in inference)
+
+    # 3D Fourier modes — keep low to avoid overfitting and manage memory
+    modes_t:  4   # Temporal modes   (≤ h_ctx // 2)
+    modes_h:  8   # Spatial H modes  (≤ H // 2)
+    modes_w:  8   # Spatial W modes  (≤ W // 2)
+
+    width:    32  # Latent channel width
+    n_layers:  4  # SpectralConv3d blocks
+
+    use_grid:  true   # Append (x,y) spatial grid after temporal aggregation
+    use_time:  true   # Append normalised time as extra input channel per frame
+    min_std:   1.0e-4
+
+  optimizer:
+    lr: 1.0e-3
+    min_lr: 1.0e-5
+    max_epochs: 200
+    grad_clip: 1.0
+
+  checkpoint:
+    save_top_k: 3
+    monitor: "val_nll"
+    mode: "min"
+
+  visualizer:
+    visualize_every: 5

@@ -21,20 +21,15 @@ RUNS = [
     {
         "folder": "/home/emunoz/dev/safe-nav-smoke/saved_rollouts/run_rnp_bias",
         "label":  "RNP (bias)",
-        # Optional: set 'key_prefix' to override auto-detection.
-        # Useful when pointing multiple RUNS at the same compare_gp_rnp.py folder:
-        #   "key_prefix": "gp"        → uses t_{t}_gp_sample / gp_mean / gp_std
-        #   "key_prefix": "rnp"       → uses t_{t}_rnp_sample / rnp_mean / rnp_std
-        #   "key_prefix": "multistep" → uses t_{t}_multistep_sample / ...
     },
-    {
-        "folder": "/home/emunoz/dev/safe-nav-smoke/saved_rollouts/run_rnp_no_bias",
-        "label":  "RNP (no bias)",
-    },
-    {
-        "folder": "/home/emunoz/dev/safe-nav-smoke/saved_rollouts/run_multistep_bias",
-        "label":  "Multistep (bias)",
-    },
+    # {
+    #     "folder": "/home/emunoz/dev/safe-nav-smoke/saved_rollouts/run_rnp_no_bias",
+    #     "label":  "RNP (no bias)",
+    # },
+    # {
+    #     "folder": "/home/emunoz/dev/safe-nav-smoke/saved_rollouts/run_multistep_bias",
+    #     "label":  "Multistep (bias)",
+    # },
     {
         "folder": "/home/emunoz/dev/safe-nav-smoke/saved_rollouts/run_multistep_no_bias",
         "label":  "Multistep (no bias)",
@@ -42,6 +37,38 @@ RUNS = [
     {
         "folder": "/home/emunoz/dev/safe-nav-smoke/saved_rollouts/run_gp",
         "label":  "GP (no bias)",
+    },
+    {
+        "folder": "/home/emunoz/dev/safe-nav-smoke/saved_rollouts/fno_bias",
+        "label":  "FNO (bias)",
+    },
+    # {
+    #     "folder": "/home/emunoz/dev/safe-nav-smoke/saved_rollouts/fno_no_bias",
+    #     "label":  "FNO (no bias)",
+    # },
+    # {
+    #     "folder": "/home/emunoz/dev/safe-nav-smoke/saved_rollouts/fno_ms_h3",
+    #     "label":  "FNO multistep 3",
+    # },
+    # {
+    #     "folder": "/home/emunoz/dev/safe-nav-smoke/saved_rollouts/fno_ms_h5",
+    #     "label":  "FNO multistep 5",
+    # },
+    # {
+    #     "folder": "/home/emunoz/dev/safe-nav-smoke/saved_rollouts/fno_ms_h8",
+    #     "label":  "FNO multistep 8",
+    # },
+    # {
+    #     "folder": "/home/emunoz/dev/safe-nav-smoke/saved_rollouts/fno_bias_sample",
+    #     "label":  "FNO bias sample",
+    # },
+    # {
+    #     "folder": "/home/emunoz/dev/safe-nav-smoke/saved_rollouts/fno_uncertainty",
+    #     "label":  "FNO uncertainty",
+    # },
+    {
+        "folder": "/home/emunoz/dev/safe-nav-smoke/saved_rollouts/fno_3d",
+        "label":  "FNO-3D",
     },
 ]
 
@@ -53,18 +80,29 @@ CVAR_LEVELS  = [0.75, 0.90, 0.95]   # CVaR α levels to evaluate
 # =============================================================================
 # %%
 
+def detect_prefix_from_data(data, time_steps) -> str:
+    """
+    Auto-detect the key prefix by scanning the first available time step.
+    Works regardless of whether the tag is 'fno', 'fno_bias', 'rnp', etc.
+    Returns the prefix (everything between 't_{t}_' and '_sample').
+    """
+    for t in time_steps[:5]:
+        for key in data.keys():
+            prefix = f"t_{t}_"
+            suffix = "_sample"
+            if key.startswith(prefix) and key.endswith(suffix):
+                return key[len(prefix):-len(suffix)]
+    return "rnp"   # safe fallback
+
+
 def detect_sample_key(folder: str) -> str:
-    """
-    Infer the npz key prefix from the folder name.
-    Supports folders produced by save_rnp_rollouts.py (rnp / multistep)
-    and by compare_gp_rnp.py (gp, rnp, multistep inside the same files).
-    When a folder is a 'comparison' folder you can pass the explicit key prefix
-    via the RUNS config instead (e.g. set a 'key_prefix' field).
-    """
+    """Legacy heuristic — kept for backwards compat but prefer detect_prefix_from_data."""
     if "multistep" in folder:
         return "multistep_sample"
     if "gp" in folder:
         return "gp_sample"
+    if "fno" in folder:
+        return "fno_sample"
     return "rnp_sample"
 
 
@@ -79,34 +117,34 @@ def cvar(pred_mean: np.ndarray, pred_std: np.ndarray, alpha: float) -> np.ndarra
     return cvar_vals
 
 def coverage_error(pred: np.ndarray, gt: np.ndarray) -> np.ndarray:
-    """
-    Under-prediction penalty (for smoke/hazard occupancy).
-    Returns pixel-wise clip(pred - gt, 0, ∞): how much MORE the prediction is
-    than ground truth — i.e. the prediction is conservative when this is high.
-    """
     return np.clip(gt.astype(np.float32) - pred.astype(np.float32), 0.0, None)
 
+def conservatism_error(pred: np.ndarray, gt: np.ndarray) -> np.ndarray:
+    return np.clip(pred.astype(np.float32) - gt.astype(np.float32), 0.0, None)
 
 def load_run_data(run: dict) -> list[dict]:
     """
     Load every .npz episode file from run['folder'].
-    If run has a 'key_prefix' field use it directly; otherwise auto-detect.
-    Returns a list of dicts, each containing the raw npz arrays and metadata.
+    Prefix is auto-detected from the actual npz keys (robust for any tag).
+    An explicit 'key_prefix' in run overrides auto-detection.
     """
     folder = run["folder"]
-    if "key_prefix" in run:
-        sample_key_prefix = run["key_prefix"]
-    else:
-        sample_key_prefix = detect_sample_key(folder).replace("_sample", "")
-    files = sorted([f for f in os.listdir(folder) if f.endswith(".npz")])
+    files  = sorted([f for f in os.listdir(folder) if f.endswith(".npz")])
     episodes = []
     for fname in files:
         path = os.path.join(folder, fname)
         data = np.load(path)
+        time_steps = data["time_steps"]
+
+        if "key_prefix" in run:
+            pfx = run["key_prefix"]
+        else:
+            pfx = detect_prefix_from_data(data, time_steps)
+
         episodes.append({
-            "data": data,
-            "time_steps": data["time_steps"],
-            "sample_key_prefix": sample_key_prefix,
+            "data":              data,
+            "time_steps":        time_steps,
+            "sample_key_prefix": pfx,
         })
     return episodes
 
@@ -144,14 +182,18 @@ def collect_metrics_for_horizon(episodes: list[dict], h: int) -> dict:
     result = {
         "model_mae":                [],
         "model_coverage_mean":      [],
+        "model_conservatism_mean":  [],
         "persistence_mae":          [],
         "persistence_coverage_mean":[],
+        "persistence_conservatism_mean":[],
         "model_is_more_conservative":[],
+        "model_is_more_comprehensive":[],
         "latencies_ms":             [],
     }
     for a in CVAR_LEVELS:
-        result[f"model_cvar_{a}"]       = []
-        result[f"persistence_cvar_{a}"] = []
+        result[f"model_mae_cvar_{a}"]       = []
+        result[f"model_coverage_cvar_{a}"]  = []
+        result[f"model_conservatism_cvar_{a}"]  = []
 
     for ep in episodes:
         data       = ep["data"]
@@ -159,33 +201,44 @@ def collect_metrics_for_horizon(episodes: list[dict], h: int) -> dict:
         pfx        = ep["sample_key_prefix"]
 
         for i, t in enumerate(time_steps):
-            sample_key  = f"t_{t}_{pfx}_sample"
-            gt_key      = f"t_{t}_gt_horizon"
-            latency_key = f"t_{t}_{pfx}_latency"
+            sample_key      = f"t_{t}_{pfx}_sample"
+            gt_key          = f"t_{t}_gt_horizon"
+            latency_key     = f"t_{t}_{pfx}_latency"
             sample_mean_key = f"t_{t}_{pfx}_mean"
-            sample_std_key = f"t_{t}_{pfx}_std"
+            sample_std_key  = f"t_{t}_{pfx}_std"
 
             if sample_key not in data or gt_key not in data:
                 continue
             if h >= data[gt_key].shape[0]:
                 continue
 
-            rollout  = data[sample_key].astype(np.float32)  # (horizon, N, H, W)
-            gt_all   = data[gt_key].astype(np.float32)       # (horizon, H, W)
-            gt_h     = gt_all[h]                              # (H, W)
-            samples_h = rollout[h]                            # (N, H, W)
-            mean_h   = samples_h.mean(axis=0)                 # (H, W)
-            rollout_mean = data[sample_mean_key]
-            rollout_std = data[sample_std_key]
+            rollout   = data[sample_key].astype(np.float32)   # (horizon, N, H, W)
+            gt_all    = data[gt_key].astype(np.float32)        # (horizon, H, W)
+            gt_h      = gt_all[h]                              # (H, W)
+            samples_h = rollout[h]                             # (N, H, W)
+            mean_h    = samples_h.mean(axis=0)                 # (H, W) ensemble mean
+
+            # Distribution parameters at horizon h (model μ, σ)
+            has_dist = sample_mean_key in data and sample_std_key in data
+            mu_h     = data[sample_mean_key].astype(np.float32)[h] if has_dist else mean_h
+            std_h    = data[sample_std_key ].astype(np.float32)[h] if has_dist else samples_h.std(axis=0)
 
             # — Model metrics —
-            mae_m   = float(np.abs(mean_h - gt_h).mean())
-            cov_m   = coverage_error(mean_h, gt_h)
+            mae_m = float(np.abs(mean_h - gt_h).mean())
+            cov_m = float(coverage_error(mean_h, gt_h).mean())
+            cons_m = float(conservatism_error(mean_h, gt_h).mean())
             result["model_mae"].append(mae_m)
-            result["model_coverage_mean"].append(float(cov_m.mean()))
+            result["model_coverage_mean"].append(cov_m)
+            result["model_conservatism_mean"].append(cons_m)
 
             for a in CVAR_LEVELS:
-                result[f"model_cvar_{a}"].append(cvar(rollout_mean, rollout_std, a))
+                cvar_h = cvar(mu_h, std_h, a)
+                result[f"model_mae_cvar_{a}"].append(
+                    float(np.abs(cvar_h - gt_h).mean()))
+                result[f"model_coverage_cvar_{a}"].append(
+                    float(coverage_error(cvar_h, gt_h).mean()))
+                result[f"model_conservatism_cvar_{a}"].append(
+                    float(conservatism_error(cvar_h, gt_h).mean()))
 
             # — Latency —
             if latency_key in data:
@@ -193,24 +246,23 @@ def collect_metrics_for_horizon(episodes: list[dict], h: int) -> dict:
 
             # — Persistence metrics —
             if i > 0:
-                t_prev     = time_steps[i - 1]
+                t_prev      = time_steps[i - 1]
                 gt_prev_key = f"t_{t_prev}_gt_horizon"
                 if gt_prev_key in data:
                     gt_prev_all = data[gt_prev_key].astype(np.float32)
-                    gt_current  = gt_prev_all[-1]  # frame that is "now" at step i
-                    cov_p       = coverage_error(gt_current, gt_h)
+                    gt_current  = gt_prev_all[-1]              # frame 'now' at step i
+                    cov_p       = float(coverage_error(gt_current, gt_h).mean())
                     mae_p       = float(np.abs(gt_current - gt_h).mean())
+                    cons_p      = float(conservatism_error(gt_current, gt_h).mean())
                     result["persistence_mae"].append(mae_p)
-                    result["persistence_coverage_mean"].append(float(cov_p.mean()))
+                    result["persistence_coverage_mean"].append(cov_p)
+                    result["persistence_conservatism_mean"].append(cons_p)
 
-                    flat_pers = gt_current.flatten()
-                    for a in CVAR_LEVELS:
-                        result[f"persistence_cvar_{a}"].append(cvar(flat_pers, a))
-
-                    # Model is MORE conservative (higher coverage) → safer for planning
                     result["model_is_more_conservative"].append(
-                        float(cov_m.mean()) > float(cov_p.mean())
-                    )
+                        float(cons_m) > float(cons_p))
+
+                    result["model_is_more_comprehensive"].append(
+                        float(cov_m) < float(cov_p))
 
     return result
 
@@ -233,121 +285,6 @@ for run in RUNS:
     print(f"  {run['label']}: {len(eps)} episodes from {folder}")
 
 print("Done.")
-
-# %% Simple test to see data and make modifications if needed
-
-run_number = 2
-run = RUNS[run_number]
-episodes = all_run_episodes[run_number]
-horizon = -1
-# metrics = collect_metrics_for_horizon(episodes, horizon)
-
-# %%
-result = {
-    "model_mae":                [],
-    "model_coverage_mean":      [],
-    "persistence_mae":          [],
-    "persistence_coverage_mean":[],
-    "model_is_more_conservative":[],
-    "latencies_ms":             [],
-}
-for ep in episodes:
-    data       = ep["data"]
-    time_steps = ep["time_steps"]
-    pfx        = ep["sample_key_prefix"]
-
-    for i, t in enumerate(time_steps):
-        sample_key  = f"t_{t}_{pfx}_sample"
-        gt_key      = f"t_{t}_gt_horizon"
-        latency_key = f"t_{t}_{pfx}_latency"
-        sample_mean_key = f"t_{t}_{pfx}_mean"
-        sample_std_key = f"t_{t}_{pfx}_std"
-
-        if i < 3:
-            continue
-
-        if sample_key not in data or gt_key not in data:
-            continue
-        if horizon >= data[gt_key].shape[0]:
-            continue
-
-        rollout  = data[sample_key].astype(np.float32)  # (horizon, N, H, W)
-        gt_all   = data[gt_key].astype(np.float32)       # (horizon, H, W)
-        gt_h     = gt_all[horizon]                              # (H, W)
-        samples_h = rollout[horizon]                            # (N, H, W)
-        mean_h   = samples_h.mean(axis=0)                 # (H, W)
-        sample_h = samples_h[0]
-
-        rollout_mean = data[sample_mean_key][horizon]
-        rollout_std = data[sample_std_key][horizon]
-
-        # fused_mean, fused_std = fuse_gaussians(rollout_mean, rollout_std)
-
-        cvar_075 = cvar(rollout_mean, rollout_std, 0.75)
-        cvar_09 = cvar(rollout_mean, rollout_std, 0.9)
-        cvar_095 = cvar(rollout_mean, rollout_std, 0.95)
-
-        cov_075 = coverage_error(cvar_075, gt_h)
-        cov_09 = coverage_error(cvar_09, gt_h)
-        cov_095 = coverage_error(cvar_095, gt_h)
-
-        mae_075 = np.abs(cvar_075 - gt_h)
-        mae_09 = np.abs(cvar_09 - gt_h)
-        mae_095 = np.abs(cvar_095 - gt_h)
-
-        mae_sample   = np.abs(sample_h - gt_h)
-        cov_sample   = coverage_error(sample_h, gt_h)
-        mae_mean   = np.abs(mean_h - gt_h)
-        cov_mean   = coverage_error(mean_h, gt_h)
-
-        # — Latency —
-        if latency_key in data:
-            result["latencies_ms"].append(float(data[latency_key]))
-
-        # — Persistence metrics —
-        if i > 0:
-            t_prev     = time_steps[i - 1]
-            gt_prev_key = f"t_{t_prev}_gt_horizon"
-            if gt_prev_key in data:
-                gt_prev_all = data[gt_prev_key].astype(np.float32)
-                gt_current  = gt_prev_all[-1]  # frame that is "now" at step i
-                cov_p       = coverage_error(gt_current, gt_h)
-                mae_p       = np.abs(gt_current - gt_h)
-
-        f, ax = plt.subplots(7, 2, figsize=(6, 20))
-        ax[0, 0].imshow(gt_h, cmap="inferno", origin="lower", vmin=0, vmax=1)
-        ax[0, 0].set_title(f"GT")
-        ax[0, 1].imshow(sample_h, cmap="inferno", origin="lower", vmin=0, vmax=1)
-        ax[0, 1].set_title(f"Sample")
-        ax[1, 0].imshow(rollout_mean, cmap="inferno", origin="lower", vmin=0, vmax=1)
-        ax[1, 0].set_title(f"Mean (fake)")
-        ax[1, 1].imshow(rollout_std, cmap="inferno", origin="lower", vmin=0, vmax=1)
-        ax[1, 1].set_title(f"Std (fake)")
-        ax[2, 0].imshow(mae_sample, cmap="inferno", origin="lower", vmin=0, vmax=1)
-        ax[2, 0].set_title(f"MAE sample - {mae_sample.mean():.3f}")
-        ax[2, 1].imshow(cov_sample, cmap="inferno", origin="lower", vmin=0, vmax=1)
-        ax[2, 1].set_title(f"Coverage sample - {cov_sample.mean():.3f}")
-        ax[3, 0].imshow(mae_mean, cmap="inferno", origin="lower", vmin=0, vmax=1)
-        ax[3, 0].set_title(f"MAE mean - {mae_mean.mean():.3f}")
-        ax[3, 1].imshow(cov_mean, cmap="inferno", origin="lower", vmin=0, vmax=1)
-        ax[3, 1].set_title(f"Coverage mean - {cov_mean.mean():.3f}")
-        ax[4, 0].imshow(mae_p, cmap="inferno", origin="lower", vmin=0, vmax=1)
-        ax[4, 0].set_title(f"MAE Persistence - {mae_p.mean():.3f}")
-        ax[4, 1].imshow(cov_p, cmap="inferno", origin="lower", vmin=0, vmax=1)
-        ax[4, 1].set_title(f"Coverage Persistence - {cov_p.mean():.3f}")
-        ax[5, 0].imshow(mae_075, cmap="inferno", origin="lower", vmin=0, vmax=1)
-        ax[5, 0].set_title(f"MAE 0.75 - {mae_075.mean():.3f}")
-        ax[5, 1].imshow(cov_075, cmap="inferno", origin="lower", vmin=0, vmax=1)
-        ax[5, 1].set_title(f"Coverage 0.75 - {cov_075.mean():.3f}")
-        ax[6, 0].imshow(mae_09, cmap="inferno", origin="lower", vmin=0, vmax=1)
-        ax[6, 0].set_title(f"MAE 0.9 - {mae_09.mean():.3f}")
-        ax[6, 1].imshow(cov_09, cmap="inferno", origin="lower", vmin=0, vmax=1)
-        ax[6, 1].set_title(f"Coverage 0.9 - {cov_09.mean():.3f}")
-        plt.show()
-        break
-
-    break
-
 
 
 # =============================================================================
@@ -375,15 +312,18 @@ print("Metric collection complete.")
 # %%
 
 horizons = list(range(1, MAX_HORIZON + 1))  # 1-indexed for display
-fig, axes = plt.subplots(1, 2, figsize=(13, 5))
+fig, axes = plt.subplots(3, 1, figsize=(5, 13))
 fig.suptitle("MAE vs Forecast Horizon", fontsize=14)
 
-colors   = ["tab:blue", "tab:orange", "tab:green"]
+import matplotlib.cm as cm
+_cmap   = cm.get_cmap('rainbow', len(RUNS))
+colors  = [_cmap(i) for i in range(len(RUNS))]
 ls_model = "-"
 ls_pers  = "--"
 
-ax_mae, ax_cov = axes
+ax_mae, ax_cov, ax_cons = axes
 
+persistence_counted = False
 for run_idx, (run, per_horizon) in enumerate(zip(RUNS, all_metrics)):
     if per_horizon is None:
         continue
@@ -391,15 +331,21 @@ for run_idx, (run, per_horizon) in enumerate(zip(RUNS, all_metrics)):
     lbl = run["label"]
 
     mae_m  = [np.mean(per_horizon[h]["model_mae"])            if per_horizon[h]["model_mae"]            else np.nan for h in range(MAX_HORIZON)]
-    mae_p  = [np.mean(per_horizon[h]["persistence_mae"])      if per_horizon[h]["persistence_mae"]      else np.nan for h in range(MAX_HORIZON)]
     cov_m  = [np.mean(per_horizon[h]["model_coverage_mean"])  if per_horizon[h]["model_coverage_mean"]  else np.nan for h in range(MAX_HORIZON)]
-    cov_p  = [np.mean(per_horizon[h]["persistence_coverage_mean"]) if per_horizon[h]["persistence_coverage_mean"] else np.nan for h in range(MAX_HORIZON)]
+    cons_m = [np.mean(per_horizon[h]["model_conservatism_mean"]) if per_horizon[h]["model_conservatism_mean"] else np.nan for h in range(MAX_HORIZON)]
+
+    if not persistence_counted:
+        mae_p  = [np.mean(per_horizon[h]["persistence_mae"])      if per_horizon[h]["persistence_mae"]      else np.nan for h in range(MAX_HORIZON)]
+        cov_p  = [np.mean(per_horizon[h]["persistence_coverage_mean"]) if per_horizon[h]["persistence_coverage_mean"] else np.nan for h in range(MAX_HORIZON)]
+        cons_p = [np.mean(per_horizon[h]["persistence_conservatism_mean"]) if per_horizon[h]["persistence_conservatism_mean"] else np.nan for h in range(MAX_HORIZON)]
+        ax_mae.plot(horizons, mae_p, color=c, ls=ls_pers,  marker="s", ms=4, label=f"Persistence MAE", alpha=0.6)
+        ax_cov.plot(horizons, cov_p, color=c, ls=ls_pers,  marker="s", ms=4, label=f"Persistence Coverage", alpha=0.6)
+        ax_cons.plot(horizons, cons_p, color=c, ls=ls_pers,  marker="s", ms=4, label=f"Persistence Conservatism", alpha=0.6)
+        persistence_counted = True
 
     ax_mae.plot(horizons, mae_m, color=c, ls=ls_model, marker="o", ms=4, label=f"{lbl} — model")
-    ax_mae.plot(horizons, mae_p, color=c, ls=ls_pers,  marker="s", ms=4, label=f"{lbl} — persistence", alpha=0.6)
-
     ax_cov.plot(horizons, cov_m, color=c, ls=ls_model, marker="o", ms=4, label=f"{lbl} — model")
-    ax_cov.plot(horizons, cov_p, color=c, ls=ls_pers,  marker="s", ms=4, label=f"{lbl} — persistence", alpha=0.6)
+    ax_cons.plot(horizons, cons_m, color=c, ls=ls_model, marker="o", ms=4, label=f"{lbl} — model")
 
 ax_mae.set_xlabel("Horizon step"); ax_mae.set_ylabel("MAE")
 ax_mae.set_title("Mean Absolute Error"); ax_mae.legend(fontsize=7); ax_mae.grid(alpha=0.3)
@@ -420,6 +366,7 @@ plt.show()
 fig, axes = plt.subplots(1, len(CVAR_LEVELS), figsize=(5 * len(CVAR_LEVELS), 5), sharey=False)
 fig.suptitle("CVaR (Expected Shortfall) by α — higher = heavier tail risk estimated", fontsize=13)
 
+persistence_counted = False
 for axi, a in enumerate(CVAR_LEVELS):
     ax = axes[axi]
     for run_idx, (run, per_horizon) in enumerate(zip(RUNS, all_metrics)):
@@ -429,10 +376,12 @@ for axi, a in enumerate(CVAR_LEVELS):
         lbl = run["label"]
 
         cv_m = [np.mean(per_horizon[h][f"model_cvar_{a}"])       if per_horizon[h][f"model_cvar_{a}"]       else np.nan for h in range(MAX_HORIZON)]
-        cv_p = [np.mean(per_horizon[h][f"persistence_cvar_{a}"]) if per_horizon[h][f"persistence_cvar_{a}"] else np.nan for h in range(MAX_HORIZON)]
+        if not persistence_counted:
+            cv_p = [np.mean(per_horizon[h][f"persistence_mae"]) if per_horizon[h][f"persistence_mae"] else np.nan for h in range(MAX_HORIZON)]
+            ax.plot(horizons, cv_p, color=c, ls="--", marker="s", ms=4, label=f"Persistence — MAE", alpha=0.6)
+            persistence_counted = True
 
         ax.plot(horizons, cv_m, color=c, ls="-",  marker="o", ms=4, label=f"{lbl} — model")
-        ax.plot(horizons, cv_p, color=c, ls="--", marker="s", ms=4, label=f"{lbl} — persistence", alpha=0.6)
 
     ax.set_title(f"CVaR α={a}")
     ax.set_xlabel("Horizon step")
