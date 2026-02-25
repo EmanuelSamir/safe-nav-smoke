@@ -17,9 +17,9 @@ def main():
     args = parser.parse_args()
 
     # Parameters
-    NUM_EPISODES = 3 if args.test else 100
-    EPISODE_STEPS = 100
-    OUTPUT_PATH = "data/test_global_source_100_100.npz"
+    NUM_EPISODES = 1 if args.test else 120
+    EPISODE_STEPS = 200
+    OUTPUT_PATH = "data/planning_smoke_200_steps.npz"
     
     # Ensure data directory exists
     os.makedirs(os.path.dirname(OUTPUT_PATH), exist_ok=True)
@@ -47,32 +47,48 @@ def main():
         print("Running in TEST mode: Visualizing episodes...")
 
     start_time = time.time()
+
+    tailored_blobs = {
+        "case_1": {
+            "x_pos": [10.0, 10.0, 10.0, 20.0, 20.0],
+            "y_pos": [3.0, 10.0, 17.0, 6.0, 14.0],
+        },
+        "case_2": {
+            "x_pos": [20.0, 20.0, 20.0, 10.0, 10.0],
+            "y_pos": [3.0, 10.0, 17.0, 6.0, 14.0],
+        },
+        "case_3": {
+            "x_pos": [10.0, 10.0, 10.0, 20.0, 20.0, 20.0],
+            "y_pos": [3.0, 8.0, 13.0, 7.0, 12.0, 17.0],
+        },
+        "case_4": {
+            "x_pos": [20.0, 20.0, 20.0, 10.0, 10.0, 10.0],
+            "y_pos": [3.0, 8.0, 13.0, 7.0, 12.0, 17.0],
+        },
+        "case_5": {
+            "x_pos": [8.0, 8.0, 15.0, 22.0, 22.0],
+            "y_pos": [4.0, 16.0, 10.0, 4.0, 16.0],
+        },
+        "case_6": {
+            "x_pos": [8.0, 15.0, 15.0, 15.0, 22.0],
+            "y_pos": [10.0, 4.0, 10.0, 16.0, 10.0],
+        },
+    }
     
     for ep in tqdm(range(NUM_EPISODES), desc="Episodes"):
         # Randomize blobs for this episode
-        num_blobs = np.random.randint(4, 8)  # Random number of blobs
+        case_idx = np.random.randint(1, len(tailored_blobs) + 1)
+        case_blobs = tailored_blobs[f"case_{case_idx}"]
+        num_blobs = len(case_blobs["x_pos"])
         episode_blobs = []
-        for _ in range(num_blobs):
-            for _ in range(100): # Attempts to find a valid position
-                x_c = np.random.uniform(2, x_size - 2)
-                y_c = np.random.uniform(2, y_size - 2)
-                
-                # Check distance to existing blobs
-                valid_pos = True
-                for blob in episode_blobs:
-                    dist = np.sqrt((x_c - blob.x_pos)**2 + (y_c - blob.y_pos)**2)
-                    if dist < 5.0:
-                        valid_pos = False
-                        break
-                
-                if valid_pos:
-                    episode_blobs.append(SmokeBlobParams(
-                        x_pos=x_c,
-                        y_pos=y_c,
-                        intensity=1.0,
-                        spread_rate=np.random.uniform(1.0, 3.0)
-                    ))
-                    break
+        for i in range(num_blobs):
+            spread_rate=np.random.uniform(1.0, 3.0)
+            episode_blobs.append(SmokeBlobParams(
+                x_pos=case_blobs["x_pos"][i],
+                y_pos=case_blobs["y_pos"][i],
+                intensity=1.0,
+                spread_rate=spread_rate
+            ))
         
         # Create new simulator instance for this episode to bake in the new blobs
         params = DynamicSmokeParams(
