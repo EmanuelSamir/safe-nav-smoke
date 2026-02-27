@@ -312,7 +312,7 @@ print("Metric collection complete.")
 # %%
 
 horizons = list(range(1, MAX_HORIZON + 1))  # 1-indexed for display
-fig, axes = plt.subplots(3, 1, figsize=(5, 13))
+fig, axes = plt.subplots(1, 3, figsize=(15, 5))
 fig.suptitle("MAE vs Forecast Horizon", fontsize=14)
 
 import matplotlib.cm as cm
@@ -353,6 +353,9 @@ ax_mae.set_title("Mean Absolute Error"); ax_mae.legend(fontsize=7); ax_mae.grid(
 ax_cov.set_xlabel("Horizon step"); ax_cov.set_ylabel("Coverage error (mean)")
 ax_cov.set_title("Coverage (under-prediction penalty)"); ax_cov.legend(fontsize=7); ax_cov.grid(alpha=0.3)
 
+ax_cons.set_xlabel("Horizon step"); ax_cons.set_ylabel("Conservatism error (mean)")
+ax_cons.set_title("Conservatism (over-prediction penalty)"); ax_cons.legend(fontsize=7); ax_cons.grid(alpha=0.3)
+
 plt.tight_layout()
 plt.show()
 
@@ -363,31 +366,37 @@ plt.show()
 # =============================================================================
 # %%
 
-fig, axes = plt.subplots(1, len(CVAR_LEVELS), figsize=(5 * len(CVAR_LEVELS), 5), sharey=False)
+metrics = ["mae", "coverage", "conservatism"]
+fig, axes = plt.subplots(len(CVAR_LEVELS), len(metrics), figsize=(5 * len(metrics), 5 * len(CVAR_LEVELS)), sharey=False)
 fig.suptitle("CVaR (Expected Shortfall) by α — higher = heavier tail risk estimated", fontsize=13)
 
-persistence_counted = False
 for axi, a in enumerate(CVAR_LEVELS):
-    ax = axes[axi]
-    for run_idx, (run, per_horizon) in enumerate(zip(RUNS, all_metrics)):
-        if per_horizon is None:
-            continue
-        c   = colors[run_idx]
-        lbl = run["label"]
+    for j, metric in enumerate(metrics):
+        ax = axes[axi, j]
+        persistence_counted = False
+        for run_idx, (run, per_horizon) in enumerate(zip(RUNS, all_metrics)):
+            if per_horizon is None:
+                continue
+            c   = colors[run_idx]
+            lbl = run["label"]
 
-        cv_m = [np.mean(per_horizon[h][f"model_cvar_{a}"])       if per_horizon[h][f"model_cvar_{a}"]       else np.nan for h in range(MAX_HORIZON)]
-        if not persistence_counted:
-            cv_p = [np.mean(per_horizon[h][f"persistence_mae"]) if per_horizon[h][f"persistence_mae"] else np.nan for h in range(MAX_HORIZON)]
-            ax.plot(horizons, cv_p, color=c, ls="--", marker="s", ms=4, label=f"Persistence — MAE", alpha=0.6)
-            persistence_counted = True
+            m = [np.mean(per_horizon[h][f"model_{metric}_cvar_{a}"])       if per_horizon[h][f"model_{metric}_cvar_{a}"]       else np.nan for h in range(MAX_HORIZON)]
+            
+            if not persistence_counted:
+                new_metric = metric
+                if metric != "mae":
+                    new_metric += "_mean"
+                p = [np.mean(per_horizon[h][f"persistence_{new_metric}"]) if per_horizon[h][f"persistence_{new_metric}"] else np.nan for h in range(MAX_HORIZON)]
+                ax.plot(horizons, p, color=c, ls="--", marker="s", ms=4, label=f"Persistence — {metric}", alpha=0.6)
+                persistence_counted = True
 
-        ax.plot(horizons, cv_m, color=c, ls="-",  marker="o", ms=4, label=f"{lbl} — model")
+            ax.plot(horizons, m, color=c, ls="-",  marker="o", ms=4, label=f"{lbl} — model")
 
-    ax.set_title(f"CVaR α={a}")
-    ax.set_xlabel("Horizon step")
-    ax.set_ylabel("CVaR value")
-    ax.legend(fontsize=7)
-    ax.grid(alpha=0.3)
+            ax.set_title(f"CVaR {metric} α={a}")
+            ax.set_xlabel("Horizon step")
+            ax.set_ylabel(metric)
+            ax.legend(fontsize=7)
+            ax.grid(alpha=0.3)
 
 plt.tight_layout()
 plt.show()
@@ -417,6 +426,37 @@ for run_idx, (run, per_horizon) in enumerate(zip(RUNS, all_metrics)):
 ax.axhline(50, color="gray", ls=":", lw=1, label="50% (neutral)")
 ax.set_xlabel("Horizon step")
 ax.set_ylabel("% more conservative than persistence")
+ax.set_ylim(0, 105)
+ax.legend()
+ax.grid(alpha=0.3)
+plt.tight_layout()
+plt.show()
+
+# =============================================================================
+# SECTION 6.1 — Comprehensive rate (% of steps where model coverage > persistence)
+#   For drone path planning: higher = model is more conservative / safer.
+# =============================================================================
+# %%
+
+fig, ax = plt.subplots(figsize=(9, 5))
+ax.set_title("Comprehensive Rate vs Horizon\n(% timesteps where model coverage > persistence coverage)")
+
+for run_idx, (run, per_horizon) in enumerate(zip(RUNS, all_metrics)):
+    if per_horizon is None:
+        continue
+    c   = colors[run_idx]
+    lbl = run["label"]
+
+    rates = []
+    for h in range(MAX_HORIZON):
+        vals = per_horizon[h]["model_is_more_comprehensive"]
+        rates.append(np.mean(vals) * 100.0 if vals else np.nan)
+
+    ax.plot(horizons, rates, color=c, ls="-", marker="o", ms=4, label=lbl)
+
+ax.axhline(50, color="gray", ls=":", lw=1, label="50% (neutral)")
+ax.set_xlabel("Horizon step")
+ax.set_ylabel("% more comprehensive than persistence")
 ax.set_ylim(0, 105)
 ax.legend()
 ax.grid(alpha=0.3)
@@ -464,12 +504,19 @@ plt.show()
 # =============================================================================
 # %%
 
-HORIZON_DISPLAY = 10   # change to the horizon step (0-indexed) you want to inspect
+HORIZON_DISPLAY = 10   # 0-indexed horizon step to inspect
 
-print(f"\n{'='*70}")
-print(f"Summary at horizon step h={HORIZON_DISPLAY} (i.e. {HORIZON_DISPLAY+1} steps ahead)")
-print(f"{'='*70}")
-header = f"{'Model':<22} {'MAE':>8} {'CovErr':>8} {'CVaR75':>8} {'CVaR90':>8} {'CVaR95':>8} {'Conserv%':>9} {'Lat(ms)':>8}"
+def _g(lst, default=float("nan")):
+    """Safe mean of a list, returns default if empty."""
+    return float(np.mean(lst)) if lst else default
+
+print(f"\n{'='*90}")
+print(f"Summary at horizon step h={HORIZON_DISPLAY}  ({HORIZON_DISPLAY+1} steps ahead)")
+print(f"{'='*90}")
+header = (f"{'Model':<22} {'MAE':>7} {'Cov':>7} {'Cons':>7} "
+          f"{'MAE@75':>7} {'MAE@90':>7} {'MAE@95':>7} "
+          f"{'Cov@75':>7} {'Cons@75':>7} "
+          f"{'Consrv%':>8} {'Compr%':>7} {'Lat(ms)':>8}")
 print(header)
 print("-" * len(header))
 
@@ -477,48 +524,122 @@ for run, per_horizon in zip(RUNS, all_metrics):
     if per_horizon is None:
         print(f"{run['label']:<22}  [no data]")
         continue
-    m  = per_horizon[HORIZON_DISPLAY]
-    mae   = np.mean(m["model_mae"])           if m["model_mae"]           else float("nan")
-    cov   = np.mean(m["model_coverage_mean"]) if m["model_coverage_mean"] else float("nan")
-    cv75  = np.mean(m["model_cvar_0.75"])     if m["model_cvar_0.75"]     else float("nan")
-    cv90  = np.mean(m["model_cvar_0.9"])      if m["model_cvar_0.9"]      else float("nan")
-    cv95  = np.mean(m["model_cvar_0.95"])     if m["model_cvar_0.95"]     else float("nan")
-    cons  = np.mean(m["model_is_more_conservative"]) * 100 if m["model_is_more_conservative"] else float("nan")
-    lat   = np.mean(per_horizon[0]["latencies_ms"]) if per_horizon[0]["latencies_ms"] else float("nan")
-    print(f"{run['label']:<22} {mae:>8.4f} {cov:>8.4f} {cv75:>8.4f} {cv90:>8.4f} {cv95:>8.4f} {cons:>8.1f}% {lat:>8.1f}")
+    m   = per_horizon[HORIZON_DISPLAY]
+    mae   = _g(m["model_mae"])
+    cov   = _g(m["model_coverage_mean"])
+    cons  = _g(m["model_conservatism_mean"])
+    cm75  = _g(m["model_mae_cvar_0.75"])
+    cm90  = _g(m["model_mae_cvar_0.9"])
+    cm95  = _g(m["model_mae_cvar_0.95"])
+    cv75  = _g(m["model_coverage_cvar_0.75"])
+    cs75  = _g(m["model_conservatism_cvar_0.75"])
+    pct_c = _g(m["model_is_more_conservative"]) * 100
+    pct_r = _g(m["model_is_more_comprehensive"]) * 100
+    lat   = _g(per_horizon[0]["latencies_ms"])
+    print(f"{run['label']:<22} {mae:>7.4f} {cov:>7.4f} {cons:>7.4f} "
+          f"{cm75:>7.4f} {cm90:>7.4f} {cm95:>7.4f} "
+          f"{cv75:>7.4f} {cs75:>7.4f} "
+          f"{pct_c:>7.1f}% {pct_r:>6.1f}% {lat:>8.1f}")
 
-# — Persistence row for reference —
+# — Persistence row —
 print("-" * len(header))
-# Use first valid run for persistence
 for run, per_horizon in zip(RUNS, all_metrics):
     if per_horizon is None:
         continue
     m     = per_horizon[HORIZON_DISPLAY]
-    mae_p = np.mean(m["persistence_mae"])           if m["persistence_mae"]           else float("nan")
-    cov_p = np.mean(m["persistence_coverage_mean"]) if m["persistence_coverage_mean"] else float("nan")
-    cv75p = np.mean(m["persistence_cvar_0.75"])     if m["persistence_cvar_0.75"]     else float("nan")
-    cv90p = np.mean(m["persistence_cvar_0.9"])      if m["persistence_cvar_0.9"]      else float("nan")
-    cv95p = np.mean(m["persistence_cvar_0.95"])     if m["persistence_cvar_0.95"]     else float("nan")
-    print(f"{'Persistence (ref)':<22} {mae_p:>8.4f} {cov_p:>8.4f} {cv75p:>8.4f} {cv90p:>8.4f} {cv95p:>8.4f} {'N/A':>9} {'N/A':>8}")
+    mae_p = _g(m["persistence_mae"])
+    cov_p = _g(m["persistence_coverage_mean"])
+    con_p = _g(m["persistence_conservatism_mean"])
+    print(f"{'Persistence (ref)':<22} {mae_p:>7.4f} {cov_p:>7.4f} {con_p:>7.4f} "
+          f"{'N/A':>7} {'N/A':>7} {'N/A':>7} "
+          f"{'N/A':>7} {'N/A':>7} "
+          f"{'N/A':>8} {'N/A':>7} {'N/A':>8}")
     break
 
 # =============================================================================
-# SECTION 9 — Visual inspection: GT vs Model mean at chosen horizon
+# SECTION 9 — Visual inspection PER RUN: GT, μ, σ, Coverage, Conservatism, CVaR
+#   Persistence is shown first (same for all runs).
 # =============================================================================
 # %%
 
-EPISODE_IDX  = 0   # which episode file to inspect
-TIME_IDX     = 1   # which time step within that episode (i-th stride step)
+EPISODE_IDX = 0   # which episode to inspect
+TIME_IDX    = 3   # i-th stride step within the episode (must be >= 1 for persistence)
+HORIZON_VIS = 9  # 0-indexed forecast horizon to visualise
 
-HORIZON_VIS  = 10  # 0-indexed horizon to visualise
+def _im(ax, img, title, **kw):
+    im = ax.imshow(img, origin="lower", **kw)
+    ax.set_title(title, fontsize=9)
+    plt.colorbar(im, ax=ax, fraction=0.046, pad=0.04)
 
+def _plot_vis(label, gt_h, pred_h, sigma_h, t, mu_lbl, cvar_label="CVaR-75"):
+    """Plot the standard 2×4 inspection grid for one predicted frame."""
+    mae_map    = np.abs(pred_h - gt_h)
+    cov_map    = coverage_error(pred_h, gt_h)
+    cons_map   = conservatism_error(pred_h, gt_h)
+    cvar75     = cvar(pred_h, sigma_h, 0.75)
+    cvar_cov75 = coverage_error(cvar75, gt_h)
+    cvar_con75 = conservatism_error(cvar75, gt_h)
+
+    fig, axes = plt.subplots(2, 4, figsize=(18, 8))
+    fig.suptitle(f"{label} — ep {EPISODE_IDX}, t={t}, h={HORIZON_VIS+1}", fontsize=13)
+
+    _im(axes[0,0], gt_h,    "Ground Truth",                    cmap="inferno", vmin=0, vmax=1)
+    _im(axes[0,1], pred_h,  mu_lbl,                            cmap="inferno", vmin=0, vmax=1)
+    _im(axes[0,2], sigma_h, "σ",                               cmap="magma",   vmin=0)
+    _im(axes[0,3], mae_map, f"MAE  ({mae_map.mean():.4f})",    cmap="RdYlGn_r",vmin=0, vmax=0.5)
+
+    _im(axes[1,0], cov_map,    f"Coverage (under-pred)  {cov_map.mean():.4f}",    cmap="Reds",  vmin=0, vmax=0.5)
+    _im(axes[1,1], cons_map,   f"Conservatism (over-pred) {cons_map.mean():.4f}", cmap="Blues", vmin=0, vmax=0.5)
+    _im(axes[1,2], cvar_cov75, f"{cvar_label} Coverage  {cvar_cov75.mean():.4f}", cmap="Reds",  vmin=0, vmax=0.5)
+    _im(axes[1,3], cvar_con75, f"{cvar_label} Conservatism {cvar_con75.mean():.4f}", cmap="Blues", vmin=0, vmax=0.5)
+
+    plt.tight_layout()
+    plt.show()
+
+
+# ---- Persistence (compute once from first valid run) -----------------------
+_pers_plotted = False
+for run_idx, (run, episodes) in enumerate(zip(RUNS, all_run_episodes)):
+    if episodes is None or EPISODE_IDX >= len(episodes):
+        continue
+    ep         = episodes[EPISODE_IDX]
+    data       = ep["data"]
+    time_steps = ep["time_steps"]
+
+    if TIME_IDX >= len(time_steps) or TIME_IDX < 1:
+        break
+    t      = time_steps[TIME_IDX]
+    t_prev = time_steps[TIME_IDX - 1]
+    stride = t - t_prev
+    gt_key      = f"t_{t}_gt_horizon"
+    gt_prev_key = f"t_{t_prev}_gt_horizon"
+
+    if gt_key not in data or gt_prev_key not in data:
+        break
+    gt_h        = data[gt_key].astype(np.float32)[HORIZON_VIS]   # (H, W)
+    # Frame at time t = data[t_prev_gt_horizon][stride - 1]
+    # because t_prev_gt_horizon stores frames at [t_prev+1 .. t_prev+horizon]
+    # → index stride-1 = (t - t_prev) - 1 = frame at t
+    pers_frame  = data[gt_prev_key].astype(np.float32)[stride - 1]  # (H, W)
+
+    _plot_vis("Persistence (baseline)", gt_h, pers_frame,
+              np.zeros_like(pers_frame),   # persistence has no uncertainty
+              t, "Persistence frame", cvar_label="CVaR-75 (σ=0)")
+    _pers_plotted = True
+    break   # same for all runs → plot once
+
+if not _pers_plotted:
+    print("[Persistence] TIME_IDX must be >= 1 and prev GT key must exist.")
+
+
+# ---- Model runs -------------------------------------------------------------
 for run_idx, (run, episodes) in enumerate(zip(RUNS, all_run_episodes)):
     if episodes is None or EPISODE_IDX >= len(episodes):
         continue
 
-    ep    = episodes[EPISODE_IDX]
-    data  = ep["data"]
-    pfx   = ep["sample_key_prefix"]
+    ep         = episodes[EPISODE_IDX]
+    data       = ep["data"]
+    pfx        = ep["sample_key_prefix"]
     time_steps = ep["time_steps"]
 
     if TIME_IDX >= len(time_steps):
@@ -527,33 +648,23 @@ for run_idx, (run, episodes) in enumerate(zip(RUNS, all_run_episodes)):
 
     sample_key = f"t_{t}_{pfx}_sample"
     mean_key   = f"t_{t}_{pfx}_mean"
+    std_key    = f"t_{t}_{pfx}_std"
     gt_key     = f"t_{t}_gt_horizon"
 
     if sample_key not in data or gt_key not in data:
-        print(f"[{run['label']}] keys not found for t={t}"); continue
+        print(f"[{run['label']}] keys not found for t={t}")
+        continue
 
-    gt_h      = data[gt_key].astype(np.float32)[HORIZON_VIS]
+    gt_h      = data[gt_key].astype(np.float32)[HORIZON_VIS]      # (H, W)
     samples_h = data[sample_key].astype(np.float32)[HORIZON_VIS]  # (N, H, W)
     mean_h    = samples_h.mean(axis=0)
     std_h     = samples_h.std(axis=0)
 
-    fig, axes = plt.subplots(1, 4, figsize=(16, 4))
-    fig.suptitle(f"{run['label']} — ep {EPISODE_IDX}, t={t}, h={HORIZON_VIS+1}", fontsize=12)
+    has_dist = mean_key in data and std_key in data
+    mu_h     = data[mean_key].astype(np.float32)[HORIZON_VIS] if has_dist else mean_h
+    sigma_h  = data[std_key ].astype(np.float32)[HORIZON_VIS] if has_dist else std_h
+    mu_lbl   = "Model μ (dist)" if has_dist else "Model μ (samples)"
 
-    vmin, vmax = gt_h.min(), gt_h.max()
+    _plot_vis(run["label"], gt_h, mu_h, sigma_h, t, mu_lbl)
 
-    im0 = axes[0].imshow(gt_h,    origin="lower", cmap="inferno", vmin=vmin, vmax=vmax)
-    axes[0].set_title("Ground Truth"); plt.colorbar(im0, ax=axes[0])
-
-    im1 = axes[1].imshow(mean_h,  origin="lower", cmap="inferno", vmin=vmin, vmax=vmax)
-    axes[1].set_title("Model Mean"); plt.colorbar(im1, ax=axes[1])
-
-    im2 = axes[2].imshow(std_h,   origin="lower", cmap="magma")
-    axes[2].set_title("Model Std"); plt.colorbar(im2, ax=axes[2])
-
-    err = np.abs(mean_h - gt_h)
-    im3 = axes[3].imshow(err,     origin="lower", cmap="RdYlGn_r")
-    axes[3].set_title(f"Abs Error (MAE={err.mean():.4f})"); plt.colorbar(im3, ax=axes[3])
-
-    plt.tight_layout()
-    plt.show()
+# %%
