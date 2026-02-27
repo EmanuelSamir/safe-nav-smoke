@@ -45,7 +45,6 @@ class MPPIControlDyn:
         self,
         robot_params: RobotParams,
         robot_type: str,
-        resolution: float,
         goal_thresh: float = 0.1,
         device="cpu",
         dtype=torch.float32,
@@ -55,7 +54,6 @@ class MPPIControlDyn:
         self.device = device
         self.dtype = dtype
         self.dt = dt
-        self.resolution = resolution
         self.robot_params = robot_params
         if robot_type == "dubins2d":
             self.robot = DubinsRobot(robot_params)
@@ -189,20 +187,30 @@ class MPPIControlDyn:
     def _compute_risk_cost(self, states: torch.Tensor, t: int) -> torch.Tensor:
         """
         Compute collision cost for states in world coordinates.
-        states: torch.Tensor, shape (n, 2)
-        t: int
+        states: torch.Tensor, shape (K, nx)  — batch of robot states
+        t: int — horizon step index
         Returns:
-            torch.Tensor, shape (n,)
+            torch.Tensor, shape (K,)
         """
         if len(self._maps) == 0:
             return torch.zeros(states.shape[0], dtype=self.dtype, device=self.device)
-            # raise ValueError("Maps not set. Please call set_maps() before planning.")
 
-        coords, flatten_risk_map = self._maps[t]
+        # Clamp t to available maps (maps deque may have fewer entries than horizon)
+        map_idx = min(t, len(self._maps) - 1)
+        coords, flatten_risk_map = self._maps[map_idx]
 
-        risk_values = get_value_in_map_from_coords(states[:, :2], coords, flatten_risk_map)
+        # Convert torch states → numpy for the nearest-neighbor lookup
+        states_np = states[:, :2].detach().cpu().numpy()   # (K, 2)
 
-        return risk_values
+        # Ensure coords / risk map are numpy
+        if not isinstance(coords, np.ndarray):
+            coords = np.array(coords)
+        if not isinstance(flatten_risk_map, np.ndarray):
+            flatten_risk_map = np.array(flatten_risk_map)
+
+        risk_np = get_value_in_map_from_coords(states_np, coords, flatten_risk_map)  # (K,)
+
+        return torch.tensor(risk_np, dtype=self.dtype, device=self.device)
 
     def running_cost(self, states: torch.Tensor, actions: torch.Tensor, t: int) -> torch.Tensor:
         """
@@ -250,14 +258,13 @@ if __name__ == "__main__":
     robot_params = RobotParams.load_from_yaml("agents/dubins2d_cfg.yaml")
     robot_params.state_max = np.array([50, 35]) # (x, y)
     robot_params.state_min = np.array([0, 0])
-    resolution = 1.0
     goal_thresh = 1.0
     device = 'cpu'
     dtype = torch.float32
     dt = 0.1
 
     state = torch.tensor([1, 1, 0.0])
-    nominal_control = MPPIControlDyn(robot_params, "dubins2d", resolution, goal_thresh, device, dtype, dt)
+    nominal_control = MPPIControlDyn(robot_params, "dubins2d", goal_thresh, device, dtype, dt)
     nominal_control.set_state(state)
     nominal_control.set_goal([25.0, 10.0]) # (x, y)
 

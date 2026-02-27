@@ -78,11 +78,18 @@ class CBFController:
             self.h_discrete_artifacts = {}
             return
 
+        # Compute physical resolution (meters per cell)
+        dx_grid = (x_max - x_min) / max(1, W - 1)
+        dy_grid = (y_max - y_min) / max(1, H - 1)
+
+        # We assume square-ish cells. Skfmm takes a single dx or a tuple. We use the tuple (dy, dx).
+        # Margin is in meters.
         margin = 1.0
-        distance_map = skfmm.distance(occupancy_grid - 0.5, dx=1.5) - margin
+        distance_map = skfmm.distance(occupancy_grid - 0.5, dx=(dy_grid, dx_grid)) - margin
         h = distance_map.ravel()
 
-        grad_y, grad_x = np.gradient(distance_map)
+        # np.gradient assumes spacing of 1 index unless specified. Provide actual spacing.
+        grad_y, grad_x = np.gradient(distance_map, dy_grid, dx_grid)
         dh_dx = grad_x.ravel()
         dh_dy = grad_y.ravel()
         dh_dth = np.zeros_like(h)
@@ -103,6 +110,8 @@ class CBFController:
 
         self.h_discrete_artifacts["x_range"] = [x_min, x_max]
         self.h_discrete_artifacts["y_range"] = [y_min, y_max]
+        self.h_discrete_artifacts["W"] = W
+        self.h_discrete_artifacts["H"] = H  
         self.h_discrete_artifacts["grid_points"] = smoke_positions
         self.h_discrete_artifacts["h"] = h
         self.h_discrete_artifacts["dh_dx"] = dh_dx
@@ -213,14 +222,29 @@ class CBFController:
 
     def _nearest_index(self, pose):
         x, y, th = pose
-        return np.argmin((self.h_discrete_artifacts["grid_points"][:, 0] - x) ** 2 + (self.h_discrete_artifacts["grid_points"][:, 1] - y) ** 2)
+        x_min, x_max = self.h_discrete_artifacts["x_range"]
+        y_min, y_max = self.h_discrete_artifacts["y_range"]
+        W, H = self.h_discrete_artifacts["W"], self.h_discrete_artifacts["H"]
+
+        # Handle exact bounds safely
+        x_idx = int(round((x - x_min) / (x_max - x_min) * (W - 1)))
+        y_idx = int(round((y - y_min) / (y_max - y_min) * (H - 1)))
+
+        x_idx = max(0, min(W - 1, x_idx))
+        y_idx = max(0, min(H - 1, y_idx))
+
+        # We assume the flat arrays are reshaped as (H, W) or raveled in row-major
+        return y_idx * W + x_idx
 
     def h_discrete(self, pose: np.ndarray, return_gradient=False):
         if not self.h_discrete_artifacts:
             raise ValueError("H discrete artifacts not computed. Call update_h_discrete first.")
         x, y, th = pose
 
-        if x < self.h_discrete_artifacts["x_range"][0] or x > self.h_discrete_artifacts["x_range"][1] or y < self.h_discrete_artifacts["y_range"][0] or y > self.h_discrete_artifacts["y_range"][1]:
+        x_min, x_max = self.h_discrete_artifacts["x_range"]
+        y_min, y_max = self.h_discrete_artifacts["y_range"]
+
+        if x < x_min or x > x_max or y < y_min or y > y_max:
             return np.inf, 0.0, 0.0, 0.0
 
         idx = self._nearest_index(pose)

@@ -43,6 +43,10 @@ class StandardRenderer:
         self.opts = opts
         self.frames = []
         
+        # Avoid opening an interactive GUI window if saving frames directly
+        if self.opts.get('render') == 'rgb_array':
+            plt.switch_backend('Agg')
+        
         self.fig = None
         self.axes = None
         self.cmap = plt.colormaps["RdYlGn"]
@@ -79,46 +83,76 @@ class StandardRenderer:
         builder = info.get('builder')
         
         # Clear decoratives from previous frame
-        self.flush_decoratives(self.axes['pred'])
+        if 'pred' in self.axes:
+            main_ax = self.axes['pred']
+            self.flush_decoratives(main_ax)
         
         # Render environment
         env._render_frame(fig=self.fig, ax=self.axes['env'])
         
         # Render predicted risk map
-        if predicted_maps:
-            builder.plot_map(
-                risk_map=predicted_maps[-1][1],
-                x_robot_pos=location[0],
-                y_robot_pos=location[1],
-                fig=self.fig,
-                ax=self.axes['pred']
-            )
-        
+        if predicted_maps and 'pred' in self.axes:
+            if builder is not None:
+                builder.plot_map(
+                    risk_map=predicted_maps[-1][1],
+                    x_robot_pos=location[0],
+                    y_robot_pos=location[1],
+                    fig=self.fig,
+                )
+            else:
+                horizon = 10
+                coords, map_data = predicted_maps[horizon]
+                x_size, y_size = env.env_params.world_x_size, env.env_params.world_y_size
+                ax = self.axes['pred']
+                if len(coords) == len(map_data):
+                    # Compute accurate grid shape from coordinates
+                    W = len(np.unique(coords[:, 0]))
+                    H = len(np.unique(coords[:, 1]))
+                    
+                    if H * W == len(map_data):
+                        # Reshape the 1D map array to 2D
+                        map_2d = map_data.reshape(H, W)
+                        
+                        ax.imshow(
+                            map_2d, 
+                            cmap='RdYlGn_r', 
+                            vmin=0.0, vmax=1.0, 
+                            origin='lower',
+                            extent=[0, x_size, 0, y_size]
+                        )
+                    else:
+                        print(f"Warning: Map data length ({len(map_data)}) doesn't match grid HxW ({H}x{W}).")
+    
+            pred_mappable = None
+            if self.axes['pred'].images:
+                pred_mappable = self.axes['pred'].images[0]
+            elif hasattr(self.axes['pred'], '_mapped_scatter'):
+                pred_mappable = self.axes['pred']._mapped_scatter
+                
+            if pred_mappable and self.cbar_map.get('pred') is None:
+                self.cbar_map['pred'] = self.fig.colorbar(
+                    pred_mappable, ax=self.axes['pred'],
+                    orientation='horizontal',
+                    location='bottom',
+                    pad=0.08
+                )
+                self.cbar_map['pred'].set_label(f"Predicted Risk Map at horizon = {horizon}", fontsize=12)
+            
         # Add colorbars (only once)
-        if self.axes['env'].images:
+        if hasattr(self.axes['env'], 'images') and self.axes['env'].images:
             im = self.axes['env'].images[0]
             if self.cbar_map.get('env') is None:
                 self.cbar_map['env'] = self.fig.colorbar(
                     im, ax=self.axes['env'],
                     orientation='horizontal',
                     location='bottom',
-                    pad=0.05
+                    pad=0.08
                 )
                 self.cbar_map['env'].set_label("Smoke Density", fontsize=12)
         
-        if self.axes['pred'].images:
-            im = self.axes['pred'].images[0]
-            if self.cbar_map.get('pred') is None:
-                self.cbar_map['pred'] = self.fig.colorbar(
-                    im, ax=self.axes['pred'],
-                    orientation='horizontal',
-                    location='bottom',
-                    pad=0.05
-                )
-                self.cbar_map['pred'].set_label("Predicted Risk Map", fontsize=12)
-        
         # Add decoratives (robot, trajectory, etc.)
-        self.add_decoratives(self.axes['pred'], info)
+        if 'pred' in self.axes:
+            self.add_decoratives(self.axes['pred'], info)
         
         # Plot metrics
         self.plot_smoke(self.axes['risk'], info)
@@ -126,9 +160,11 @@ class StandardRenderer:
         self.plot_angular_velocity(self.axes['angular_velocity'], info)
         
         # Update display
-        plt.pause(self.opts.get('env_params').clock)
         self.fig.canvas.draw()
-        self.fig.canvas.flush_events()
+        
+        if self.opts.get('render') == 'human':
+            self.fig.canvas.flush_events()
+            plt.pause(self.opts.get('env_params').clock)
     
     def add_decoratives(self, ax: plt.Axes, info: Dict[str, Any]):
         """Add robot pose, trajectory, and other visual elements."""
@@ -155,23 +191,21 @@ class StandardRenderer:
                 marker='.', s=0.4, zorder=10
             )
         
-        # Draw goal (if global inference)
-        if self.opts.get('inference') == 'global':
-            goal_loc = env.env_params.goal_location
-            goal_radius = env.env_params.goal_radius
-            
-            circle = Circle(
-                (goal_loc[0], goal_loc[1]),
-                radius=goal_radius,
-                color='g', fill=True, alpha=0.8
-            )
-            
-            ax.add_patch(circle)
-            ax.text(
-                goal_loc[0], goal_loc[1] - goal_radius - 0.5,
-                "goal", ha="center", va="bottom",
-                fontsize=10, color="green", zorder=10
-            )
+        goal_loc = env.env_params.goal_location
+        goal_radius = env.env_params.goal_radius
+        
+        circle = Circle(
+            (goal_loc[0], goal_loc[1]),
+            radius=goal_radius,
+            color='black', fill=True, alpha=0.8
+        )
+        
+        ax.add_patch(circle)
+        ax.text(
+            goal_loc[0], goal_loc[1] - goal_radius - 1.5,
+            "goal", ha="center", va="bottom",
+            fontsize=10, color="black", zorder=10
+        )
         
         # Draw sensor field of view
         square = env.sensor.projection_bounds(location[0], location[1])
@@ -196,7 +230,7 @@ class StandardRenderer:
                 weighted_traj = (omega[:, None, None] * trajectories).sum(dim=0).numpy()
                 ax.plot(
                     weighted_traj[:, 0], weighted_traj[:, 1],
-                    color="purple", linewidth=2
+                    color="purple", linewidth=2, zorder=10
                 )
     
     def plot_smoke(self, ax: plt.Axes, info: Dict[str, Any]):
@@ -326,24 +360,38 @@ class StandardRenderer:
                 print(f"No frames to save for {self.opts.get('seq_filepath')}")
         
         # Create new figure
-        self.fig = plt.figure(figsize=(12, 5))
-        gs = self.fig.add_gridspec(
-            3, 3,
-            height_ratios=[0.4, 0.4, 0.4],
-            width_ratios=[1.2, 0.6, 1.2]
-        )
-        
-        # Create axes
+        self.fig = plt.figure(figsize=(10, 5))
+        has_preds = self.opts.get('has_predictions', False)
         self.axes = {}
-        self.axes['env'] = self.fig.add_subplot(gs[0:, 0])
-        self.axes['risk'] = self.fig.add_subplot(gs[0, 1])
-        self.axes['velocity'] = self.fig.add_subplot(gs[1, 1])
-        self.axes['angular_velocity'] = self.fig.add_subplot(gs[2, 1])
-        self.axes['pred'] = self.fig.add_subplot(gs[0:, 2])
+
+        if has_preds:
+            gs = self.fig.add_gridspec(
+                3, 3,
+                height_ratios=[0.4, 0.4, 0.4],
+                width_ratios=[1.2, 0.6, 1.2]
+            )
+            self.axes['env'] = self.fig.add_subplot(gs[0:, 0])
+            self.axes['risk'] = self.fig.add_subplot(gs[0, 1])
+            self.axes['velocity'] = self.fig.add_subplot(gs[1, 1])
+            self.axes['angular_velocity'] = self.fig.add_subplot(gs[2, 1])
+            self.axes['pred'] = self.fig.add_subplot(gs[0:, 2])
+            spatial_axes = [self.axes['env'], self.axes['pred']]
+        else:
+            gs = self.fig.add_gridspec(
+                3, 2,
+                height_ratios=[0.33, 0.33, 0.33],
+                width_ratios=[1.5, 0.7]
+            )
+            self.axes['env'] = self.fig.add_subplot(gs[0:, 0])
+            self.axes['risk'] = self.fig.add_subplot(gs[0, 1])
+            self.axes['velocity'] = self.fig.add_subplot(gs[1, 1])
+            self.axes['angular_velocity'] = self.fig.add_subplot(gs[2, 1])
+            spatial_axes = [self.axes['env']]
+            self.axes['env'].set_title('Simulation', fontsize=12)
         
         # Configure spatial axes
         env_params = self.opts.get('env_params')
-        for ax in [self.axes['env'], self.axes['pred']]:
+        for ax in spatial_axes:
             ax.set_xlim(0, env_params.world_x_size)
             ax.set_ylim(0, env_params.world_y_size)
             ax.autoscale(False)
@@ -369,47 +417,53 @@ class StandardRenderer:
         seq_filepath = self.opts['seq_filepath']
         
         # Save GIF
-        time_clock_vis = 0.5
+        time_clock_vis = len(self.frames) * self.opts['env_params'].clock
         imageio.mimsave(seq_filepath, self.frames, duration=time_clock_vis, loop=0)
         
-        # Save MP4 (high quality, 1080p)
-        filepath_mp4 = seq_filepath.replace(".gif", ".mp4")
-        target_w, target_h = 1920, 1080
+        # # Save MP4 (high quality, 1080p equivalent divisible by 16)
+        # filepath_mp4 = seq_filepath.replace(".gif", ".mp4")
+        # target_w, target_h = 1920, 1088
         
-        writer = imageio.get_writer(
-            filepath_mp4,
-            fps=10,
-            codec='libx264',
-            quality=10,
-            pixelformat='yuv420p',
-            macro_block_size=16
-        )
+        # writer = imageio.get_writer(
+        #     filepath_mp4,
+        #     fps=10,
+        #     codec='libx264',
+        #     quality=10,
+        #     pixelformat='yuv420p',
+        #     macro_block_size=16
+        # )
         
-        for frame in self.frames:
-            h, w = frame.shape[:2]
+        # for frame in self.frames:
+        #     h, w = frame.shape[:2]
             
-            # Create white 1080p canvas
-            canvas = np.ones((target_h, target_w, 4), dtype=np.uint8) * 255
+        #     # Create white 1080p canvas
+        #     canvas = np.ones((target_h, target_w, 4), dtype=np.uint8) * 255
             
-            # Scale while maintaining aspect ratio
-            scale = min(target_w / w, target_h / h)
-            new_w = int(w * scale)
-            new_h = int(h * scale)
+        #     # Scale while maintaining aspect ratio
+        #     scale = min(target_w / w, target_h / h)
+        #     new_w = int(w * scale)
+        #     new_h = int(h * scale)
             
-            resized = cv2.resize(frame, (new_w, new_h), interpolation=cv2.INTER_AREA)
+        #     resized = cv2.resize(frame, (new_w, new_h), interpolation=cv2.INTER_AREA)
             
-            # Center on canvas
-            x0 = (target_w - new_w) // 2
-            y0 = (target_h - new_h) // 2
+        #     # Center on canvas
+        #     x0 = (target_w - new_w) // 2
+        #     y0 = (target_h - new_h) // 2
             
-            canvas[y0:y0+new_h, x0:x0+new_w] = resized
+        #     canvas[y0:y0+new_h, x0:x0+new_w] = resized
             
-            writer.append_data(canvas)
+        #     writer.append_data(canvas)
         
-        writer.close()
+        # writer.close()
     
     def close(self):
         """Close the renderer and clean up."""
+        if self.fig is not None and self.opts.get('seq_filepath') and self.opts.get('render'):
+            if self.frames:
+                self._save_animation()
+            else:
+                print(f"No frames to save for {self.opts.get('seq_filepath')}")
+
         if self.fig is not None:
             plt.close(self.fig)
             self.fig = None

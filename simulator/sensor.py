@@ -21,7 +21,7 @@ class PointSensorParams(BaseSensorParams):
 
 @dataclass
 class GlobalSensorParams(BaseSensorParams):
-    density_reading_per_unit_length: float = 0.8 # density reading per unit length in the range of the sensor
+    density_reading_per_unit_length: float = 5.0 # density reading per unit length in the range of the sensor
     sensor_type: str = "global"
 
 class BaseSensor:

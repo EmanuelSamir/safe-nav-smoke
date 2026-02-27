@@ -12,6 +12,12 @@ from src.utils import LoggerMetrics, dataclass_json_dump
 from src.visualization import StandardRenderer
 from src.time_tracker import TimeTracker
 
+# Environment & simulator imports (used by subclasses)
+from envs.smoke_env_dyn import EnvParams, DynamicSmokeEnv, DynamicSmokeParams
+from agents.basic_robot import RobotParams
+from simulator.sensor import GlobalSensorParams, DownwardsSensorParams
+from simulator.dynamic_smoke import SmokeBlobParams
+
 # Configure global logger
 log = logging.getLogger(__name__)
 
@@ -23,7 +29,11 @@ class BaseExperiment(abc.ABC):
 
     def __init__(self, cfg: DictConfig):
         self.cfg = cfg
-        self.output_dir = Path(os.getcwd())
+        try:
+            from hydra.core.hydra_config import HydraConfig
+            self.output_dir = Path(HydraConfig.get().runtime.output_dir)
+        except Exception:
+            self.output_dir = Path(os.getcwd())
         
         # Initialize utilities
         self.metrics = LoggerMetrics()
@@ -47,10 +57,12 @@ class BaseExperiment(abc.ABC):
     @abc.abstractmethod
     def setup(self):
         """
-        Configures the environment, robot, and controllers.
-        Must be implemented by subclasses.
+        Initialize the environment, controller, and any model components.
+        Each subclass is responsible for building env, robot, sensor, and
+        controller params from self.cfg.
         """
         pass
+        
 
     @abc.abstractmethod
     def run_episode(self) -> Dict[str, Any]:
@@ -60,10 +72,27 @@ class BaseExperiment(abc.ABC):
         """
         pass
 
-    def setup_renderer(self, opts: Dict[str, Any]):
+    def setup_renderer(self, has_predictions: bool = False):
         """Initializes the standard renderer."""
         if self.cfg.env.render:
+            seq_filepath = str(self.output_dir / "playback.gif") if self.cfg.env.render == "rgb_array" else None
+            opts = {
+                'render': self.cfg.env.render,
+                'env_params': self.env.env_params,
+                'seq_filepath': seq_filepath,
+                'has_predictions': has_predictions
+            }
             self.renderer = StandardRenderer(opts=opts)
+
+    def render_step(self, info: Dict[str, Any], t: int):
+        """Passes information to the standard renderer."""
+        render_save_every = self.cfg.env.get("render_save_every", 1)
+        if self.renderer and t % render_save_every == 0:
+            # Need to provide logger_metrics so renderer can read current states
+            info['logger_metrics'] = self.metrics
+            self.renderer.render(info)
+            if self.cfg.env.render == "rgb_array":
+                self.renderer.save_frame()
 
     def teardown(self):
         """Resource cleanup and saving final results."""
@@ -103,6 +132,12 @@ class BaseExperiment(abc.ABC):
     def get_initial_location(self) -> np.ndarray:
         """Selects a random initial location from the configuration."""
         locs = self.cfg.experiment.initial_locations
+        idx = np.random.randint(0, len(locs))
+        return np.array(locs[idx])
+
+    def get_goal_location(self) -> np.ndarray:
+        """Selects a random goal location from the configuration."""
+        locs = self.cfg.experiment.goal_locations
         idx = np.random.randint(0, len(locs))
         return np.array(locs[idx])
 

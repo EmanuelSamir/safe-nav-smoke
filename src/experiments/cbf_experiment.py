@@ -7,45 +7,40 @@ from src.experiments.base_experiment import BaseExperiment
 from src.cbf_controller import CBFController
 from envs.smoke_env_dyn import EnvParams, DynamicSmokeEnv, DynamicSmokeParams
 from agents.basic_robot import RobotParams
-from simulator.sensor import DownwardsSensorParams, GlobalSensorParams
+from simulator.sensor import GlobalSensorParams
 from simulator.dynamic_smoke import SmokeBlobParams
 
 class CBFExperiment(BaseExperiment):
     def setup(self):
-        # 1. Configurar Parámetros desde Hydra (Similar a MPPIExperiment)
+        # 1. Env Params
         self.env_params = EnvParams()
+        self.env_params.max_steps     = self.cfg.env.max_steps
+        self.env_params.clock         = self.cfg.env.clock
+        self.env_params.render        = self.cfg.env.render
+        self.env_params.goal_location = np.array(self.cfg.env.goal_location)
+        self.env_params.goal_radius   = self.cfg.env.goal_radius
+
+        # PlaybackSmoke path (overrides world size when set)
+        playback_path = self.cfg.env.get("playback_path", None)
+        self.env_params.playback_path = str(playback_path) if playback_path else None
+
         self.env_params.world_x_size = self.cfg.env.world_x_size
         self.env_params.world_y_size = self.cfg.env.world_y_size
-        self.env_params.max_steps = self.cfg.env.max_steps
-        self.env_params.clock = self.cfg.env.clock
-        self.env_params.render = self.cfg.env.render
-        self.env_params.goal_location = np.array(self.cfg.env.goal_location)
-        self.env_params.goal_radius = self.cfg.env.goal_radius
 
-        # Sensor Params
-        if self.cfg.env.sensor.type == 'downwards':
-            self.sensor_params = DownwardsSensorParams(
-                world_x_size=self.env_params.world_x_size,
-                world_y_size=self.env_params.world_y_size,
-                points_in_range=self.cfg.env.sensor.points_in_range,
-                fov_size_degrees=self.cfg.env.sensor.fov_size_degrees
-            )
-        else:
-            self.sensor_params = GlobalSensorParams(
-                world_x_size=self.env_params.world_x_size,
-                world_y_size=self.env_params.world_y_size
-            )
+        # Always GlobalSensor for CBF — needs full map to build distance map
+        self.sensor_params = GlobalSensorParams(
+            world_x_size=self.env_params.world_x_size,
+            world_y_size=self.env_params.world_y_size,
+        )
         self.env_params.sensor_params = self.sensor_params
 
-        # Smoke Params
-        blobs = [SmokeBlobParams(x_pos=b.x, y_pos=b.y, intensity=b.intensity, spread_rate=b.spread) 
-                 for b in self.cfg.env.smoke.blobs]
-        
+        # Smoke Params (fallback when no playback)
+        # Dummy smoke params — ignored by DynamicSmokeEnv when playback_path is set
         self.smoke_params = DynamicSmokeParams(
-            x_size=self.env_params.world_x_size, 
-            y_size=self.env_params.world_y_size, 
-            smoke_blob_params=blobs, 
-            resolution=self.cfg.env.smoke.resolution
+            x_size=self.env_params.world_x_size,
+            y_size=self.env_params.world_y_size,
+            smoke_blob_params=[SmokeBlobParams(x_pos=10, y_pos=10, intensity=1.0, spread_rate=2.0)],
+            resolution=1.0,
         )
 
         # Robot Params
@@ -56,34 +51,39 @@ class CBFExperiment(BaseExperiment):
         self.robot_params.action_max = np.array(self.cfg.agent.action_max)
         self.robot_params.dt = self.cfg.agent.dt
 
-        # 2. Inicializar Entorno
+        # 2. Initialize Environment
         self.env = DynamicSmokeEnv(self.env_params, self.robot_params, self.smoke_params)
+
+        # Sync world size after env init (playback overrides it)
+        self.sensor_params.world_x_size = self.env.env_params.world_x_size
+        self.sensor_params.world_y_size = self.env.env_params.world_y_size
+        self.robot_params.state_max[0]  = self.env.env_params.world_x_size
+        self.robot_params.state_max[1]  = self.env.env_params.world_y_size
         
         initial_loc = self.get_initial_location()
-        self.state, _ = self.env.reset(initial_state={
-            "location": initial_loc, 
-            "angle": 0.0, 
-            "smoke_density": 0.0
-        })
+        episode_idx = self.cfg.experiment.get("episode_idx", None)
+        self.state, _ = self.env.reset(
+            initial_state={
+                "location": initial_loc, 
+                "angle": 0.0, 
+                "smoke_density": 0.0
+            },
+            seed=episode_idx
+        )
+        
+        self.goal_location = self.get_goal_location()
+        self.env.env_params.goal_location = self.goal_location
 
-        # 3. Inicializar Controlador (CBF)
+        # 3. CBF Controller
         self.controller = CBFController(
-            self.env_params, 
-            self.robot_params, 
-            self.env_params.goal_location, 
+            self.env.env_params,
+            self.robot_params,
+            self.goal_location,
             smoke_threshold=self.cfg.experiment.smoke_threshold
         )
 
-        # 4. Setup Renderer
-        render_opts = {
-            'env_params': self.env_params,
-            'robot_params': self.robot_params,
-            'smoke_params': self.smoke_params,
-            'render': self.cfg.env.render,
-            'inference': 'global', # CBF usually assumes global knowledge or built map
-            'seq_filepath': str(self.output_dir / "video.mp4")
-        }
-        self.setup_renderer(render_opts)
+        # Setup standard renderer
+        self.setup_renderer(has_predictions=False)
 
     def run_episode(self):
         finished = False
@@ -119,19 +119,13 @@ class CBFExperiment(BaseExperiment):
             # 3. Logging & Metrics
             finished = self.check_termination(self.state, reward, terminated, truncated)
             self.log_common_metrics(self.state, action_input, t)
-            
+
             # 4. Rendering
-            if self.renderer:
-                info = {
-                    'env': self.env,
-                    'logger_metrics': self.metrics,
-                    'state': self.state,
-                    'action_input': action_input,
-                    'path': self.metrics.get_values('traj_path'),
-                    # CBF doesn't have predicted_maps in the same way, but we could visualize h
-                }
-                self.renderer.render(info=info)
-                self.renderer.save_frame()
+            self.render_step({
+                "state": self.state,
+                "env": self.env,
+                "nom_controller": None
+            }, t)
 
             self.state = next_state
 

@@ -26,7 +26,7 @@ class EnvParams:
     world_y_size: int = field(default=50)
 
     max_steps: int = field(default=1000)
-    render: str = None
+    render: str = 'human'
     clock: float = field(default=0.1)
 
     goal_location: tuple[int, int] | None = field(default=None)
@@ -34,7 +34,7 @@ class EnvParams:
 
     smoke_density_threshold: float = None
     sensor_params: BaseSensorParams | DownwardsSensorParams | PointSensorParams | GlobalSensorParams | None = field(default=None)
-    playback_path: str = "/Users/emanuelsamir/Documents/dev/cmu/research/experiments/7_safe_nav_smoke/data/global_source_400_100_2nd.npz" # field(default=None)
+    playback_path: str = "/Users/emanuelsamir/Documents/dev/cmu/research/experiments/7_safe_nav_smoke/data/playback_data/global_source_400_100_2nd.npz" # field(default=None)
 
     @staticmethod
     def load_from_yaml(file_path: str) -> "EnvParams":
@@ -52,7 +52,12 @@ class DynamicSmokeEnv(gym.Env):
 
         if self.env_params.playback_path:
             playback_params = PlaybackSmokeParams(data_path=self.env_params.playback_path)
+            print("Warning: Using playback smoke. Ignoring smoke_params and env_params.smoke_blob_params")
+            print("Playback path: ", self.env_params.playback_path)
             self.smoke_simulator = PlaybackSmoke(params=playback_params)
+            self.env_params.world_x_size = self.smoke_simulator.x_size if self.smoke_simulator.x_size is not None else self.env_params.world_x_size
+            self.env_params.world_y_size = self.smoke_simulator.y_size if self.smoke_simulator.y_size is not None else self.env_params.world_y_size
+            self.env_params.max_steps = self.smoke_simulator.max_steps if self.smoke_simulator.max_steps is not None else self.env_params.max_steps
         else:
             self.smoke_simulator = DynamicSmoke(params=smoke_params)
 
@@ -84,6 +89,10 @@ class DynamicSmokeEnv(gym.Env):
             raise NotImplementedError(f"Robot type {self.robot_params.robot_type} not implemented")
 
         if self.env_params.sensor_params is not None:
+            # Sync sensor params with the potentially playback-overridden world size
+            self.env_params.sensor_params.world_x_size = self.env_params.world_x_size
+            self.env_params.sensor_params.world_y_size = self.env_params.world_y_size
+
             if self.env_params.sensor_params.sensor_type == "downwards":
                 self.sensor = DownwardsSensor(self.env_params.sensor_params)
             elif self.env_params.sensor_params.sensor_type == "point":
@@ -223,30 +232,29 @@ class DynamicSmokeEnv(gym.Env):
         info = self._get_info()
         return obs, reward, terminated, truncated, info
     
-    def _render_frame(self, fig: plt.Figure = None, ax: plt.Axes = None):
+    def _render_frame(self, fig: plt.Figure = None, ax: plt.Axes = None, controller=None):
         if self.env_params.render and self.env_params.render not in ["human", "rgb_array"]:
             return
+
+        from matplotlib.patches import Polygon, FancyArrow, Arrow, Circle
 
         if self.window["fig"] is None:
             if fig is not None and ax is not None:
                 self.window["fig"] = fig
                 self.window["ax"] = ax
             else:
-                self.window["fig"], self.window["ax"] = plt.subplots()
+                self.window["fig"], self.window["ax"] = plt.subplots(figsize=(8, 6))
 
             self.window["cax"] = self.window["ax"].imshow(
                 self.smoke_simulator.get_smoke_map(),
                 cmap='gray',
                 extent=self.smoke_simulator.get_smoke_extent(),
-                origin='lower'
+                origin='lower',
+                zorder=1
             )
-
-            # self.window["ax"].set_axis_off()
-            # self.window["fig"].colorbar(self.window["cax"], ax=self.window["ax"], label="Smoke Density", shrink=0.5)
             
             self.window["ax"].set_title("Simulation")
-            self.window["cax"].set_clim(vmin=np.min(0.0),
-                                        vmax=np.max(1.0))
+            self.window["cax"].set_clim(vmin=0.0, vmax=1.0)
             self.window["ax"].set_xlim(0, self.env_params.world_x_size)
             self.window["ax"].set_ylim(0, self.env_params.world_y_size)
 
@@ -254,57 +262,68 @@ class DynamicSmokeEnv(gym.Env):
             self.window["ax"].set_yticks([])
 
             if self.env_params.goal_location is not None:
-                circle = Circle((self.env_params.goal_location[0], self.env_params.goal_location[1]), 
-                              radius=self.env_params.goal_radius, color='g', fill=True, alpha=0.8)
-                self.window["ax"].add_patch(circle)
-                x0, y0 = circle.center
-                r = circle.radius
-                self.window["ax"].text(x0, y0 - r - 1.5, "goal", ha="center", va="bottom",
-                        fontsize=10, color="green", zorder=10)
+                self.window["goal_circle"] = Circle(
+                    (self.env_params.goal_location[0], self.env_params.goal_location[1]), 
+                    radius=self.env_params.goal_radius, color='g', fill=True, alpha=0.8, zorder=5
+                )
+                self.window["ax"].add_patch(self.window["goal_circle"])
+                
+                x0, y0 = self.window["goal_circle"].center
+                r = self.window["goal_circle"].radius
+                self.window["goal_text"] = self.window["ax"].text(
+                    x0, y0 - r - 1.5, "goal", ha="center", va="bottom",
+                    fontsize=10, color="green", zorder=10
+                )
         
+        # Update smoke background
         self.window["cax"].set_array(self.smoke_simulator.get_smoke_map())
 
-        for arrow in self.window["ax"].patches:
-            if isinstance(arrow, (FancyArrow, Arrow)):  
-                arrow.remove()
+        # Clear old dynamic paths (MPPI lines)
+        for line in self.window["ax"].lines:
+            line.remove()
+
+        # Draw MPPI paths if provided (zorder=3)
+        if controller is not None and hasattr(controller, "visualize_rollouts"):
+            controller.visualize_rollouts(self.window["ax"])
+            # visualize_rollouts creates Line2D objects
+            for line in self.window["ax"].lines:
+                line.set_zorder(3)
+
+        # Clear and redraw robot/sensor patches (zorder=4)
+        for patch in list(self.window["ax"].patches):
+            if isinstance(patch, (FancyArrow, Arrow, Polygon)):
+                patch.remove()
 
         if self.env_params.sensor_params.sensor_type == "downwards":
-            for patch in self.window["ax"].patches:
-                if isinstance(patch, Polygon):
-                    patch.remove()
-
             odom = self.get_robot_odom()
             pos_x, pos_y = odom["location"]
-
             square = self.sensor.projection_bounds(pos_x, pos_y)
-
             bounded_square = np.array([clip_world(p[0], p[1], self.env_params.world_x_size, self.env_params.world_y_size) for p in square])
             self.window["ax"].add_patch(
-                Polygon(bounded_square, 
-                facecolor='none',     # no fill
-                edgecolor='blue',    # border color
-                linewidth=2,), 
+                Polygon(bounded_square, facecolor='none', edgecolor='blue', linewidth=2, zorder=4)
             )
 
         odom = self.get_robot_odom()
         pos_x, pos_y = odom["location"]
         angle = odom["angle"]
         self.window["ax"].arrow(pos_x, pos_y, 0.1*np.cos(angle), 0.1*np.sin(angle), 
-                                head_width=0.8, head_length=0.8, fc='b', ec='b')
+                                head_width=0.8, head_length=0.8, fc='b', ec='b', zorder=4)
         
-        if self.env_params.sensor_params.sensor_type == "downwards" or self.env_params.sensor_params.sensor_type == "global":
-            for coll in list(self.window["ax"].collections):
-                if isinstance(coll, PathCollection):
-                    coll.remove()
-
-            _, smoke_density_location = self.get_smoke_density_sensor(np.array([pos_x, pos_y]))
-            self.window["ax"].scatter(smoke_density_location[:, 0], smoke_density_location[:, 1], color='red', s=0.1)
-
         self.window["fig"].canvas.draw()
         
         if self.env_params.render == "human":
             self.window["fig"].canvas.flush_events()
             plt.pause(self.clock)
+        elif self.env_params.render == "rgb_array":
+            width, height = self.window["fig"].canvas.get_width_height()
+            try:
+                rgba = np.asarray(self.window["fig"].canvas.buffer_rgba())
+                img = rgba[..., :3]
+            except AttributeError:
+                img = np.frombuffer(self.window["fig"].canvas.tostring_rgb(), dtype='uint8')
+                img = img.reshape(height, width, 3)
+            return img
+        return None
 
     def close(self):
         self.window = {"fig": None, "ax": None, "cax": None}
@@ -315,8 +334,8 @@ if __name__ == "__main__":
     robot_params = RobotParams()
 
     # robot_params = RobotParams.load_from_yaml("agents/dubins2d_fixed_velocity_cfg.yaml")
-    world_x_size = 60
-    world_y_size = 50
+    world_x_size = 30
+    world_y_size = 20
     env_params.world_x_size = world_x_size
     env_params.world_y_size = world_y_size
     smoke_blob_params = [
@@ -330,7 +349,7 @@ if __name__ == "__main__":
     smoke_params = DynamicSmokeParams(x_size=world_x_size, y_size=world_y_size, smoke_blob_params=smoke_blob_params, resolution=0.3)
 
     env = DynamicSmokeEnv(env_params, robot_params, smoke_params)
-    initial_state = {"location": np.array([45, 15]), "angle": 0, "smoke_density": 0, "velocity": 4.0}
+    initial_state = {"location": np.array([5, 5]), "angle": 0, "smoke_density": 0, "velocity": 4.0}
     env.reset(initial_state=initial_state)
 
     fig, ax = plt.subplots(figsize=(4, 4))

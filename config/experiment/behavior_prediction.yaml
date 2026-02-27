@@ -1,0 +1,28 @@
+# @package experiment
+defaults:
+  - base
+
+name: "behavior_prediction_experiment"
+type: "behavior-prediction"
+
+# MPPI with model-based forecast of smoke dynamics
+time_horizon: 15
+samples: 50
+
+# Model selection — one of: gp | rnp | rnp_multistep | fno | fno_3d
+model_type: "fno_3d"
+
+# Path to trained .pt checkpoint (not required for gp)
+checkpoint_path: "/Users/emanuelsamir/Documents/dev/cmu/research/experiments/7_safe_nav_smoke/outputs/2026-02-24/14-10-03_fno_3d/checkpoints/best_model.pt"
+
+# CVaR risk map parameters (same convention as RiskMapParams)
+cvar_alpha: 0.0
+gamma: 0.75
+beta: 0.20
+
+# Downsample sensor resolution exclusively for GP to speed up inference.
+# 1.0 = 1 point per meter. 0.2 = 1 point every 5 meters.
+gp_sensor_resolution: 1.0
+
+# Compute device for DL models
+device: "mps"

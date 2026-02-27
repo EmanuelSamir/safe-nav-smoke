@@ -1,26 +1,34 @@
 name: "DynamicSmokeEnv"
-world_x_size: 30.0
-world_y_size: 20.0
-max_steps: 200
+world_x_size: 100.0   # overridden by playback data if playback_path is set
+world_y_size: 100.0
+max_steps: 200        # overridden by playback data if playback_path is set
 clock: 0.1
-render: "rgb_array"  # "human" or "rgb_array"
 
-# Goal settings
-goal_location: [25.0, 7.0]
-goal_radius: 1.5
+# render: "human"     → live matplotlib window (use for debugging/demo)
+# render: "rgb_array" → no live window, frames saved to gif
+render: "rgb_array"
+render_save_every: 2
 
-# Sensor settings
+# Set to null to use DynamicSmoke (blob-based). Set to a file path to use
+# PlaybackSmoke, which overrides world_x_size, world_y_size and max_steps.
+playback_path: "data/playback_data/planning_smoke_200_steps.npz"
+
+# Goal settings (used when playback_path is not set or as fallback)
+goal_location: [80.0, 50.0]
+goal_radius: 0.5
+
+# Sensor settings (only used when NOT using PlaybackSmoke)
+# Experiments always override to GlobalSensor internally.
 sensor:
-  type: "downwards" # "downwards" or "global"
+  type: "global"
   points_in_range: 32
   fov_size_degrees: 50
 
-# Smoke simulation
+# Smoke blobs (only used when playback_path is null)
 smoke:
-  resolution: 0.4
+  resolution: 1.0
   blobs:
-    - {x: 9.0, y: 16.0, intensity: 1.0, spread: 1.0}
-    - {x: 9.0, y: 10.0, intensity: 1.0, spread: 1.0}
-    - {x: 9.0, y: 3.0, intensity: 1.0, spread: 1.0}
-    - {x: 17.0, y: 13.0, intensity: 1.0, spread: 1.0}
-    - {x: 17.0, y: 7.0, intensity: 1.0, spread: 1.0}
+    - {x: 20.0, y: 70.0, intensity: 1.0, spread: 2.0}
+    - {x: 40.0, y: 50.0, intensity: 1.0, spread: 3.0}
+    - {x: 60.0, y: 30.0, intensity: 1.0, spread: 2.0}
+

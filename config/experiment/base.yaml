@@ -4,9 +4,11 @@ samples: 1
 
 # Initial conditions
 initial_locations:
-  - [1.0, 4.0]
-  - [1.0, 10.0]
-  - [1.0, 16.0]
+  - [3.0, 10.0]
+
+# Goal conditions (one is selected randomly per episode)
+goal_locations:
+  - [28.0, 10.0]
 
 # Metrics to track
 metrics:

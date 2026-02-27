@@ -1,0 +1,12 @@
+# @package experiment
+defaults:
+  - base
+
+name: "persistent_experiment"
+type: "persistent"
+
+# MPPI with the last observed smoke frame repeated for the full horizon
+# (assumes static environment — acts as an informed but non-predictive baseline)
+time_horizon: 10
+samples: 50
+

@@ -17,12 +17,12 @@ from src.utils import *
 from tqdm import tqdm
 
 class Kernel:
-    RBF = RBF(length_scale=5.0)
-    Matern = Matern(length_scale=1.0, nu=1.3)
+    RBF = RBF(length_scale=0.1)
+    Matern = Matern(length_scale=0.1, nu=1.3)
     ConstantKernel = C()
 
 class OnlineKernel:
-    Matern = Matern32Kernel(lengthscales=[2.0])
+    Matern = Matern32Kernel(lengthscales=[100.0])
 
 N_RESTARTS_OPTIMIZER = 10
 NORMALIZE_Y = False

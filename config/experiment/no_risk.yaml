@@ -1,0 +1,11 @@
+# @package experiment
+defaults:
+  - base
+
+name: "no_risk_experiment"
+type: "no-risk"
+
+# MPPI without any risk cost — navigates to goal ignoring smoke
+time_horizon: 15
+samples: 50
+
