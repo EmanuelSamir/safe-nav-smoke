@@ -1,0 +1,61 @@
+# @package _global_
+# FNO-3D Decoupled: True 3D spectral convolution over (T × H × W)
+# Features decoupled Mean and Std nets, with decoupled capacities and phased learning.
+#
+training:
+  experiment_name: "fno_3d_decoupled"
+  seed: 42
+
+  # Independent Training Phased Scheduling
+  schedule:
+    epochs_mean_only: 0      # Phase 1: Train ONLY the mean_net
+    epochs_std_only: 0       # Phase 2: Train ONLY the std_net
+    epochs_joint: 400         # Phase 3: Train BOTH jointly
+                              # Total epochs = 200
+
+  data:
+    data_path: "data/playback_data/global_source_400_100_2nd.npz"
+    batch_size: 32
+    train_split: 0.9
+    max_samples: null
+    sequence_length: 30       # > h_ctx + h_pred  (10 + 5 = 15 → 30 works)
+    num_workers: 0
+
+  model:
+    h_ctx:  5    # Context frames  (T dimension of the 3D volume)
+    h_pred:  5   # Future frames per forward pass  (autoregressive in inference)
+
+    # ------------- --------------
+    # Mean Prediction Network
+    # ---------------------------
+    modes_t_mu:  4  
+    modes_h_mu:  8  
+    modes_w_mu:  8   
+    width_mu:    32  
+    n_layers_mu: 4  
+
+    # ---------------------------
+    # Std Prediction Network
+    # ---------------------------
+    modes_t_std:  4   
+    modes_h_std:  8   
+    modes_w_std:  8   
+    width_std:    32  
+    n_layers_std: 4   
+
+    use_grid:  true   # Append (x,y) spatial grid after temporal aggregation
+    use_time:  true   # Append normalised time as extra input channel per frame
+    min_std:   1.0e-4
+
+  optimizer:
+    lr: 1.0e-3
+    min_lr: 1.0e-5
+    grad_clip: 1.0
+
+  checkpoint:
+    save_top_k: 3
+    monitor: "val_nll"
+    mode: "min"
+
+  visualizer:
+    visualize_every: 5

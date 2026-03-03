@@ -284,18 +284,16 @@ class FNO2d(nn.Module):
 
                 if self.use_uncertainty_input:
                     # Deterministic: record (mu, sigma) from the distribution directly
-                    mu_np  = dist.mean[0, :, :, 0].detach().cpu().to(torch.float16).numpy()
-                    std_np = dist.stddev[0, :, :, 0].detach().cpu().to(torch.float16).numpy()
+                    mu_np  = dist.mean.expand(num_samples, -1, -1, -1)[..., 0].detach().cpu().to(torch.float16).numpy()
+                    std_np = dist.stddev.expand(num_samples, -1, -1, -1)[..., 0].detach().cpu().to(torch.float16).numpy()
                     # Also draw samples for API compat (adds stochastic variation on top)
                     samples = dist.sample().expand(num_samples, -1, -1, -1) # (S, H, W, 1)
-                    sample_np = (samples[:, :, :, 0]
-                                 .detach().cpu().to(torch.float16).numpy())  # (S, H, W)
+                    sample_np = samples[..., 0].detach().cpu().to(torch.float16).numpy()  # (S, H, W)
                 else:
                     sample = dist.sample()  # (S, H, W, 1)
-                    sample_np = (sample[:, :, :, 0]
-                                 .detach().cpu().to(torch.float16).numpy())
-                    mu_np  = sample_np.astype('float32').mean(0).astype('float16')
-                    std_np = sample_np.astype('float32').std(0).astype('float16')
+                    sample_np = sample[..., 0].detach().cpu().to(torch.float16).numpy()
+                    mu_np  = dist.mean[..., 0].detach().cpu().to(torch.float16).numpy()
+                    std_np = dist.stddev[..., 0].detach().cpu().to(torch.float16).numpy()
 
                 preds.append({
                     'sample': sample_np,

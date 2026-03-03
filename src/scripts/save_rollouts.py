@@ -12,8 +12,8 @@ Output per episode (compressed NPZ):
   time_steps                             : (N,)  int
   t_{t}_gt_horizon                       : (horizon, H, W)  float16
   t_{t}_{tag}_sample                     : (horizon, num_samples, H, W)  float16
-  t_{t}_{tag}_mean                       : (horizon, H, W)  float16
-  t_{t}_{tag}_std                        : (horizon, H, W)  float16
+  t_{t}_{tag}_mean                       : (horizon, H, W) OR (horizon, num_samples, H, W) float16
+  t_{t}_{tag}_std                        : (horizon, H, W) OR (horizon, num_samples, H, W) float16
   t_{t}_{tag}_latency                    : float  ms/sample
 
 Usage:
@@ -173,6 +173,16 @@ def load_fno_3d(path: str, device):
     return _load_temporal_model(path, device, FNO3d, FNO3dConfig, "FNO3d")
 
 
+def load_fno_3d_decoupled(path: str, device):
+    from src.models.model_free.fno_3d_decoupled import FNO3dDecoupled, FNO3dDecoupledConfig
+    return _load_temporal_model(path, device, FNO3dDecoupled, FNO3dDecoupledConfig, "FNO3dDecoupled")
+
+
+def load_conv_lstm(path: str, device):
+    from src.models.model_free.conv_lstm import ConvLSTMModel, ConvLSTMConfig
+    return _load_temporal_model(path, device, ConvLSTMModel, ConvLSTMConfig, "ConvLSTMModel")
+
+
 # ---------------------------------------------------------------------------
 # Per-model rollout helpers
 # ---------------------------------------------------------------------------
@@ -194,8 +204,8 @@ def fno_rollout(model, ep_data, t_current: int, horizon: int,
     latency_ms = (time.time() - t0) * 1000.0 / num_samples
 
     sample_imgs = np.stack([p['sample'] for p in preds], axis=0)  # (horizon, S, H, W)
-    mean_imgs   = np.stack([p['mean']   for p in preds], axis=0)  # (horizon, H, W)
-    std_imgs    = np.stack([p['std']    for p in preds], axis=0)  # (horizon, H, W)
+    mean_imgs   = np.stack([p['mean']   for p in preds], axis=0)  # (horizon, S, H, W)
+    std_imgs    = np.stack([p['std']    for p in preds], axis=0)  # (horizon, S, H, W)
     return sample_imgs, mean_imgs, std_imgs, latency_ms
 
 
@@ -233,8 +243,8 @@ def temporal_fno_rollout(model, ep_data, t_current: int, horizon: int,
     latency_ms = (time.time() - t0) * 1000.0 / num_samples
 
     sample_imgs = np.stack([p['sample'] for p in preds], axis=0)  # (horizon, S, H, W)
-    mean_imgs   = np.stack([p['mean']   for p in preds], axis=0)  # (horizon, H, W)
-    std_imgs    = np.stack([p['std']    for p in preds], axis=0)  # (horizon, H, W)
+    mean_imgs   = np.stack([p['mean']   for p in preds], axis=0)  # (horizon, S, H, W)
+    std_imgs    = np.stack([p['std']    for p in preds], axis=0)  # (horizon, S, H, W)
     return sample_imgs, mean_imgs, std_imgs, latency_ms
 
 
@@ -269,13 +279,22 @@ def rnp_rollout(model, ep_data, t_current: int, horizon: int,
         s    = step_preds['sample'].values.squeeze(-1).squeeze(1)   # (S, P)
         m    = step_preds['mean'].values.squeeze(-1).squeeze(1)     # (1||S, P)
         std  = step_preds['std'].values.squeeze(-1).squeeze(1)      # (1||S, P)
-        sample_imgs.append(s.view(num_samples, H_grid, W_grid).detach().cpu().to(torch.float16).numpy())
-        mean_imgs.append(m.view(H_grid, W_grid).detach().cpu().to(torch.float16).numpy())
-        std_imgs.append(std.view(H_grid, W_grid).detach().cpu().to(torch.float16).numpy())
+        
+        s_view = s.view(num_samples, H_grid, W_grid)
+        m_view = m.view(-1, H_grid, W_grid)
+        std_view = std.view(-1, H_grid, W_grid)
+        
+        if m_view.shape[0] == 1 and num_samples > 1:
+            m_view = m_view.expand(num_samples, -1, -1)
+            std_view = std_view.expand(num_samples, -1, -1)
+            
+        sample_imgs.append(s_view.detach().cpu().to(torch.float16).numpy())
+        mean_imgs.append(m_view.detach().cpu().to(torch.float16).numpy())
+        std_imgs.append(std_view.detach().cpu().to(torch.float16).numpy())
 
     sample_imgs = np.stack(sample_imgs, axis=0)   # (horizon, S, H, W)
-    mean_imgs   = np.stack(mean_imgs,   axis=0)   # (horizon, H, W)
-    std_imgs    = np.stack(std_imgs,    axis=0)   # (horizon, H, W)
+    mean_imgs   = np.stack(mean_imgs,   axis=0)   # (horizon, S, H, W)
+    std_imgs    = np.stack(std_imgs,    axis=0)   # (horizon, S, H, W)
 
     return sample_imgs, mean_imgs, std_imgs, latency_ms
 
@@ -288,7 +307,7 @@ def main():
     parser = argparse.ArgumentParser(description="Save autoregressive rollouts for any model.")
     parser.add_argument('--ckpt',          type=str, required=True,  help="Path to model checkpoint (.pt)")
     parser.add_argument('--model_type',    type=str, required=True,
-                        help="rnp | rnp_multistep | fno | fno_3d")
+                        help="rnp | rnp_multistep | fno | fno_3d | fno_3d_decoupled | conv_lstm")
     parser.add_argument('--data_path',     type=str, required=True,  help="Path to .npz dataset")
     parser.add_argument('--output_dir',    type=str, default='saved_rollouts')
     parser.add_argument('--horizon',       type=int, default=15,     help="Rollout horizon (steps)")
@@ -309,12 +328,16 @@ def main():
 
     # ---- Load model --------------------------------------------------------
     is_fno      = args.model_type == 'fno'
-    is_temporal = args.model_type == 'fno_3d'
+    is_temporal = args.model_type in ('fno_3d', 'fno_3d_decoupled', 'conv_lstm')
 
     if is_fno:
         model = load_fno(args.ckpt, device)
-    elif is_temporal:
+    elif args.model_type == 'fno_3d':
         model = load_fno_3d(args.ckpt, device)
+    elif args.model_type == 'fno_3d_decoupled':
+        model = load_fno_3d_decoupled(args.ckpt, device)
+    elif args.model_type == 'conv_lstm':
+        model = load_conv_lstm(args.ckpt, device)
     else:
         model = load_rnp(args.ckpt, args.model_type, device)
 

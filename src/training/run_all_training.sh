@@ -4,7 +4,7 @@ set -e  # Exit on error
 # Use the specific python environment
 PYTHON=/home/emunoz/dev/safe-nav-smoke/.env/bin/python
 
-export CUDA_VISIBLE_DEVICES=4
+export CUDA_VISIBLE_DEVICES=2
 export PYTHONPATH=/home/emunoz/dev/safe-nav-smoke
 
 # # 1. RNP
@@ -127,10 +127,34 @@ export PYTHONPATH=/home/emunoz/dev/safe-nav-smoke
 #   training.visualizer.visualize_every=10
 # echo "✅ FNO Multistep H=8 Passed"
 
+# echo "-------------------------------------------"
+# echo "6/6  FNO Uncertainty Input (2-channel: mean + std)"
+# $PYTHON src/training/train_fno.py \
+#   --config-name fno_uncertainty_train \
+#   training.experiment_name="fno_uncertainty" \
+#   training.visualizer.visualize_every=10
+# echo "✅ FNO Uncertainty Passed"
+
+# echo "-------------------------------------------"
+# echo "1/2  FNO 3D"
+# $PYTHON src/training/train_fno_3d.py \
+#   --config-name fno_3d_train \
+#   training.experiment_name="fno_3d" \
+#   training.visualizer.visualize_every=10
+# echo "✅ FNO 3D Passed"
+
+# echo "-------------------------------------------"
+# echo "2/2  FNO 3D Decoupled"
+# $PYTHON src/training/train_fno_3d_decoupled.py \
+#   --config-name fno_3d_decoupled_train \
+#   training.experiment_name="fno_3d_decoupled" \
+#   training.visualizer.visualize_every=10
+# echo "✅ FNO 3D Decoupled Passed"
+
 echo "-------------------------------------------"
-echo "6/6  FNO Uncertainty Input (2-channel: mean + std)"
-$PYTHON src/training/train_fno.py \
-  --config-name fno_uncertainty_train \
-  training.experiment_name="fno_uncertainty" \
+echo "ConvLSTM Baseline"
+$PYTHON src/training/train_conv_lstm.py \
+  --config-name conv_lstm_train \
+  training.experiment_name="conv_lstm" \
   training.visualizer.visualize_every=10
-echo "✅ FNO Uncertainty Passed"
+echo "✅ ConvLSTM Passed"

@@ -30,8 +30,14 @@ CKPT_FNO_MS_H8="/home/emunoz/dev/safe-nav-smoke/outputs/2026-02-24/07-32-09_fno_
 CKPT_FNO_BIAS_SAMPLE="/home/emunoz/dev/safe-nav-smoke/outputs/2026-02-24/11-11-09_fno_bias_sample/checkpoints/best_model.pt"
 CKPT_FNO_UNCERTAINTY="/home/emunoz/dev/safe-nav-smoke/outputs/2026-02-24/11-48-29_fno_uncertainty/checkpoints/best_model.pt"
 
-# ---- FNO3D checkpoints (fill in after training) ----------------------------
+# ---- FNO3D -----------------------------------------------------------------
 CKPT_FNO3D="/home/emunoz/dev/safe-nav-smoke/outputs/2026-02-24/14-10-03_fno_3d/checkpoints/best_model.pt"   # e.g. outputs/2026-02-24/XX_fno_3d/checkpoints/best_model.pt
+CKPT_FNO3D_DECOUPLED_H5="/home/emunoz/dev/safe-nav-smoke/outputs/2026-02-27/15-12-18/checkpoints/best_model.pt" # Fill in after training completes
+CKPT_FNO3D_DECOUPLED_H15="/home/emunoz/dev/safe-nav-smoke/outputs/2026-02-27/19-46-31/checkpoints/best_model.pt" # Fill in after training completes
+
+CKPT_FNO3D_LAST="/home/emunoz/dev/safe-nav-smoke/outputs/2026-02-28/02-22-07/checkpoints/best_model.pt"
+CKPT_FNO3D_DECOUPLED_LAST="/home/emunoz/dev/safe-nav-smoke/outputs/2026-02-28/08-35-26/checkpoints/best_model.pt"
+CKPT_CONV_LSTM_LAST="/home/emunoz/dev/safe-nav-smoke/outputs/2026-03-02/19-52-54/checkpoints/best_model.pt"
 
 # ---------------------------------------------------------------------------
 
@@ -85,7 +91,16 @@ run_rollout() {
 # run_rollout "$CKPT_FNO_UNCERTAINTY" "fno" "saved_rollouts/fno_uncertainty"  "fno_uncertainty"
 
 # ---- FNO3D -----------------------------------------------------------------
-run_rollout "$CKPT_FNO3D" "fno_3d" "saved_rollouts/fno_3d" "fno_3d"
+# run_rollout "$CKPT_FNO3D" "fno_3d" "saved_rollouts/fno_3d" "fno_3d"
+# run_rollout "$CKPT_FNO3D_DECOUPLED_H5" "fno_3d_decoupled" "saved_rollouts/fno_3d_decoupled_h5" "fno_3d_decoupled_h5"
+# run_rollout "$CKPT_FNO3D_DECOUPLED_H15" "fno_3d_decoupled" "saved_rollouts/fno_3d_decoupled_h15" "fno_3d_decoupled_h15"
+
+# run_rollout "$CKPT_FNO3D_LAST" "fno_3d" "saved_rollouts/fno_3d_last" "fno_3d_last"
+# run_rollout "$CKPT_FNO3D_DECOUPLED_LAST" "fno_3d_decoupled" "saved_rollouts/fno_3d_decoupled_last" "fno_3d_decoupled_last"
+
+# ---- CONV_LSTM -------------------------------------------------------------
+run_rollout "$CKPT_CONV_LSTM_LAST" "conv_lstm" "saved_rollouts/conv_lstm_last" "conv_lstm_last"
+
 
 echo ""
 echo "All rollouts saved."

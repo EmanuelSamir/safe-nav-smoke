@@ -12,7 +12,7 @@ training:
 
   data:
     data_path: "data/playback_data/global_source_400_100_2nd.npz"
-    batch_size: 8
+    batch_size: 32
     train_split: 0.9
     max_samples: null
     sequence_length: 30    # > h_ctx + h_pred  (10 + 5 = 15 → 30 works)
@@ -37,7 +37,7 @@ training:
   optimizer:
     lr: 1.0e-3
     min_lr: 1.0e-5
-    max_epochs: 200
+    max_epochs: 400
     grad_clip: 1.0
 
   checkpoint:
@@ -46,4 +46,4 @@ training:
     mode: "min"
 
   visualizer:
-    visualize_every: 5
+    visualize_every: 10

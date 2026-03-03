@@ -325,13 +325,13 @@ class FNO3d(nn.Module):
                 if len(preds) >= horizon:
                     break
 
-                sample_np = (d.sample()[:, :, :, 0]
-                              .cpu().to(torch.float16).numpy())  # (S, H, W)
-                mu_np     = d.mean   [0, :, :, 0].cpu().to(torch.float16).numpy()  # scalar
-                std_np    = d.stddev [0, :, :, 0].cpu().to(torch.float16).numpy()
+                sampled = d.sample()
+                sample_np = sampled[..., 0].cpu().to(torch.float16).numpy()
+                mu_np     = d.mean[..., 0].cpu().to(torch.float16).numpy()
+                std_np    = d.stddev[..., 0].cpu().to(torch.float16).numpy()
 
                 preds.append({'sample': sample_np, 'mean': mu_np, 'std': std_np})
-                new_frames_for_ctx.append(d.mean)   # (S, H, W, 1)
+                new_frames_for_ctx.append(sampled)
 
             # Slide context window by len(new_frames_for_ctx)
             n_slide   = len(new_frames_for_ctx)
@@ -343,11 +343,6 @@ class FNO3d(nn.Module):
             t_offset += n_slide
 
         return preds
-
-
-# ---------------------------------------------------------------------------
-# Quick sanity check
-# ---------------------------------------------------------------------------
 
 if __name__ == "__main__":
     import sys
