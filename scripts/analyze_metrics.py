@@ -30,13 +30,10 @@ def parse_smoke_val(val_str):
 # Value: Folder name inside the `outputs/` directory 
 # (e.g. if the path is outputs/cbf, value is "cbf")
 EXPERIMENTS = {
-    "CBF Controller": "cbf",
     "No Risk": "no_risk",
+    "HOCBF": "cbf",
     "Static MPPI": "persistent",
-    "Proposal": "behavior_prediction"
-    # Add more experiments here to compare:
-    # "Baseline Controller": "baseline",
-    # "Other Method": "other_method"
+    "PFNO-MPPI": "behavior_prediction"
 }
 
 base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -147,46 +144,65 @@ print("-" * 50)
 # Creating boxplots for distributions and barplots for success rates.
 
 # %%
-sns.set_theme(style="whitegrid")
+# IEEE Paper Plot Formatting
+plt.rcParams.update({
+    "text.usetex": False,
+    "font.family": "serif",
+    "font.serif": ["Times New Roman", "Times", "DejaVu Serif"],
+    "font.size": 10,
+    "axes.labelsize": 10,
+    "axes.titlesize": 11,
+    "legend.fontsize": 8,
+    "xtick.labelsize": 8,
+    "ytick.labelsize": 8,
+    "lines.linewidth": 1.5,
+    "figure.dpi": 300,
+})
 
-# 1. Violinplot: Max Smoke
-plt.figure(figsize=(8, 6))
-sns.violinplot(data=results_df, x='Experiment', y='Max Smoke', palette="Set2")
-plt.title('Distribution of Max Smoke Value', fontsize=14)
-plt.ylabel('Max Smoke')
-plt.xlabel('')
-plt.tight_layout()
-plt.show()
+# 1. Boxplots for distributions in one figure (Fig. Y)
+# A typical IEEE 2-column figure width is ~7.16 inches
+fig, axes = plt.subplots(1, 3, figsize=(7.16, 2.5))
 
-# 2. Violinplot: Mean Smoke
-plt.figure(figsize=(8, 6))
-sns.violinplot(data=results_df, x='Experiment', y='Mean Smoke', palette="Set2")
-plt.title('Distribution of Mean Smoke Value', fontsize=14)
-plt.ylabel('Mean Smoke')
-plt.xlabel('')
-plt.tight_layout()
-plt.show()
+sns.boxplot(data=results_df, x='Experiment', y='Max Smoke', hue='Experiment', legend=False, ax=axes[0], palette="Set2", fliersize=1)
+axes[0].set_title('Max. Smoke Exposure')
+axes[0].set_ylabel('Max Smoke')
+axes[0].set_xlabel('')
+axes[0].tick_params(axis='x', rotation=15)
 
-# 3. Violinplot: Time to Goal (Successful episodes only)
-plt.figure(figsize=(8, 6))
+sns.boxplot(data=results_df, x='Experiment', y='Mean Smoke', hue='Experiment', legend=False, ax=axes[1], palette="Set2")
+axes[1].set_title('Mean Smoke Exposure')
+axes[1].set_ylabel('Mean Smoke')
+axes[1].set_xlabel('')
+axes[1].tick_params(axis='x', rotation=15)
+
 success_df = results_df[results_df['Reached Goal'] == True]
 if not success_df.empty:
-    sns.violinplot(data=success_df, x='Experiment', y='Time to Goal', palette="Set2")
-plt.title('Time to Goal (Successful episodes only)', fontsize=14)
-plt.ylabel('Time (s)')
-plt.xlabel('')
-plt.tight_layout()
-plt.show()
+    sns.boxplot(data=success_df, x='Experiment', y='Time to Goal', hue='Experiment', legend=False, ax=axes[2], palette="Set2")
+axes[2].set_title('Total Navigation Time')
+axes[2].set_ylabel('Time (s)')
+axes[2].set_xlabel('')
+axes[2].tick_params(axis='x', rotation=15)
 
-# 4. Barplot: Reached Goal comparison
-plt.figure(figsize=(8, 6))
+plt.tight_layout()
+boxplot_path_pdf = os.path.join(outputs_dir, "ieee_metrics_boxplot.pdf")
+boxplot_path_png = os.path.join(outputs_dir, "ieee_metrics_boxplot.png")
+plt.savefig(boxplot_path_pdf, bbox_inches='tight')
+plt.savefig(boxplot_path_png, bbox_inches='tight')
+plt.show()
+print(f"Saved box plot to {boxplot_path_pdf} and {boxplot_path_png}")
+
+# 2. Barplot: Reached Goal comparison
+# A typical single column IEEE plot is ~3.5 inches width
+plt.figure(figsize=(3.5, 3))
 counts_df = results_df.groupby(['Experiment', 'Reached Goal']).size().reset_index(name='Count')
 counts_df['Status'] = counts_df['Reached Goal'].map({True: 'Reached Goal', False: 'Failed'})
 
-ax = sns.barplot(data=counts_df, x='Experiment', y='Count', hue='Status')
-plt.title('Episodes Success Status', fontsize=14)
+ax = sns.barplot(data=counts_df, x='Experiment', y='Count', hue='Status', palette="Set2")
+plt.title('Episodes Success Status')
 plt.ylabel('Number of Episodes')
 plt.xlabel('')
+plt.xticks(rotation=20, ha='right')
+plt.legend(title='')
 
 # Annotate bars
 for p in ax.patches:
@@ -194,10 +210,15 @@ for p in ax.patches:
     if not np.isnan(height):
         ax.annotate(f'{int(height)}', 
                     (p.get_x() + p.get_width() / 2., height), 
-                    ha='center', va='bottom', fontsize=12, fontweight='bold', xytext=(0, 3), textcoords='offset points')
+                    ha='center', va='bottom', fontsize=8, fontweight='bold', xytext=(0, 2), textcoords='offset points')
 
 plt.tight_layout()
+barplot_path_pdf = os.path.join(outputs_dir, "ieee_success_barplot.pdf")
+barplot_path_png = os.path.join(outputs_dir, "ieee_success_barplot.png")
+plt.savefig(barplot_path_pdf, bbox_inches='tight')
+plt.savefig(barplot_path_png, bbox_inches='tight')
 plt.show()
+print(f"Saved bar plot to {barplot_path_pdf} and {barplot_path_png}")
 
 
 # %%
