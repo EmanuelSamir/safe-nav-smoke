@@ -88,16 +88,3 @@ python scripts/analyze_metrics.py
 ```
 Outputs are routed to `.pdf` and `.png` versions within the central logging directory.
 
-
-## Citation
-
-If you found this codebase useful for your research, consider citing our work:
-
-```bibtex
-@inproceedings{munoz2025pfno,
-  title={Risk-Aware Navigation in Dynamic Smoke Environments via Probabilistic Fourier Neural Operators},
-  author={Munoz, Emanuel and Kailas, Siva and Kim, Woojun and Lao, Wenhao and Sycara, Katia},
-  booktitle={IEEE International Conference on Robotics and Automation (ICRA)},
-  year={2025}
-}
-```
