@@ -1,12 +1,3 @@
-"""
-train_conv_lstm.py — Training for ConvLSTM Baseline
-======================================================
-Same sliding-window strategy as train_fno_3d.py:
-  - Slide h_ctx-frame context window across the sequence
-  - Compute NLL over h_pred future targets
-  - backward() after each window to bound memory
-"""
-
 import sys
 import os
 sys.path.append(os.getcwd())
@@ -32,11 +23,6 @@ from src.models.shared.datasets import SequentialDataset, dense_sequential_colla
 
 log = logging.getLogger(__name__)
 
-
-# ---------------------------------------------------------------------------
-# Helpers
-# ---------------------------------------------------------------------------
-
 def save_checkpoint(model, optimizer, epoch, loss, cfg_dict, path):
     torch.save({
         'epoch':                 epoch,
@@ -53,11 +39,6 @@ def make_times(t_offset: int, h_ctx: int, seq_len: int,
     t = torch.arange(t_offset, t_offset + h_ctx, device=device, dtype=torch.float32)
     t = t / max(seq_len - 1, 1)
     return t.unsqueeze(0).expand(B, -1)
-
-
-# ---------------------------------------------------------------------------
-# Visualisation
-# ---------------------------------------------------------------------------
 
 def log_vis(model, loader, cfg, H, W, device, writer, epoch,
             rollout_steps=(1, 5, 10, 15)):
@@ -118,11 +99,6 @@ def log_vis(model, loader, cfg, H, W, device, writer, epoch,
     writer.add_image("Val/Rollout", img_t, epoch)
     plt.close()
 
-
-# ---------------------------------------------------------------------------
-# Training
-# ---------------------------------------------------------------------------
-
 @hydra.main(version_base=None,
             config_path="../../configs/training",
             config_name="conv_lstm_train")
@@ -149,7 +125,7 @@ def train(cfg: DictConfig):
 
     writer = SummaryWriter(log_dir=log_dir)
 
-    # ---- Data ---------------------------------------------------------------
+    # Data
     try:
         root_dir = Path(hydra.utils.get_original_cwd())
     except Exception:
@@ -192,7 +168,7 @@ def train(cfg: DictConfig):
         shuffle=False, collate_fn=dense_sequential_collate_fn,
         num_workers=cfg.training.data.num_workers)
 
-    # ---- Model --------------------------------------------------------------
+    # Model
     mc = cfg.training.model
     conv_cfg = ConvLSTMConfig(
         h_ctx       = h_ctx,
@@ -208,7 +184,7 @@ def train(cfg: DictConfig):
     model = ConvLSTMModel(conv_cfg).to(device)
     print(f"ConvLSTM params: {sum(p.numel() for p in model.parameters()):,}")
 
-    # ---- Optimizer ----------------------------------------------------------
+    # Optimizer
     opt_cfg   = cfg.training.optimizer
     optimizer = optim.Adam(model.parameters(), lr=opt_cfg.lr)
     scheduler = optim.lr_scheduler.CosineAnnealingLR(
@@ -217,7 +193,7 @@ def train(cfg: DictConfig):
     def criterion(dist, gt):
         return -dist.log_prob(gt).mean()
 
-    # ---- Training loop ------------------------------------------------------
+    # Training loop
     best_val = float('inf')
 
     for epoch in range(opt_cfg.max_epochs):
@@ -256,7 +232,7 @@ def train(cfg: DictConfig):
                     for h in range(h_pred)
                 ) / (h_pred * n_win)
 
-                step_loss.backward()     # free activations immediately
+                step_loss.backward()
                 batch_loss += step_loss.item() * n_win
 
             torch.nn.utils.clip_grad_norm_(model.parameters(), opt_cfg.grad_clip)
@@ -272,7 +248,7 @@ def train(cfg: DictConfig):
         writer.add_scalar("Train/NLL", avg_train, epoch)
         writer.add_scalar("Train/LR", optimizer.param_groups[0]['lr'], epoch)
 
-        # ---- Validation -------------------------------------------------------
+        # Validation
         model.eval()
         val_loss = 0.0
         with torch.no_grad():

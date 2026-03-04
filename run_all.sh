@@ -36,17 +36,17 @@ run_experiment_loop() {
     echo "✔ $exp_name finished."
 }
 
-# # 1. No Risk (MPPI without smoke map consideration)
-# run_experiment_loop "no_risk" ""
+# 1. No Risk (MPPI without smoke map consideration)
+run_experiment_loop "no_risk" ""
 
-# # 2. CBF (Control Barrier Functions - hardcoded smoke threshold)
-# run_experiment_loop "cbf" ""
+# 2. CBF (Control Barrier Functions - hardcoded smoke threshold)
+run_experiment_loop "cbf" ""
 
-# # 3. Persistent (MPPI assuming static smoke map at each step)
-# run_experiment_loop "persistent" ""
+# 3. Persistent (MPPI assuming static smoke map at each step)
+run_experiment_loop "persistent" ""
 
-# # 4. Behavior Prediction (MPPI with FNO3D)
-# run_experiment_loop "behavior_prediction" "experiment.model_type=fno_3d experiment.name=behavior_prediction_fno_3d"
+# 4. Behavior Prediction (MPPI with FNO3D)
+run_experiment_loop "behavior_prediction" "experiment.model_type=fno_3d experiment.name=behavior_prediction_fno_3d"
 
 # 5. Behavior Prediction (MPPI with FNO3D + CVAR)
 run_experiment_loop "behavior_prediction" "experiment.model_type=fno_3d experiment.cvar_alpha=0.9 experiment.name=behavior_prediction_fno_3d_cvar"

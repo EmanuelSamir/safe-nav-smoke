@@ -32,6 +32,7 @@ multirun/
 # Exclude checkpoints directory from gitignore to track important models
 !checkpoints/*.pt
 !checkpoints/*.pth
+saved_rollouts
 
 # Data & Logs
 *.log

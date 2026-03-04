@@ -1,4 +1,4 @@
 
-from .model_free.rnp import RNP, RNPConfig
-from .model_free.rnp_multistep import RNPMultistep
+from .conv_lstm import ConvLSTMModel, ConvLSTMConfig
+from .fno_3d import FNO3d, FNO3dConfig
 

@@ -8,10 +8,6 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.distributions import Normal
 
-# ---------------------------------------------------------------------------
-# Config
-# ---------------------------------------------------------------------------
-
 @dataclass
 class FNO3dConfig:
     # Context / prediction
@@ -34,11 +30,6 @@ class FNO3dConfig:
     # Normalisation
     seq_len_ref: int = 25     # Used to map absolute step → t_rel ∈ [0,1]
     min_std:    float = 1e-4
-
-
-# ---------------------------------------------------------------------------
-# SpectralConv3d  — the core of FNO-3D
-# ---------------------------------------------------------------------------
 
 class SpectralConv3d(nn.Module):
     """
@@ -83,37 +74,29 @@ class SpectralConv3d(nn.Module):
         B, C, T, H, W = x.shape
         mt, mh, mw = self.modes_t, self.modes_h, self.modes_w
 
-        # ---- Step A: 3D real FFT -------------------------------------------
         # Result shape: (B, C_in, T, H, W//2+1)  — last dim is real FFT
         x_ft = torch.fft.rfftn(x, dim=(-3, -2, -1), norm="ortho")
 
-        # ---- Step B+C: Truncate modes & multiply weights -------------------
         out_ft = torch.zeros(B, self.out_ch, T, H, W // 2 + 1,
                              dtype=torch.cfloat, device=x.device)
 
-        # Quadrant (+T, +H, +W)  — low positive frequencies everywhere
+        # Quadrant (+T, +H, +W) - low positive frequencies everywhere
         out_ft[:, :, :mt,  :mh,  :mw] += self._mul3(
             x_ft[:, :, :mt,  :mh,  :mw],  self.w1)
 
-        # Quadrant (+T, -H, +W)  — positive temporal, high negative H
+        # Quadrant (+T, -H, +W) - positive temporal, high negative H
         out_ft[:, :, :mt,  -mh:, :mw] += self._mul3(
             x_ft[:, :, :mt,  -mh:, :mw],  self.w2)
 
-        # Quadrant (-T, +H, +W)  — high negative temporal, positive H
+        # Quadrant (-T, +H, +W) - high negative temporal, positive H
         out_ft[:, :, -mt:, :mh,  :mw] += self._mul3(
             x_ft[:, :, -mt:, :mh,  :mw],  self.w3)
 
-        # Quadrant (-T, -H, +W)  — high negative temporal & H
+        # Quadrant (-T, -H, +W) - high negative temporal & H
         out_ft[:, :, -mt:, -mh:, :mw] += self._mul3(
             x_ft[:, :, -mt:, -mh:, :mw],  self.w4)
 
-        # ---- Step D: inverse 3D FFT ----------------------------------------
         return torch.fft.irfftn(out_ft, s=(T, H, W), dim=(-3, -2, -1), norm="ortho")
-
-
-# ---------------------------------------------------------------------------
-# FNO-3D model
-# ---------------------------------------------------------------------------
 
 class FNO3d(nn.Module):
     """
@@ -131,9 +114,6 @@ class FNO3d(nn.Module):
     │       ↓  fc1 → fc2 → 2×h_pred outputs                    │
     │  Output: List[Normal]  length = h_pred, each (B, H, W, 1) │
     └─────────────────────────────────────────────────────────────┘
-
-    Autoregressive inference:
-        Feed h_pred predicted means back to the context window → slide → repeat.
     """
 
     def __init__(self, cfg: FNO3dConfig):
@@ -144,34 +124,28 @@ class FNO3d(nn.Module):
         # smoke (1) + time (1, if use_time) → C_in
         self.c_in  = 1 + (1 if cfg.use_time else 0)
         self.grid_ch = 2 if cfg.use_grid else 0
-        self.c_post  = cfg.width + self.grid_ch   # channels entering the MLP decoder
+        self.c_post  = cfg.width + self.grid_ch
 
-        # ---- Lift: pointwise Conv3d  (C_in → width) -------------------------
         self.lift = nn.Conv3d(self.c_in, cfg.width, kernel_size=1)
 
-        # ---- SpectralConv3d blocks -------------------------------------------
         self.spec_convs = nn.ModuleList([
             SpectralConv3d(cfg.width, cfg.width,
                            cfg.modes_t, cfg.modes_h, cfg.modes_w)
             for _ in range(cfg.n_layers)
         ])
-        # Skip connections (pointwise 3D conv)
+
         self.skip_convs = nn.ModuleList([
             nn.Conv3d(cfg.width, cfg.width, kernel_size=1)
             for _ in range(cfg.n_layers)
         ])
 
-        # ---- Temporal aggregation: collapse h_ctx → 1 -----------------------
+        # Temporal aggregation
         self.temporal_agg = nn.Conv3d(cfg.width, cfg.width,
                                        kernel_size=(cfg.h_ctx, 1, 1))
 
-        # ---- MLP decoder (B, H, W, C_post) → (B, H, W, 2*h_pred) ----------
+        # (B, H, W, C_post) → (B, H, W, 2*h_pred)
         self.fc1 = nn.Linear(self.c_post, 128)
         self.fc2 = nn.Linear(128, 2 * cfg.h_pred)
-
-    # ------------------------------------------------------------------
-    # Helpers
-    # ------------------------------------------------------------------
 
     def _build_feat_volume(self, frames: torch.Tensor,
                             times: torch.Tensor | None) -> torch.Tensor:
@@ -183,7 +157,7 @@ class FNO3d(nn.Module):
         returns: (B, C_in, h_ctx, H, W)
         """
         # smoke: (B, 1, h_ctx, H, W)
-        feat = frames.unsqueeze(1)                     # (B, 1, h_ctx, H, W)
+        feat = frames.unsqueeze(1)
 
         if self.cfg.use_time:
             if times is None:
@@ -191,24 +165,19 @@ class FNO3d(nn.Module):
                 times = torch.linspace(0, 1, T, device=frames.device
                                        ).unsqueeze(0).expand(B, -1)
 
-            # Broadcast time scalar to all pixels
             B, T, H, W = frames.shape
             # t: (B, 1, h_ctx, 1, 1) → expand to (B, 1, h_ctx, H, W)
             t_feat = times.view(B, 1, T, 1, 1).expand(-1, -1, -1, H, W)
             feat = torch.cat([feat, t_feat.float()], dim=1)  # (B, 2, h_ctx, H, W)
 
-        return feat   # (B, C_in, h_ctx, H, W)
+        return feat
 
     def _build_grid(self, H: int, W: int, device) -> torch.Tensor:
         """(x, y) normalised grid: (1, 2, H, W)"""
         x = torch.linspace(-1, 1, W, device=device)
         y = torch.linspace(-1, 1, H, device=device)
         gy, gx = torch.meshgrid(y, x, indexing='ij')
-        return torch.stack([gx, gy], dim=0).unsqueeze(0)   # (1, 2, H, W)
-
-    # ------------------------------------------------------------------
-    # Forward
-    # ------------------------------------------------------------------
+        return torch.stack([gx, gy], dim=0).unsqueeze(0)
 
     def forward(self, frames: torch.Tensor,
                 times: torch.Tensor | None = None) -> List[Normal]:
@@ -220,30 +189,28 @@ class FNO3d(nn.Module):
         """
         B, T_c, H, W = frames.shape
 
-        # ---- Build 3D feature volume  (B, C_in, h_ctx, H, W) ---------------
+        # Build 3D feature volume  (B, C_in, h_ctx, H, W)  
         feat = self._build_feat_volume(frames, times)
 
-        # ---- Lift to latent width -------------------------------------------
-        x = self.lift(feat)                             # (B, width, h_ctx, H, W)
+        x = self.lift(feat)
 
-        # ---- SpectralConv3d blocks ------------------------------------------
         for spec, skip in zip(self.spec_convs, self.skip_convs):
             # Spectral path + residual skip (pointwise)
             x = F.gelu(spec(x) + skip(x))
 
-        # ---- Temporal aggregation → (B, width, H, W) -----------------------
+        # Temporal aggregation -> (B, width, H, W)
         x = self.temporal_agg(x)                        # (B, width, 1, H, W)
         x = x.squeeze(2)                                # (B, width, H, W)
 
-        # ---- Append spatial grid -------------------------------------------
+        # Append spatial grid
         if self.cfg.use_grid:
             grid = self._build_grid(H, W, frames.device).expand(B, -1, -1, -1)
             x = torch.cat([x, grid], dim=1)            # (B, width+2, H, W)
 
-        # ---- MLP decode  ---------------------------------------------------
+        # MLP decode
         x = x.permute(0, 2, 3, 1)                      # (B, H, W, C_post)
         x = F.gelu(self.fc1(x))                        # (B, H, W, 128)
-        out = self.fc2(x)                               # (B, H, W, 2*h_pred)
+        out = self.fc2(x)                              # (B, H, W, 2*h_pred)
 
         dists = []
         for h in range(self.cfg.h_pred):
@@ -253,10 +220,6 @@ class FNO3d(nn.Module):
 
         return dists   # List[Normal], each (B, H, W, 1)
 
-    # ------------------------------------------------------------------
-    # Autoregressive forecast
-    # ------------------------------------------------------------------
-
     def autoregressive_forecast(
         self,
         seed_frames:  torch.Tensor,    # (1, h_ctx, H, W) or (h_ctx, H, W)
@@ -264,19 +227,7 @@ class FNO3d(nn.Module):
         horizon:      int = 15,
         num_samples:  int = 10,
     ) -> List[dict]:
-        """
-        Autoregressively predict `horizon` future frames.
 
-        The h_ctx context window slides forward by h_pred at each step.
-        Times are normalised by cfg.seq_len_ref.
-
-        Returns
-        -------
-        preds : list[dict] length = horizon
-            'sample' : (num_samples, H, W)  float16  — S sampled trajectories
-            'mean'   : (H, W)               float16  — distribution mean
-            'std'    : (H, W)               float16  — distribution std-dev
-        """
         if seed_frames.dim() == 3:
             seed_frames = seed_frames.unsqueeze(0)   # → (1, h_ctx, H, W)
 
@@ -291,7 +242,6 @@ class FNO3d(nn.Module):
         preds    = []
 
         while len(preds) < horizon:
-            # Relative times for this context window
             t_abs  = torch.arange(t_offset, t_offset + h_ctx,
                                    device=device, dtype=torch.float32)
             times  = (t_abs / ref).unsqueeze(0).expand(num_samples, -1)  # (S, h_ctx)
@@ -316,7 +266,7 @@ class FNO3d(nn.Module):
             n_slide   = len(new_frames_for_ctx)
             new_stack = torch.cat(
                 [f.permute(0, 3, 1, 2) for f in new_frames_for_ctx], dim=1
-            )  # (S, n_slide, H, W)
+            )
 
             ctx      = torch.cat([ctx[:, n_slide:], new_stack], dim=1)
             t_offset += n_slide

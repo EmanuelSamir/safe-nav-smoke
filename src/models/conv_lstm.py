@@ -19,11 +19,6 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.distributions import Normal
 
-
-# ---------------------------------------------------------------------------
-# Config
-# ---------------------------------------------------------------------------
-
 @dataclass
 class ConvLSTMConfig:
     # Context / prediction
@@ -43,10 +38,6 @@ class ConvLSTMConfig:
     seq_len_ref: int = 25     # Used to map absolute step → t_rel ∈ [0,1]
     min_std: float = 1e-4
 
-
-# ---------------------------------------------------------------------------
-# ConvLSTM Cell & Modules
-# ---------------------------------------------------------------------------
 
 class ConvLSTMCell(nn.Module):
     """
@@ -77,7 +68,6 @@ class ConvLSTMCell(nn.Module):
         B, C, H, W = x.shape
         
         if state is None:
-            # Initialize hidden and cell states to zeros
             h_cur = torch.zeros(B, self.hidden_ch, H, W, device=x.device, dtype=x.dtype)
             c_cur = torch.zeros(B, self.hidden_ch, H, W, device=x.device, dtype=x.dtype)
         else:
@@ -104,27 +94,7 @@ class ConvLSTMCell(nn.Module):
         return h_next, (h_next, c_next)
 
 
-# ---------------------------------------------------------------------------
-# ConvLSTM Baseline Model
-# ---------------------------------------------------------------------------
-
 class ConvLSTMModel(nn.Module):
-    """
-    ConvLSTM Baseline mimicking FNO3d's signature and pipeline.
-
-    Pipeline:
-    ┌─────────────────────────────────────────────────────────────┐
-    │  Input (B, h_ctx, H, W)  +  optional times (B, h_ctx)     │
-    │       ↓  Build features   (B, h_ctx, C_in, H, W)          │
-    │       ↓  ConvLSTM stack across T dimension                │
-    │       ↓  Take final hidden state H_final (B, hidden, H, W)│
-    │       ↓  Append optional (x,y) grid → (B, C_post, H, W)   │
-    │       ↓  permute → (B, H, W, C_post)                      │
-    │       ↓  fc1 → fc2 → 2×h_pred outputs                     │
-    │  Output: List[Normal]  length = h_pred, each (B, H, W, 1) │
-    └─────────────────────────────────────────────────────────────┘
-    """
-
     def __init__(self, cfg: ConvLSTMConfig):
         super().__init__()
         self.cfg = cfg
@@ -132,7 +102,7 @@ class ConvLSTMModel(nn.Module):
         # Input channels setup
         self.c_in = 1 + (1 if cfg.use_time else 0)
         self.grid_ch = 2 if cfg.use_grid else 0
-        self.c_post = cfg.hidden_dim + self.grid_ch   # channels entering MLP decoder
+        self.c_post = cfg.hidden_dim + self.grid_ch
         
         # ConvLSTM Layers
         cells = []
@@ -144,10 +114,6 @@ class ConvLSTMModel(nn.Module):
         # MLP decoder (B, H, W, C_post) → (B, H, W, 2*h_pred)
         self.fc1 = nn.Linear(self.c_post, 128)
         self.fc2 = nn.Linear(128, 2 * cfg.h_pred)
-
-    # ------------------------------------------------------------------
-    # Helpers
-    # ------------------------------------------------------------------
 
     def _build_feat_volume(self, frames: torch.Tensor,
                            times: Optional[torch.Tensor]) -> torch.Tensor:
@@ -166,7 +132,6 @@ class ConvLSTMModel(nn.Module):
                 times = torch.linspace(0, 1, T, device=frames.device
                                        ).unsqueeze(0).expand(B, -1)
 
-            # Broadcast time scalar
             B, T, H, W = frames.shape
             # t: (B, h_ctx, 1, 1, 1) → expand to (B, h_ctx, 1, H, W)
             t_feat = times.view(B, T, 1, 1, 1).expand(-1, -1, -1, H, W)
@@ -181,10 +146,6 @@ class ConvLSTMModel(nn.Module):
         gy, gx = torch.meshgrid(y, x, indexing='ij')
         return torch.stack([gx, gy], dim=0).unsqueeze(0)
 
-    # ------------------------------------------------------------------
-    # Forward
-    # ------------------------------------------------------------------
-
     def forward(self, frames: torch.Tensor,
                 times: Optional[torch.Tensor] = None) -> List[Normal]:
         """
@@ -194,13 +155,13 @@ class ConvLSTMModel(nn.Module):
         """
         B, T_c, H, W = frames.shape
 
-        # ---- Features: (B, T_c, C_in, H, W) ----
+        # (B, T_c, C_in, H, W)
         seq = self._build_feat_volume(frames, times)
         
         # Ensure B == batch_size because states are kept across time steps
         layer_states = [None] * self.cfg.n_layers
         
-        # ---- Temporal Recurrence ----
+        # Temporal Recurrence
         for t in range(T_c):
             # Input for this step (B, C_in, H, W)
             x_t = seq[:, t, :, :, :]
@@ -208,18 +169,14 @@ class ConvLSTMModel(nn.Module):
             for layer_idx, cell in enumerate(self.cells):
                 h_next, state_next = cell(x_t, layer_states[layer_idx])
                 layer_states[layer_idx] = state_next
-                # The output h_next becomes input to the next layer
                 x_t = h_next
-                
-        # We only care about the final time step's output of the top layer
         x = x_t  # (B, width, H, W)
         
-        # ---- Append spatial grid ----
         if self.cfg.use_grid:
             grid = self._build_grid(H, W, frames.device).expand(B, -1, -1, -1)
             x = torch.cat([x, grid], dim=1)     # (B, width+2, H, W)
             
-        # ---- MLP decoder ----
+        # MLP decoder
         x = x.permute(0, 2, 3, 1)               # (B, H, W, C_post)
         x = F.gelu(self.fc1(x))                 # (B, H, W, 128)
         out = self.fc2(x)                       # (B, H, W, 2*h_pred)
@@ -232,10 +189,6 @@ class ConvLSTMModel(nn.Module):
 
         return dists
 
-    # ------------------------------------------------------------------
-    # Autoregressive forecast
-    # ------------------------------------------------------------------
-
     def autoregressive_forecast(
         self,
         seed_frames:  torch.Tensor,    # (1, h_ctx, H, W) or (h_ctx, H, W)
@@ -243,7 +196,6 @@ class ConvLSTMModel(nn.Module):
         horizon:      int = 15,
         num_samples:  int = 10,
     ) -> List[dict]:
-        """Autoregressively predict `horizon` future frames."""
         if seed_frames.dim() == 3:
             seed_frames = seed_frames.unsqueeze(0)
 

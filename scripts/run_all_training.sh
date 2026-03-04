@@ -1,4 +1,6 @@
 #!/bin/bash
+# TODO: Hide sh files for blinded review
+
 set -e  # Exit on error
 
 # Use the specific python environment

@@ -10,7 +10,7 @@ DATA_PATH="/home/emunoz/dev/safe-nav-smoke/data/playback_data/test_global_source
 
 STRIDE=15
 HORIZON=15
-NUM_SAMPLES=10
+NUM_SAMPLES=1
 
 CKPT_FNO3D="/home/emunoz/dev/safe-nav-smoke/outputs/2026-02-24/14-10-03_fno_3d/checkpoints/best_model.pt"
 CKPT_CONV_LSTM_LAST="/home/emunoz/dev/safe-nav-smoke/outputs/2026-03-02/19-52-54/checkpoints/best_model.pt"
