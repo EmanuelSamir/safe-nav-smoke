@@ -43,6 +43,7 @@ wandb/
 mlruns/
 data/
 outputs/
+media/
 
 # IDEs
 .idea/

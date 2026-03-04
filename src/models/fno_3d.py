@@ -1,23 +1,3 @@
-"""
-fno_3d.py — FNO-3D with true SpectralConv3d
-=============================================
-Applies the 3D Fourier Neural Operator over the volume (T, H, W):
-
-  Step A: rfftn(x, dim=(-3,-2,-1))     → spectral volume (T×H×W/2+1 complex)
-  Step B: Truncate to (modes_t, modes_h, modes_w) low-frequency modes
-  Step C: Multiply by learnable complex weights R  (4 quadrants in T×H space)
-  Step D: irfftn → back to physical domain
-
-This is the architecture from Li et al. (2021) §4 applied to smoke forecasting.
-The key difference vs. factored conv: modes_t × modes_h cross-correlations are
-explicitly learned (e.g. "this wave moves diagonally in space-time").
-
-Usage:
-    model = FNO3d(FNO3dConfig(h_ctx=10, h_pred=5))
-    dists = model(frames, times)   # frames: (B, h_ctx, H, W)
-    preds = model.autoregressive_forecast(seed, horizon=15)
-"""
-
 import math
 from dataclasses import dataclass
 from typing import List
@@ -27,7 +7,6 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.distributions import Normal
-
 
 # ---------------------------------------------------------------------------
 # Config

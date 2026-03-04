@@ -27,81 +27,11 @@ import os
 from scipy import stats
 import torch
 
-# =============================================================================
-# SECTION 0 — Configuration
-#   Edit this cell to point at your three rollout folders and give them names.
-# =============================================================================
-# %%
-
 RUNS = [
-    # {
-    #     "folder": "/home/emunoz/dev/safe-nav-smoke/saved_rollouts/run_rnp_bias",
-    #     "label":  "RNP (bias)",
-    # },
-    # {
-    #     "folder": "/home/emunoz/dev/safe-nav-smoke/saved_rollouts/run_rnp_no_bias",
-    #     "label":  "RNP (no bias)",
-    # },
-    # {
-    #     "folder": "/home/emunoz/dev/safe-nav-smoke/saved_rollouts/run_multistep_bias",
-    #     "label":  "Multistep (bias)",
-    # },
-    # {
-    #     "folder": "/home/emunoz/dev/safe-nav-smoke/saved_rollouts/run_multistep_no_bias",
-    #     "label":  "Multistep (no bias)",
-    # },
-    # {
-    #     "folder": "/home/emunoz/dev/safe-nav-smoke/saved_rollouts/run_gp",
-    #     "label":  "GP (no bias)",
-    # },
-    # {
-    #     "folder": "/home/emunoz/dev/safe-nav-smoke/saved_rollouts/fno_bias",
-    #     "label":  "FNO (bias)",
-    # },
-    # {
-    #     "folder": "/home/emunoz/dev/safe-nav-smoke/saved_rollouts/fno_no_bias",
-    #     "label":  "FNO (no bias)",
-    # },
-    # {
-    #     "folder": "/home/emunoz/dev/safe-nav-smoke/saved_rollouts/fno_ms_h3",
-    #     "label":  "FNO multistep 3",
-    # },
-    # {
-    #     "folder": "/home/emunoz/dev/safe-nav-smoke/saved_rollouts/fno_ms_h5",
-    #     "label":  "FNO multistep 5",
-    # },
-    # {
-    #     "folder": "/home/emunoz/dev/safe-nav-smoke/saved_rollouts/fno_ms_h8",
-    #     "label":  "FNO multistep 8",
-    # },
-    # {
-    #     "folder": "/home/emunoz/dev/safe-nav-smoke/saved_rollouts/fno_bias_sample",
-    #     "label":  "FNO bias sample",
-    # },
-    # {
-    #     "folder": "/home/emunoz/dev/safe-nav-smoke/saved_rollouts/fno_uncertainty",
-    #     "label":  "FNO uncertainty",
-    # },
     {
         "folder": "/home/emunoz/dev/safe-nav-smoke/saved_rollouts/fno_3d",
         "label":  "PFNO",
     },
-    # {
-    #     "folder": "/home/emunoz/dev/safe-nav-smoke/saved_rollouts/fno_3d_decoupled_h5",
-    #     "label":  "FNO-3D Decoupled Horizon 5",
-    # },
-    # {
-    #     "folder": "/home/emunoz/dev/safe-nav-smoke/saved_rollouts/fno_3d_decoupled_h15",
-    #     "label":  "FNO-3D Decoupled Horizon 15",
-    # },
-    # {
-    #     "folder": "/home/emunoz/dev/safe-nav-smoke/saved_rollouts/fno_3d_last",
-    #     "label":  "FNO-3D Last",
-    # },
-    # {
-    #     "folder": "/home/emunoz/dev/safe-nav-smoke/saved_rollouts/fno_3d_decoupled_last",
-    #     "label":  "FNO-3D Decoupled Last",
-    # },
     {
         "folder": "/home/emunoz/dev/safe-nav-smoke/saved_rollouts/conv_lstm_last",
         "label":  "ConvLSTM",
@@ -119,7 +49,7 @@ CVAR_LEVELS  = [0.75, 0.90, 0.95]   # CVaR α levels to evaluate
 def detect_prefix_from_data(data, time_steps) -> str:
     """
     Auto-detect the key prefix by scanning the first available time step.
-    Works regardless of whether the tag is 'fno', 'fno_bias', 'rnp', etc.
+    Works regardless of whether the tag is 'fno', 'conv_lstm'.
     Returns the prefix (everything between 't_{t}_' and '_sample').
     """
     for t in time_steps[:5]:
@@ -128,21 +58,6 @@ def detect_prefix_from_data(data, time_steps) -> str:
             suffix = "_sample"
             if key.startswith(prefix) and key.endswith(suffix):
                 return key[len(prefix):-len(suffix)]
-    return "rnp"   # safe fallback
-
-
-def detect_sample_key(folder: str) -> str:
-    """Legacy heuristic — kept for backwards compat but prefer detect_prefix_from_data."""
-    if "multistep" in folder:
-        return "multistep_sample"
-    if "gp" in folder:
-        return "gp_sample"
-    if "fno" in folder:
-        return "fno_sample"
-    if "conv" in folder:
-        return "conv_lstm_sample"
-    return "rnp_sample"
-
 
 def cvar(pred_mean: np.ndarray, pred_std: np.ndarray, alpha: float) -> np.ndarray:
     """

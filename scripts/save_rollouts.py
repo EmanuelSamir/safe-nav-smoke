@@ -17,7 +17,7 @@ Output per episode (compressed NPZ):
   t_{t}_{tag}_latency                    : float  ms/sample
 
 Usage:
-  python src/scripts/save_rollouts.py \
+  python scripts/save_rollouts.py \
       --model_type fno_3d \
       --ckpt outputs/2026-02-24/XX/checkpoints/best_model.pt \
       --data_path data/playback_data/test_global_source_100_100.npz \
@@ -297,11 +297,6 @@ def rnp_rollout(model, ep_data, t_current: int, horizon: int,
     std_imgs    = np.stack(std_imgs,    axis=0)   # (horizon, S, H, W)
 
     return sample_imgs, mean_imgs, std_imgs, latency_ms
-
-
-# ---------------------------------------------------------------------------
-# Main
-# ---------------------------------------------------------------------------
 
 def main():
     parser = argparse.ArgumentParser(description="Save autoregressive rollouts for any model.")

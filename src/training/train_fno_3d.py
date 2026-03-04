@@ -128,7 +128,7 @@ def log_vis(model, loader, cfg, H, W, device, writer, epoch,
 # ---------------------------------------------------------------------------
 
 @hydra.main(version_base=None,
-            config_path="../../config/training",
+            config_path="../../configs/training",
             config_name="fno_3d_train")
 def train(cfg: DictConfig):
     print(f"Training FNO-3D — {cfg.training.experiment_name}")

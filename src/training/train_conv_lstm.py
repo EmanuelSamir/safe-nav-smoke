@@ -124,7 +124,7 @@ def log_vis(model, loader, cfg, H, W, device, writer, epoch,
 # ---------------------------------------------------------------------------
 
 @hydra.main(version_base=None,
-            config_path="../../config/training",
+            config_path="../../configs/training",
             config_name="conv_lstm_train")
 def train(cfg: DictConfig):
     print(f"Training ConvLSTM — {cfg.training.experiment_name}")
