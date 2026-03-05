@@ -20,7 +20,7 @@ class SmokeForecastWrapper:
 
     Parameters
     ----------
-    model_type   : str   one of {fno_3d, conv_lstm}
+    model_type   : str   one of {fno_3d, pfno_3d, conv_lstm}
     checkpoint   : str | None   path to .pt file
     x_size       : float  world x dimension
     y_size       : float  world y dimension
@@ -73,11 +73,14 @@ class SmokeForecastWrapper:
         else:
             model_hp = hp if isinstance(hp, dict) else {}
 
-        if self.model_type == "fno_3d":
-            from src.models.model_free.fno_3d import FNO3d, FNO3dConfig
+        if self.model_type in ("fno_3d", "pfno_3d"):
+            from src.models.fno_3d import FNO3d, FNO3dConfig
             import dataclasses
             valid = {f.name for f in dataclasses.fields(FNO3dConfig)}
             cfg = FNO3dConfig(**{k: v for k, v in model_hp.items() if k in valid})
+            # Override is_pfno if model_type is pfno_3d
+            if self.model_type == "pfno_3d":
+                cfg.is_pfno = True
             self.h_ctx = cfg.h_ctx  # override from checkpoint
             self._ctx_frames = deque(maxlen=self.h_ctx)
             model = FNO3d(cfg)
@@ -98,7 +101,7 @@ class SmokeForecastWrapper:
             return model
 
         raise ValueError(f"Unknown model_type: '{self.model_type}'. "
-                         "Choose from: fno_3d, conv_lstm")
+                         "Choose from: fno_3d, pfno_3d, conv_lstm")
 
     def update(self, smoke_frame: np.ndarray, coords: np.ndarray, t: float):
         """
@@ -112,7 +115,7 @@ class SmokeForecastWrapper:
         """
         self._last_frame = smoke_frame.astype(np.float32)
 
-        if self.model_type in ("fno_3d", "conv_lstm"):
+        if self.model_type in ("fno_3d", "conv_lstm", "pfno_3d"):
             # Add 2-D frame to rolling context buffer
             self._ctx_frames.append(self._last_frame.copy())
             return
@@ -139,7 +142,7 @@ class SmokeForecastWrapper:
         List of (coords, cvar_flat) tuples, length == horizon.
         cvar_flat is (H*W,) float32 with CVaR risk values.
         """
-        if self.model_type in ("fno_3d", "conv_lstm"):
+        if self.model_type in ("fno_3d", "conv_lstm", "pfno_3d"):
             return self._predict_autoregressive(smoke_frame, coords, horizon)
         
         raise ValueError(f"Unknown model_type: {self.model_type}")

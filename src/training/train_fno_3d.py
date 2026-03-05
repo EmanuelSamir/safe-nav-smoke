@@ -18,7 +18,7 @@ from PIL import Image
 import hydra
 from omegaconf import DictConfig, OmegaConf
 
-from src.models.model_free.fno_3d import FNO3d, FNO3dConfig
+from src.models.fno_3d import FNO3d, FNO3dConfig
 from src.models.shared.datasets import SequentialDataset, dense_sequential_collate_fn
 
 log = logging.getLogger(__name__)
@@ -67,8 +67,9 @@ def log_vis(model, loader, cfg, H, W, device, writer, epoch,
 
             for j, step in enumerate(rollout_steps):
                 idx     = step - 1
-                mu_img  = preds[idx]['mean'].astype('float32')
-                std_img = preds[idx]['std'].astype('float32')
+                if idx >= len(preds): break
+                mu_img  = preds[idx]['mean'][0].astype('float32')
+                std_img = preds[idx]['std'][0].astype('float32')
 
                 abs_t   = h_ctx + idx
                 gt_img  = (frames_all[b_idx, abs_t].cpu().numpy()
@@ -192,7 +193,20 @@ def train(cfg: DictConfig):
     scheduler = optim.lr_scheduler.CosineAnnealingLR(
         optimizer, T_max=opt_cfg.max_epochs, eta_min=opt_cfg.min_lr)
 
+    beta_loss = cfg.training.get("loss", {}).get("beta", None)
+    if beta_loss is not None:
+        print(f"Using beta loss: {beta_loss}")
+
+    def beta_nll_loss(dist, gt, beta):
+        var = dist.variance
+        nll = 0.5 * (((dist.mean - gt) ** 2) / var + torch.log(var))
+        weight = (var.detach() ** beta)
+        loss = nll * weight
+        return loss.mean()
+
     def criterion(dist, gt):
+        if beta_loss is not None:
+            return beta_nll_loss(dist, gt, beta=beta_loss)
         return -dist.log_prob(gt).mean()
 
     # Training loop
@@ -242,12 +256,14 @@ def train(cfg: DictConfig):
 
             avg = batch_loss / n_win
             train_loss += avg
-            pbar.set_postfix({'nll': f"{avg:.4f}"})
+            loss_name = 'bnll' if beta_loss is not None else 'nll'
+            pbar.set_postfix({loss_name: f"{avg:.4f}"})
 
         avg_train = train_loss / len(train_loader)
         scheduler.step()
 
-        writer.add_scalar("Train/NLL", avg_train, epoch)
+        loss_tag = "BetaNLL" if beta_loss is not None else "NLL"
+        writer.add_scalar(f"Train/{loss_tag}", avg_train, epoch)
         writer.add_scalar("Train/LR", optimizer.param_groups[0]['lr'], epoch)
 
         # Validation
@@ -275,7 +291,7 @@ def train(cfg: DictConfig):
                     dists  = model(ctx_w, times)
                     for h in range(h_pred):
                         gt_h = targets[:, t, :, :, h].unsqueeze(-1)
-                        batch_nll += criterion(dists[h], gt_h).item()
+                        batch_nll += -dists[h].log_prob(gt_h).mean().item()
                 val_loss += batch_nll / (h_pred * n_win)
 
         avg_val = val_loss / len(val_loader)

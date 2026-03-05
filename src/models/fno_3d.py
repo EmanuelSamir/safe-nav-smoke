@@ -121,7 +121,7 @@ class FNO3d(nn.Module):
         self.cfg = cfg
 
         # Input channel count
-        # smoke (1) + time (1, if use_time) → C_in
+        # 1 channel (greyscale) + time (1, if use_time) → C_in
         self.c_in  = 1 + (1 if cfg.use_time else 0)
         self.grid_ch = 2 if cfg.use_grid else 0
         self.c_post  = cfg.width + self.grid_ch
@@ -152,7 +152,7 @@ class FNO3d(nn.Module):
         """
         Build the 3D feature volume fed to the spectral layers.
 
-        frames : (B, h_ctx, H, W)
+        frames : (B, C, h_ctx, H, W) or (B, h_ctx, H, W)
         times  : (B, h_ctx) normalised to [0, 1], or None
         returns: (B, C_in, h_ctx, H, W)
         """
@@ -213,6 +213,7 @@ class FNO3d(nn.Module):
         out = self.fc2(x)                              # (B, H, W, 2*h_pred)
 
         dists = []
+        
         for h in range(self.cfg.h_pred):
             mu    = out[..., 2*h   : 2*h+1]
             sigma = F.softplus(out[..., 2*h+1 : 2*h+2]) + self.cfg.min_std
@@ -226,10 +227,12 @@ class FNO3d(nn.Module):
         seed_t_start: int = 0,         # absolute time index of seed_frames[0]
         horizon:      int = 15,
         num_samples:  int = 10,
+        mode:         str = 'mean',    # 'mean', 'sample'
     ) -> List[dict]:
 
-        if seed_frames.dim() == 3:
-            seed_frames = seed_frames.unsqueeze(0)   # → (1, h_ctx, H, W)
+        # Standardize seed_frames to always have batch dim
+        if seed_frames.dim() == 3: # (h_ctx, H, W) -> standardize to 4D
+            seed_frames = seed_frames.unsqueeze(0)
 
         h_ctx  = self.cfg.h_ctx
         h_pred = self.cfg.h_pred
@@ -254,7 +257,13 @@ class FNO3d(nn.Module):
                 if len(preds) >= horizon:
                     break
 
-                sampled = d.sample()
+                if mode == 'mean':
+                    sampled = d.mean
+                elif mode == 'sample':
+                    sampled = d.sample()
+                else:
+                    raise ValueError(f"Unknown mode: {mode}")
+
                 sample_np = sampled[..., 0].cpu().to(torch.float16).numpy()
                 mu_np     = d.mean[..., 0].cpu().to(torch.float16).numpy()
                 std_np    = d.stddev[..., 0].cpu().to(torch.float16).numpy()
@@ -268,7 +277,6 @@ class FNO3d(nn.Module):
                 [f.permute(0, 3, 1, 2) for f in new_frames_for_ctx], dim=1
             )
 
-            ctx      = torch.cat([ctx[:, n_slide:], new_stack], dim=1)
             t_offset += n_slide
 
         return preds
@@ -301,4 +309,5 @@ if __name__ == "__main__":
     assert len(preds) == 15
     assert preds[0]['sample'].shape == (5, H, W)
     print(f"Rollout OK  horizon=15  sample={preds[0]['sample'].shape}")
+    
     print("ALL OK")

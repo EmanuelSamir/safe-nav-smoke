@@ -12,7 +12,7 @@ training:
 
   data:
     data_path: "data/playback_data/global_source_400_100_2nd.npz"
-    batch_size: 32
+    batch_size: 8
     train_split: 0.9
     max_samples: null
     sequence_length: 30    # > h_ctx + h_pred  (10 + 5 = 15 → 30 works)
@@ -33,11 +33,14 @@ training:
     use_grid:  true   # Append (x,y) spatial grid after temporal aggregation
     use_time:  true   # Append normalised time as extra input channel per frame
     min_std:   1.0e-4
+    
+  loss:
+    beta: null
 
   optimizer:
     lr: 1.0e-3
-    min_lr: 1.0e-5
-    max_epochs: 400
+    min_lr: 1.0e-4
+    max_epochs: 250
     grad_clip: 1.0
 
   checkpoint:
