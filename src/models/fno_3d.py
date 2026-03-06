@@ -253,6 +253,7 @@ class FNO3d(nn.Module):
                 dists = self.forward(ctx, times)   # List[Normal], each (S,H,W,1)
 
             new_frames_for_ctx = []
+            eps = torch.randn(num_samples, 1, 1, 1, device=device)
             for d in dists:
                 if len(preds) >= horizon:
                     break
@@ -260,7 +261,8 @@ class FNO3d(nn.Module):
                 if mode == 'mean':
                     sampled = d.mean
                 elif mode == 'sample':
-                    sampled = d.sample()
+                    # Coupled sample: all spatial distributions share the same standard normal epsilon
+                    sampled = d.mean + d.stddev * eps
                 else:
                     raise ValueError(f"Unknown mode: {mode}")
 
@@ -275,8 +277,10 @@ class FNO3d(nn.Module):
             n_slide   = len(new_frames_for_ctx)
             new_stack = torch.cat(
                 [f.permute(0, 3, 1, 2) for f in new_frames_for_ctx], dim=1
-            )
+            ) # Output shape: (S, n_slide, H, W)
 
+            # Safely append new_stack and keep exactly the last h_ctx elements
+            ctx = torch.cat([ctx, new_stack], dim=1)[:, -h_ctx:]
             t_offset += n_slide
 
         return preds

@@ -8,12 +8,16 @@ export PYTHONPATH=/home/emunoz/dev/safe-nav-smoke
 
 DATA_PATH="/home/emunoz/dev/safe-nav-smoke/data/playback_data/test_global_source_100_100.npz"
 
-STRIDE=15
-HORIZON=15
-NUM_SAMPLES=1
+STRIDE=20   # 15 for 10s, 30 for 5s
+HORIZON=20
+NUM_SAMPLES=10
+NUM_EPISODES=4
 
 CKPT_FNO3D="/home/emunoz/dev/safe-nav-smoke/outputs/2026-02-24/14-10-03_fno_3d/checkpoints/best_model.pt"
-CKPT_CONV_LSTM_LAST="/home/emunoz/dev/safe-nav-smoke/outputs/2026-03-02/19-52-54/checkpoints/best_model.pt"
+# CKPT_CONV_LSTM_LAST="/home/emunoz/dev/safe-nav-smoke/outputs/2026-03-02/19-52-54/checkpoints/best_model.pt"
+
+CKPT_FNO3D_BETA_NLL="/home/emunoz/dev/safe-nav-smoke/outputs/2026-03-05/03-03-51/checkpoints/best_model.pt"
+CKPT_FNO3D_NLL_1e3="/home/emunoz/dev/safe-nav-smoke/outputs/2026-03-05/06-36-19/checkpoints/best_model.pt"
 
 run_rollout() {
     local ckpt=$1
@@ -46,14 +50,17 @@ run_rollout() {
         --stride      "$STRIDE"      \
         --horizon     "$HORIZON"     \
         --num_samples "$NUM_SAMPLES" \
-        --tag         "$tag"
+        --num_episodes "$NUM_EPISODES" 
 }
 
 # ---- FNO3D -----------------------------------------------------------------
-# run_rollout "$CKPT_FNO3D" "fno_3d" "saved_rollouts/fno_3d" "fno_3d"
+run_rollout "$CKPT_FNO3D" "fno_3d" "saved_rollouts/fno_3d"
+# run_rollout "$CKPT_FNO3D_BETA_NLL" "fno_3d" "saved_rollouts/fno_3d_beta_nll"
+# run_rollout "$CKPT_FNO3D_NLL_1e3" "fno_3d" "saved_rollouts/fno_3d_nll_1e3"
+
 
 # ---- CONV_LSTM -------------------------------------------------------------
-run_rollout "$CKPT_CONV_LSTM_LAST" "conv_lstm" "saved_rollouts/conv_lstm_last" "conv_lstm_last"
+# run_rollout "$CKPT_CONV_LSTM_LAST" "conv_lstm" "saved_rollouts/conv_lstm_last" "conv_lstm_last"
 
 
 echo ""

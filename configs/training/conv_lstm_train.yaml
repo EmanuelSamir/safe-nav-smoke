@@ -18,7 +18,7 @@ training:
 
     hidden_dim: 32
     n_layers: 3
-    kernel_size: 3
+    kernel_size: 5
 
     use_grid:  true   # Append (x,y) spatial grid after temporal aggregation
     use_time:  true   # Append normalised time as extra input channel per frame
@@ -26,8 +26,8 @@ training:
 
   optimizer:
     lr: 1.0e-3
-    min_lr: 1.0e-5
-    max_epochs: 400
+    min_lr: 1.0e-4
+    max_epochs: 250
     grad_clip: 1.0
 
   checkpoint:

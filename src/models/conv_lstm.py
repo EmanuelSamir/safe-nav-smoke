@@ -22,7 +22,7 @@ from torch.distributions import Normal
 @dataclass
 class ConvLSTMConfig:
     # Context / prediction
-    h_ctx:  int = 10          # Context frames
+    h_ctx:  int = 5          # Context frames
     h_pred: int = 5           # Future frames per forward pass
 
     # Architecture
@@ -195,6 +195,7 @@ class ConvLSTMModel(nn.Module):
         seed_t_start: int = 0,         # absolute time index of seed_frames[0]
         horizon:      int = 15,
         num_samples:  int = 10,
+        mode:         str = 'mean',    # 'mean', 'sample'
     ) -> List[dict]:
         if seed_frames.dim() == 3:
             seed_frames = seed_frames.unsqueeze(0)
@@ -221,7 +222,14 @@ class ConvLSTMModel(nn.Module):
                 if len(preds) >= horizon:
                     break
 
-                sampled = d.sample()
+                if mode == 'mean':
+                    sampled = d.mean
+                elif mode == 'sample':
+                    # Coupled sample: all spatial distributions share the same standard normal epsilon
+                    eps = torch.randn(d.mean.shape[0], 1, 1, 1, device=d.mean.device, dtype=d.mean.dtype)
+                    sampled = d.mean + d.stddev * eps
+                else:
+                    raise ValueError(f"Unknown mode: {mode}")
                 sample_np = sampled[..., 0].cpu().to(torch.float16).numpy()
                 mu_np     = d.mean[..., 0].cpu().to(torch.float16).numpy()
                 std_np    = d.stddev[..., 0].cpu().to(torch.float16).numpy()

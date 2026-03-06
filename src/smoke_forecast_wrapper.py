@@ -176,6 +176,7 @@ class SmokeForecastWrapper:
                 seed_t_start=0,
                 horizon=horizon,
                 num_samples=1,
+                mode='mean',
             )
 
         results = []

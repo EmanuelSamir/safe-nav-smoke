@@ -63,7 +63,7 @@ def log_vis(model, loader, cfg, H, W, device, writer, epoch,
         for b_idx in range(cases):
             seed  = frames_all[b_idx:b_idx+1, :h_ctx]    # (1, h_ctx, H, W)
             preds = model.autoregressive_forecast(
-                seed, seed_t_start=0, horizon=max_step, num_samples=1)
+                seed, seed_t_start=0, horizon=max_step, num_samples=1, mode='mean')
 
             for j, step in enumerate(rollout_steps):
                 idx     = step - 1

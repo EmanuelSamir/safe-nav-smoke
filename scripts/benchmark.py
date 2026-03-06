@@ -30,15 +30,23 @@ import torch
 RUNS = [
     {
         "folder": "/home/emunoz/dev/safe-nav-smoke/saved_rollouts/fno_3d",
-        "label":  "PFNO",
+        "label":  "PFNO-old",
     },
-    {
-        "folder": "/home/emunoz/dev/safe-nav-smoke/saved_rollouts/conv_lstm_last",
-        "label":  "ConvLSTM",
-    },
+    # {
+    #     "folder": "/home/emunoz/dev/safe-nav-smoke/saved_rollouts/fno_3d_nll_1e3",
+    #     "label":  "PFNO",
+    # },
+    # {
+    #     "folder": "/home/emunoz/dev/safe-nav-smoke/saved_rollouts/fno_3d_beta_nll",
+    #     "label":  "PFNO-beta",
+    # },
+    # {
+    #     "folder": "/home/emunoz/dev/safe-nav-smoke/saved_rollouts/conv_lstm_last",
+    #     "label":  "ConvLSTM",
+    # },
 ]
 
-MAX_HORIZON = 15      # max horizon stored in the .npz files (1-indexed count)
+MAX_HORIZON = 20      # max horizon stored in the .npz files (1-indexed count)
 CVAR_LEVELS  = [0.75, 0.90, 0.95]   # CVaR α levels to evaluate
 
 # =============================================================================
@@ -46,18 +54,6 @@ CVAR_LEVELS  = [0.75, 0.90, 0.95]   # CVaR α levels to evaluate
 # =============================================================================
 # %%
 
-def detect_prefix_from_data(data, time_steps) -> str:
-    """
-    Auto-detect the key prefix by scanning the first available time step.
-    Works regardless of whether the tag is 'fno', 'conv_lstm'.
-    Returns the prefix (everything between 't_{t}_' and '_sample').
-    """
-    for t in time_steps[:5]:
-        for key in data.keys():
-            prefix = f"t_{t}_"
-            suffix = "_sample"
-            if key.startswith(prefix) and key.endswith(suffix):
-                return key[len(prefix):-len(suffix)]
 
 def cvar(pred_mean: np.ndarray, pred_std: np.ndarray, alpha: float) -> np.ndarray:
     """
@@ -113,27 +109,16 @@ def overbound_percentage_domain(pred: np.ndarray, gt: np.ndarray) -> float:
 def load_run_data(run: dict) -> list[dict]:
     """
     Load every .npz episode file from run['folder'].
-    Prefix is auto-detected from the actual npz keys (robust for any tag).
-    An explicit 'key_prefix' in run overrides auto-detection.
+    Returns just paths, data is lazy loaded in metric collection to save memory.
     """
     folder = run["folder"]
-    files  = sorted([f for f in os.listdir(folder) if f.endswith(".npz")])
-    episodes = []
-    for fname in files:
-        path = os.path.join(folder, fname)
-        data = np.load(path)
-        time_steps = data["time_steps"]
-
-        if "key_prefix" in run:
-            pfx = run["key_prefix"]
-        else:
-            pfx = detect_prefix_from_data(data, time_steps)
-
-        episodes.append({
-            "data":              data,
-            "time_steps":        time_steps,
-            "sample_key_prefix": pfx,
-        })
+    import re
+    def try_extract_ep_idx(fname):
+        match = re.search(r'ep_(\d+)', fname)
+        return int(match.group(1)) if match else fname
+        
+    files  = sorted([f for f in os.listdir(folder) if f.endswith(".npz")], key=try_extract_ep_idx)
+    episodes = [{"path": os.path.join(folder, fname)} for fname in files]
     return episodes
 
 def fuse_gaussians(mu_tensor, sigma_tensor):
@@ -141,153 +126,153 @@ def fuse_gaussians(mu_tensor, sigma_tensor):
     mu_tensor: (S, H, W)
     sigma_tensor: (S, H, W)
     """
-    # 1. Calcular varianzas y precisiones
-    varianzas = np.square(sigma_tensor)
-    # Evitar división por cero sumando un epsilon muy pequeño si es necesario
-    precisiones = 1.0 / (varianzas + 1e-8)
+    # 1. Media combinada: El promedio simple de las trayectorias
+    # E[mu]
+    mu_final = np.mean(mu_tensor, axis=0)
     
-    # 2. Varianza combinada (Suma de precisiones invertida)
-    # Colapsamos el eje 0 (los S modelos)
-    precision_total = np.sum(precisiones, axis=0)
-    var_final = 1.0 / precision_total
+    # 2. Varianza combinada (Ley de Varianza Total)
+    # Var_total = E[sigma^2] + Var(mu)
     
-    # 3. Media combinada (Promedio ponderado por precisión)
-    mu_final = np.sum(mu_tensor * precisiones, axis=0) * var_final
+    # Incertidumbre interna promedio (Aleatoriedad del proceso)
+    varianzas_internas = np.square(sigma_tensor)
+    esperanza_varianzas = np.mean(varianzas_internas, axis=0)
+    
+    # Incertidumbre por discrepancia (Qué tanto se separan los rollouts)
+    varianza_de_medias = np.var(mu_tensor, axis=0)
+    
+    var_final = esperanza_varianzas + varianza_de_medias
     
     return mu_final, np.sqrt(var_final)
 
-def collect_metrics_for_horizon(episodes: list[dict], h: int) -> dict:
+def collect_metrics_for_all_horizons(episodes: list[dict], max_horizon: int) -> dict:
     """
-    Aggregate per-episode scalar metrics at horizon index h (0-indexed).
-
-    Returns dict with lists:
-        model_mae, model_coverage_mean,
-        persistence_mae, persistence_coverage_mean,
-        model_cvar_{alpha}, persistence_cvar_{alpha}   (for each CVAR_LEVELS)
-        model_is_more_conservative                      (list of bools)
-        latencies_ms
+    Aggregate per-episode scalar metrics for ALL horizons at once.
+    This avoids redundant lazy loading from disk.
+    
+    Returns dict mapping horizon index h -> metric dict.
     """
-    result = {
-        "model_mae":                [],
-        "model_coverage_mean":      [],
-        "model_conservatism_mean":  [],
-        "model_soft_f2":            [],
-        "model_soft_iou":           [],
-        "fused_mae":                [],
-        "fused_coverage_mean":      [],
-        "fused_conservatism_mean":  [],
-        "fused_soft_f2":            [],
-        "fused_soft_iou":           [],
-        "persistence_mae":          [],
-        "persistence_coverage_mean":[],
-        "persistence_conservatism_mean":[],
-        "persistence_soft_f2":      [],
-        "persistence_soft_iou":     [],
-        "model_is_more_conservative":[],
-        "model_is_more_comprehensive":[],
-        "model_overbound_active":   [],
-        "model_overbound_domain":   [],
-        "fused_overbound_active":   [],
-        "fused_overbound_domain":   [],
-        "persistence_overbound_active": [],
-        "persistence_overbound_domain": [],
-        "latencies_ms":             [],
-    }
-    for a in CVAR_LEVELS:
-        result[f"model_mae_cvar_{a}"]       = []
-        result[f"model_coverage_cvar_{a}"]  = []
-        result[f"model_conservatism_cvar_{a}"]  = []
-        result[f"fused_mae_cvar_{a}"]       = []
-        result[f"fused_coverage_cvar_{a}"]  = []
-        result[f"fused_conservatism_cvar_{a}"]  = []
+    results_per_h = {}
+    for h in range(max_horizon):
+        results_per_h[h] = {
+            "model_mae":                [],
+            "model_coverage_mean":      [],
+            "model_conservatism_mean":  [],
+            "model_soft_f2":            [],
+            "model_soft_iou":           [],
+            "fused_mae":                [],
+            "fused_coverage_mean":      [],
+            "fused_conservatism_mean":  [],
+            "fused_soft_f2":            [],
+            "fused_soft_iou":           [],
+            "persistence_mae":          [],
+            "persistence_coverage_mean":[],
+            "persistence_conservatism_mean":[],
+            "persistence_soft_f2":      [],
+            "persistence_soft_iou":     [],
+            "model_is_more_conservative":[],
+            "model_is_more_comprehensive":[],
+            "model_overbound_active":   [],
+            "model_overbound_domain":   [],
+            "fused_overbound_active":   [],
+            "fused_overbound_domain":   [],
+            "persistence_overbound_active": [],
+            "persistence_overbound_domain": [],
+            "latencies_ms":             [],
+        }
+        for a in CVAR_LEVELS:
+            results_per_h[h][f"model_mae_cvar_{a}"]       = []
+            results_per_h[h][f"model_coverage_cvar_{a}"]  = []
+            results_per_h[h][f"model_conservatism_cvar_{a}"]  = []
+            results_per_h[h][f"fused_mae_cvar_{a}"]       = []
+            results_per_h[h][f"fused_coverage_cvar_{a}"]  = []
+            results_per_h[h][f"fused_conservatism_cvar_{a}"]  = []
 
-    for ep in episodes:
-        data       = ep["data"]
-        time_steps = ep["time_steps"]
-        pfx        = ep["sample_key_prefix"]
+    for ep in tqdm.tqdm(episodes, desc="Processing episodes"):
+        data       = np.load(ep["path"])
+        if "sample_mean" not in data or "sample_std" not in data:
+            continue
+        time_steps = data["time_steps"]
 
         for i, t in enumerate(time_steps):
-            sample_key      = f"t_{t}_{pfx}_sample"
-            gt_key          = f"t_{t}_gt_horizon"
-            latency_key     = f"t_{t}_{pfx}_latency"
-            sample_mean_key = f"t_{t}_{pfx}_mean"
-            sample_std_key  = f"t_{t}_{pfx}_std"
+            # 1. Ground Truth
+            gt_all = data["gt_full"][t + 1 : t + 1 + max_horizon].astype(np.float32)
+            gt_current = data["gt_full"][t].astype(np.float32)
 
-            if sample_key not in data or gt_key not in data:
-                continue
-            if h >= data[gt_key].shape[0]:
-                continue
+            max_h_avail = gt_all.shape[0]
+            if max_h_avail == 0: continue
 
-            rollout   = data[sample_key].astype(np.float32)   # (horizon, N, H, W)
-            gt_all    = data[gt_key].astype(np.float32)        # (horizon, H, W)
-            gt_h      = gt_all[h]                              # (H, W)
-            samples_h = rollout[h]                             # (N, H, W)
-            mean_h    = samples_h.mean(axis=0)                 # (H, W) ensemble mean
+            # 2. Extract model predictions
+            rollout = data["sample"][i].astype(np.float32)
+            has_dist = "mean" in data and "std" in data
+            mu_raw_all  = data["mean"][i].astype(np.float32) if has_dist else None
+            std_raw_all = data["std"][i].astype(np.float32) if has_dist else None
+            
+            has_sample_dist = "sample_mean" in data and "sample_std" in data
+            mu_sample_all  = data["sample_mean"][i].astype(np.float32) if has_sample_dist else None
+            std_sample_all = data["sample_std"][i].astype(np.float32) if has_sample_dist else None
 
-            # Distribution parameters at horizon h (model μ, σ)
-            has_dist = sample_mean_key in data and sample_std_key in data
-            mu_raw   = data[sample_mean_key].astype(np.float32)[h] if has_dist else mean_h
-            std_raw  = data[sample_std_key ].astype(np.float32)[h] if has_dist else samples_h.std(axis=0)
+            latency_val = float(data["latency"][i]) if "latency" in data else None
 
-            if mu_raw.ndim == 3 and mu_raw.shape[0] > 1:
-                mu_base  = mu_raw.mean(axis=0)
-                # Pooled std dev
-                if std_raw is not None:
-                    std_base = np.sqrt((std_raw**2).mean(axis=0) + mu_raw.var(axis=0))
-                else:
-                    std_base = samples_h.std(axis=0)
-                mu_fused, std_fused = fuse_gaussians(mu_raw, std_raw)
-            else:
+            for h in range(min(max_horizon, max_h_avail)):
+                result = results_per_h[h]
+                
+                gt_h      = gt_all[h]                              # (H, W)
+                samples_h = rollout[h]                             # (N, H, W)
+                mean_h    = samples_h.mean(axis=0)                 # (H, W) ensemble mean
+
+                # Distribution parameters at horizon h (model μ, σ)
+                mu_raw   = mu_raw_all[h] if mu_raw_all is not None else mean_h
+                std_raw  = std_raw_all[h] if std_raw_all is not None else samples_h.std(axis=0)
+                
+                mu_sample = mu_sample_all[h] if mu_sample_all is not None else None
+                std_sample = std_sample_all[h] if std_sample_all is not None else None
+
                 mu_base  = mu_raw[0] if mu_raw.ndim == 3 else mu_raw
                 std_base = std_raw[0] if std_raw is not None and std_raw.ndim == 3 else std_raw
-                mu_fused, std_fused = mu_base, std_base
-
-            # — Model metrics (Base) —
-            mae_m = float(np.abs(mu_base - gt_h).mean())
-            cov_m = float(coverage_error(mu_base, gt_h).mean())
-            cons_m = float(conservatism_error(mu_base, gt_h).mean())
-            result["model_mae"].append(mae_m)
-            result["model_coverage_mean"].append(cov_m)
-            result["model_conservatism_mean"].append(cons_m)
-            result["model_soft_f2"].append(soft_f_beta(mu_base, gt_h, beta=2.0))
-            result["model_soft_iou"].append(soft_iou(mu_base, gt_h))
-            result["model_overbound_active"].append(overbound_percentage_active(mu_base, gt_h))
-            result["model_overbound_domain"].append(overbound_percentage_domain(mu_base, gt_h))
-            
-            # — Fused Model metrics —
-            mae_f = float(np.abs(mu_fused - gt_h).mean())
-            cov_f = float(coverage_error(mu_fused, gt_h).mean())
-            cons_f = float(conservatism_error(mu_fused, gt_h).mean())
-            result["fused_mae"].append(mae_f)
-            result["fused_coverage_mean"].append(cov_f)
-            result["fused_conservatism_mean"].append(cons_f)
-            result["fused_soft_f2"].append(soft_f_beta(mu_fused, gt_h, beta=2.0))
-            result["fused_soft_iou"].append(soft_iou(mu_fused, gt_h))
-            result["fused_overbound_active"].append(overbound_percentage_active(mu_fused, gt_h))
-            result["fused_overbound_domain"].append(overbound_percentage_domain(mu_fused, gt_h))
-
-            for a in CVAR_LEVELS:
-                cvar_h = cvar(mu_base, std_base, a)
-                result[f"model_mae_cvar_{a}"].append(float(np.abs(cvar_h - gt_h).mean()))
-                result[f"model_coverage_cvar_{a}"].append(float(coverage_error(cvar_h, gt_h).mean()))
-                result[f"model_conservatism_cvar_{a}"].append(float(conservatism_error(cvar_h, gt_h).mean()))
                 
-                cvar_f = cvar(mu_fused, std_fused, a)
-                result[f"fused_mae_cvar_{a}"].append(float(np.abs(cvar_f - gt_h).mean()))
-                result[f"fused_coverage_cvar_{a}"].append(float(coverage_error(cvar_f, gt_h).mean()))
-                result[f"fused_conservatism_cvar_{a}"].append(float(conservatism_error(cvar_f, gt_h).mean()))
+                mu_fused, std_fused = fuse_gaussians(mu_sample, std_sample)
 
-            # — Latency —
-            if latency_key in data:
-                result["latencies_ms"].append(float(data[latency_key]))
+                # — Model metrics (Base) —
+                mae_m = float(np.abs(mu_base - gt_h).mean())
+                cov_m = float(coverage_error(mu_base, gt_h).mean())
+                cons_m = float(conservatism_error(mu_base, gt_h).mean())
+                result["model_mae"].append(mae_m)
+                result["model_coverage_mean"].append(cov_m)
+                result["model_conservatism_mean"].append(cons_m)
+                result["model_soft_f2"].append(soft_f_beta(mu_base, gt_h, beta=2.0))
+                result["model_soft_iou"].append(soft_iou(mu_base, gt_h))
+                result["model_overbound_active"].append(overbound_percentage_active(mu_base, gt_h))
+                result["model_overbound_domain"].append(overbound_percentage_domain(mu_base, gt_h))
+                
+                # — Fused Model metrics —
+                mae_f = float(np.abs(mu_fused - gt_h).mean())
+                cov_f = float(coverage_error(mu_fused, gt_h).mean())
+                cons_f = float(conservatism_error(mu_fused, gt_h).mean())
+                result["fused_mae"].append(mae_f)
+                result["fused_coverage_mean"].append(cov_f)
+                result["fused_conservatism_mean"].append(cons_f)
+                result["fused_soft_f2"].append(soft_f_beta(mu_fused, gt_h, beta=2.0))
+                result["fused_soft_iou"].append(soft_iou(mu_fused, gt_h))
+                result["fused_overbound_active"].append(overbound_percentage_active(mu_fused, gt_h))
+                result["fused_overbound_domain"].append(overbound_percentage_domain(mu_fused, gt_h))
 
-            # — Persistence metrics —
-            if i > 0:
-                t_prev      = time_steps[i - 1]
-                gt_prev_key = f"t_{t_prev}_gt_horizon"
-                if gt_prev_key in data:
-                    gt_prev_all = data[gt_prev_key].astype(np.float32)
-                    gt_current  = gt_prev_all[-1]              # frame 'now' at step i
+                for a in CVAR_LEVELS:
+                    cvar_h = cvar(mu_base, std_base, a)
+                    result[f"model_mae_cvar_{a}"].append(float(np.abs(cvar_h - gt_h).mean()))
+                    result[f"model_coverage_cvar_{a}"].append(float(coverage_error(cvar_h, gt_h).mean()))
+                    result[f"model_conservatism_cvar_{a}"].append(float(conservatism_error(cvar_h, gt_h).mean()))
+                    
+                    cvar_f = cvar(mu_fused, std_fused, a)
+                    result[f"fused_mae_cvar_{a}"].append(float(np.abs(cvar_f - gt_h).mean()))
+                    result[f"fused_coverage_cvar_{a}"].append(float(coverage_error(cvar_f, gt_h).mean()))
+                    result[f"fused_conservatism_cvar_{a}"].append(float(conservatism_error(cvar_f, gt_h).mean()))
+
+                # — Latency —
+                if latency_val is not None:
+                    result["latencies_ms"].append(latency_val)
+
+                # — Persistence metrics —
+                if gt_current is not None:
                     cov_p       = float(coverage_error(gt_current, gt_h).mean())
                     mae_p       = float(np.abs(gt_current - gt_h).mean())
                     cons_p      = float(conservatism_error(gt_current, gt_h).mean())
@@ -305,7 +290,7 @@ def collect_metrics_for_horizon(episodes: list[dict], h: int) -> dict:
                     result["model_is_more_comprehensive"].append(
                         float(cov_m) < float(cov_p))
 
-    return result
+    return results_per_h
 
 
 # =============================================================================
@@ -340,9 +325,8 @@ for run_idx, (run, episodes) in enumerate(zip(RUNS, all_run_episodes)):
         all_metrics.append(None)
         continue
 
-    per_horizon = {}  # h -> metric dict
-    for h in tqdm.trange(MAX_HORIZON, desc=f"Metrics [{run['label']}]"):
-        per_horizon[h] = collect_metrics_for_horizon(episodes, h)
+    print(f"Metrics [{run['label']}]")
+    per_horizon = collect_metrics_for_all_horizons(episodes, MAX_HORIZON)
     all_metrics.append(per_horizon)
 
 print("Metric collection complete.")
@@ -630,9 +614,9 @@ for run, per_horizon in zip(RUNS, all_metrics):
 # =============================================================================
 # %%
 
-EPISODE_IDX = 0   # which episode to inspect
+EPISODE_IDX = 2   # which episode to inspect
 TIME_IDX    = 3   # i-th stride step within the episode (must be >= 1 for persistence)
-HORIZON_VIS = 9  # 0-indexed forecast horizon to visualise
+HORIZON_VIS = 15  # 0-indexed forecast horizon to visualise
 
 def _im(ax, img, title, **kw):
     im = ax.imshow(img, origin="lower", **kw)
@@ -671,24 +655,16 @@ for run_idx, (run, episodes) in enumerate(zip(RUNS, all_run_episodes)):
     if episodes is None or EPISODE_IDX >= len(episodes):
         continue
     ep         = episodes[EPISODE_IDX]
-    data       = ep["data"]
-    time_steps = ep["time_steps"]
+    data       = np.load(ep["path"])
+    time_steps = data["time_steps"]
 
     if TIME_IDX >= len(time_steps) or TIME_IDX < 1:
-        break
-    t      = time_steps[TIME_IDX]
-    t_prev = time_steps[TIME_IDX - 1]
-    stride = t - t_prev
-    gt_key      = f"t_{t}_gt_horizon"
-    gt_prev_key = f"t_{t_prev}_gt_horizon"
-
-    if gt_key not in data or gt_prev_key not in data:
-        break
-    gt_h        = data[gt_key].astype(np.float32)[HORIZON_VIS]   # (H, W)
-    # Frame at time t = data[t_prev_gt_horizon][stride - 1]
-    # because t_prev_gt_horizon stores frames at [t_prev+1 .. t_prev+horizon]
-    # → index stride-1 = (t - t_prev) - 1 = frame at t
-    pers_frame  = data[gt_prev_key].astype(np.float32)[stride - 1]  # (H, W)
+        continue
+        
+    t = time_steps[TIME_IDX]
+    
+    gt_h       = data["gt_full"][t + 1 + HORIZON_VIS].astype(np.float32)
+    pers_frame = data["gt_full"][t].astype(np.float32)
 
     _plot_vis("Persistence (baseline)", gt_h, pers_frame,
               np.zeros_like(pers_frame),   # persistence has no uncertainty
@@ -706,47 +682,42 @@ for run_idx, (run, episodes) in enumerate(zip(RUNS, all_run_episodes)):
         continue
 
     ep         = episodes[EPISODE_IDX]
-    data       = ep["data"]
-    pfx        = ep["sample_key_prefix"]
-    time_steps = ep["time_steps"]
+    data       = np.load(ep["path"])
+    
+    if "sample_mean" not in data or "sample_std" not in data:
+        print(f"[{run['label']}] Skipping visual inspection for deprecated rollout {ep['path']}")
+        continue
+
+    time_steps = data["time_steps"]
 
     if TIME_IDX >= len(time_steps):
         continue
     t = time_steps[TIME_IDX]
 
-    sample_key = f"t_{t}_{pfx}_sample"
-    mean_key   = f"t_{t}_{pfx}_mean"
-    std_key    = f"t_{t}_{pfx}_std"
-    gt_key     = f"t_{t}_gt_horizon"
-
-    if sample_key not in data or gt_key not in data:
-        print(f"[{run['label']}] keys not found for t={t}")
-        continue
-
-    gt_h      = data[gt_key].astype(np.float32)[HORIZON_VIS]      # (H, W)
-    samples_h = data[sample_key].astype(np.float32)[HORIZON_VIS]  # (N, H, W)
-    mean_h    = samples_h.mean(axis=0)
-    std_h     = samples_h.std(axis=0)
-
-    has_dist = mean_key in data and std_key in data
-    mu_raw   = data[mean_key].astype(np.float32)[HORIZON_VIS] if has_dist else mean_h
-    std_raw  = data[std_key ].astype(np.float32)[HORIZON_VIS] if has_dist else std_h
+    gt_h = data["gt_full"][t + 1 + HORIZON_VIS].astype(np.float32)
+    samples_h = data["sample"][TIME_IDX, HORIZON_VIS].astype(np.float32)
+    has_dist  = "mean" in data and "std" in data
+    mu_raw    = data["mean"][TIME_IDX, HORIZON_VIS].astype(np.float32) if has_dist else None
+    std_raw   = data["std"][TIME_IDX, HORIZON_VIS].astype(np.float32) if has_dist else None
     
-    if mu_raw.ndim == 3 and mu_raw.shape[0] > 1:
-        mu_base = mu_raw.mean(axis=0)
-        if std_raw is not None:
-             std_base = np.sqrt((std_raw**2).mean(axis=0) + mu_raw.var(axis=0))
-        else:
-             std_base = std_h
-        mu_fused, std_fused = fuse_gaussians(mu_raw, std_raw)
-        
-        _plot_vis(run["label"] + " (Base)", gt_h, mu_base, std_base, t, "Model μ (dist)")
-        _plot_vis(run["label"] + " (Fused)", gt_h, mu_fused, std_fused, t, "Model μ (fused)")
-    else:
-        mu_base = mu_raw[0] if mu_raw.ndim == 3 else mu_raw
-        std_base = std_raw[0] if std_raw is not None and std_raw.ndim == 3 else std_raw
-        mu_lbl   = "Model μ (dist)" if has_dist else "Model μ (samples)"
-        _plot_vis(run["label"], gt_h, mu_base, std_base, t, mu_lbl)
+    has_sample_dist = "sample_mean" in data and "sample_std" in data
+    mu_sample_raw   = data["sample_mean"][TIME_IDX, HORIZON_VIS].astype(np.float32) if has_sample_dist else None
+    std_sample_raw  = data["sample_std"][TIME_IDX, HORIZON_VIS].astype(np.float32) if has_sample_dist else None
+
+    mean_h = samples_h.mean(axis=0)
+    std_h  = samples_h.std(axis=0)
+
+    if mu_raw is None: mu_raw = mean_h
+    if std_raw is None: std_raw = std_h
+    
+    mu_base = mu_raw[0] if mu_raw.ndim == 3 else mu_raw
+    std_base = std_raw[0] if std_raw is not None and std_raw.ndim == 3 else std_raw
+    mu_lbl   = "Model μ (dist)" if has_dist else "Model μ (samples)"
+    
+    mu_fused, std_fused = fuse_gaussians(mu_sample_raw, std_sample_raw)
+    
+    _plot_vis(run["label"] + " (Base)", gt_h, mu_base, std_base, t, mu_lbl)
+    _plot_vis(run["label"] + " (Fused)", gt_h, mu_fused, std_fused, t, "Model μ (fused)")
 
 # =============================================================================
 # SECTION 10 — Continuous F2 / Soft IoU Plots
