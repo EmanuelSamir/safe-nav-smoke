@@ -149,8 +149,8 @@ plt.rcParams.update({
     "text.usetex": False,
     "font.family": "serif",
     "font.serif": ["Times New Roman", "Times", "DejaVu Serif"],
-    "font.size": 10,
-    "axes.labelsize": 10,
+    "font.size": 11,
+    "axes.labelsize": 11,
     "axes.titlesize": 11,
     "legend.fontsize": 8,
     "xtick.labelsize": 8,
@@ -161,27 +161,30 @@ plt.rcParams.update({
 
 # 1. Boxplots for distributions in one figure (Fig. Y)
 # A typical IEEE 2-column figure width is ~7.16 inches
-fig, axes = plt.subplots(1, 3, figsize=(7.16, 2.5))
+fig, axes = plt.subplots(1, 3, figsize=(5.0, 2.5))
 
 sns.boxplot(data=results_df, x='Experiment', y='Max Smoke', hue='Experiment', legend=False, ax=axes[0], palette="Set2", fliersize=1)
 axes[0].set_title('Max. Smoke Exposure')
 axes[0].set_ylabel('Max Smoke')
 axes[0].set_xlabel('')
-axes[0].tick_params(axis='x', rotation=15)
+axes[0].tick_params(axis='x', rotation=45)
+axes[0].grid(axis='y')
 
-sns.boxplot(data=results_df, x='Experiment', y='Mean Smoke', hue='Experiment', legend=False, ax=axes[1], palette="Set2")
+sns.boxplot(data=results_df, x='Experiment', y='Mean Smoke', hue='Experiment', legend=False, ax=axes[1], palette="Set2", fliersize=1)
 axes[1].set_title('Mean Smoke Exposure')
 axes[1].set_ylabel('Mean Smoke')
 axes[1].set_xlabel('')
-axes[1].tick_params(axis='x', rotation=15)
+axes[1].tick_params(axis='x', rotation=45)
+axes[1].grid(axis='y')
 
 success_df = results_df[results_df['Reached Goal'] == True]
 if not success_df.empty:
-    sns.boxplot(data=success_df, x='Experiment', y='Time to Goal', hue='Experiment', legend=False, ax=axes[2], palette="Set2")
+    sns.boxplot(data=success_df, x='Experiment', y='Time to Goal', hue='Experiment', legend=False, ax=axes[2], palette="Set2", fliersize=1)
 axes[2].set_title('Total Navigation Time')
 axes[2].set_ylabel('Time (s)')
 axes[2].set_xlabel('')
-axes[2].tick_params(axis='x', rotation=15)
+axes[2].tick_params(axis='x', rotation=45)
+axes[2].grid(axis='y')
 
 plt.tight_layout()
 boxplot_path_pdf = os.path.join(outputs_dir, "ieee_metrics_boxplot.pdf")
@@ -220,5 +223,125 @@ plt.savefig(barplot_path_png, bbox_inches='tight')
 plt.show()
 print(f"Saved bar plot to {barplot_path_pdf} and {barplot_path_png}")
 
+
+# %% [markdown]
+# ## 4. Statistical Analysis
+# Paired T-Test comparing the proposed method vs baselines.
+
+# %%
+from scipy import stats
+
+# Change this if you want to use a different experiment as your baseline for comparison
+PROPOSED_METHOD = "PFNO-MPPI"
+
+if PROPOSED_METHOD in EXPERIMENTS:
+    metrics_to_test = ['Max Smoke', 'Mean Smoke', 'Time to Goal']
+    
+    print("\n" + "=" * 60)
+    print(f"PAIRED T-TEST RESULTS (vs {PROPOSED_METHOD})")
+    print("=" * 60)
+    
+    p_values_dict = {}
+    
+    prop_data = results_df[results_df['Experiment'] == PROPOSED_METHOD]
+    
+    for metric in metrics_to_test:
+        p_values_dict[metric] = {}
+        for baseline in EXPERIMENTS.keys():
+            if baseline == PROPOSED_METHOD:
+                continue
+                
+            base_data = results_df[results_df['Experiment'] == baseline]
+            
+            if metric == 'Time to Goal':
+                merged = pd.merge(prop_data[prop_data['Reached Goal'] == True], 
+                                  base_data[base_data['Reached Goal'] == True], 
+                                  on='Episode', suffixes=('_prop', '_base'))
+            else:
+                merged = pd.merge(prop_data, base_data, on='Episode', suffixes=('_prop', '_base'))
+            
+            if len(merged) < 2:
+                p_val = np.nan
+                t_stat = np.nan
+            else:
+                # Calculate paired t-test (two-sided)
+                t_stat, p_val = stats.ttest_rel(merged[f'{metric}_prop'], merged[f'{metric}_base'])
+                
+            p_values_dict[metric][baseline] = p_val
+            
+            print(f"Metric: {metric:<15} | {PROPOSED_METHOD} vs {baseline:<15} | p-value: {p_val:.4f} (n={len(merged)})")
+            
+    # Visualize p-values as a heatmap
+    plt.figure(figsize=(4.5, 3))
+    p_vals_df = pd.DataFrame(p_values_dict).T
+    
+    sns.heatmap(p_vals_df, annot=True, cmap="coolwarm_r", vmin=0, vmax=0.1, fmt=".4f", 
+                cbar_kws={'label': 'p-value (Two-sided)'})
+    plt.title(f'Paired T-Test p-values\n(Reference: {PROPOSED_METHOD})')
+    plt.yticks(rotation=0)
+    plt.tight_layout()
+    
+    heatmap_path_pdf = os.path.join(outputs_dir, "ieee_ttest_heatmap.pdf")
+    heatmap_path_png = os.path.join(outputs_dir, "ieee_ttest_heatmap.png")
+    plt.savefig(heatmap_path_pdf, bbox_inches='tight')
+    plt.savefig(heatmap_path_png, bbox_inches='tight')
+    plt.show()
+    print(f"Saved p-value heatmap to {heatmap_path_pdf} and {heatmap_path_png}")
+    
+    # Visualize paired differences
+    fig, axes = plt.subplots(1, 3, figsize=(7.16*1.5, 2.8*1.5))
+    
+    for i, metric in enumerate(metrics_to_test):
+        diff_data = []
+        for baseline in EXPERIMENTS.keys():
+            if baseline == PROPOSED_METHOD:
+                continue
+            
+            base_data = results_df[results_df['Experiment'] == baseline]
+            if metric == 'Time to Goal':
+                merged = pd.merge(prop_data[prop_data['Reached Goal'] == True], 
+                                  base_data[base_data['Reached Goal'] == True], 
+                                  on='Episode', suffixes=('_prop', '_base'))
+            else:
+                merged = pd.merge(prop_data, base_data, on='Episode', suffixes=('_prop', '_base'))
+                
+            if not merged.empty:
+                # Difference: Proposed - Baseline
+                merged['Difference'] = merged[f'{metric}_prop'] - merged[f'{metric}_base']
+                merged['Baseline'] = baseline
+                diff_data.append(merged[['Baseline', 'Difference']])
+                
+        if diff_data:
+            diff_df = pd.concat(diff_data)
+            sns.boxplot(data=diff_df, x='Baseline', y='Difference', hue='Baseline', legend=False, ax=axes[i], palette="Set2", fliersize=2)
+            axes[i].axhline(0, color='red', linestyle='--', alpha=0.7)
+            axes[i].set_title(f'$\\Delta$ {metric}\n({PROPOSED_METHOD} - Baseline)')
+            axes[i].set_xlabel('')
+            axes[i].tick_params(axis='x', rotation=20)
+            
+            # Add significance stars
+            for j, baseline in enumerate(p_vals_df.columns):
+                p_val = p_vals_df.loc[metric, baseline]
+                if not np.isnan(p_val):
+                    star = ""
+                    if p_val < 0.001: star = "***"
+                    elif p_val < 0.01: star = "**"
+                    elif p_val < 0.05: star = "*"
+                    
+                    if star:
+                        base_diffs = diff_df[diff_df['Baseline'] == baseline]['Difference']
+                        if not base_diffs.empty:
+                            y_max = base_diffs.max()
+                            y_range = diff_df['Difference'].max() - diff_df['Difference'].min()
+                            if pd.isna(y_range) or y_range == 0: y_range = 1
+                            axes[i].text(j, y_max + 0.05 * y_range, star, ha='center', va='bottom', fontweight='bold', fontsize=12)
+    
+    plt.tight_layout()
+    diff_path_pdf = os.path.join(outputs_dir, "ieee_paired_differences.pdf")
+    diff_path_png = os.path.join(outputs_dir, "ieee_paired_differences.png")
+    plt.savefig(diff_path_pdf, bbox_inches='tight')
+    plt.savefig(diff_path_png, bbox_inches='tight')
+    plt.show()
+    print(f"Saved paired differences plot to {diff_path_pdf} and {diff_path_png}")
 
 # %%
