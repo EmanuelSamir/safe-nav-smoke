@@ -86,3 +86,7 @@ legacy/temp_files/
 
 output.log
 .env
+
+*.cpython-312.pyc
+
+src/video_experiments

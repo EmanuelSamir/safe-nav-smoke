@@ -14,7 +14,16 @@ from agents.dubins_robot import DubinsRobot
 from agents.dubins_robot_fixed_velocity import DubinsRobotFixedVelocity
 from agents.unicycle_robot import UnicycleRobot
 from agents.basic_robot import RobotParams
-from src.risk_map_builder import get_value_in_map_from_coords
+
+def get_value_in_map_from_coords(states_np: np.ndarray, coords: np.ndarray, map_data: np.ndarray) -> np.ndarray:
+    """
+    Given an array of states (K, 2), an array of coordinates (N, 2), and values (N,),
+    finds the nearest neighbor in coords for each state and returns the corresponding map_data.
+    """
+    from scipy.spatial import KDTree
+    tree = KDTree(coords)
+    _, idxs = tree.query(states_np)
+    return map_data[idxs]
 
 warnings.filterwarnings("ignore")
 logger = logging.getLogger(__name__)
