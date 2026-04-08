@@ -1,0 +1,16 @@
+cfg:
+  name: smoke_world_train
+  seed: 42
+  training:
+    batch_size: 2
+    epochs: 1
+    lr: 0.0001
+    lambda_forecast: 1.0
+  data:
+    data_path: data/sensor_dataset_hf
+    sample_ratio: 0.01
+    seq_len: 1
+    past_frames: 1
+  model:
+    modes: 12
+    latent_dim: 128

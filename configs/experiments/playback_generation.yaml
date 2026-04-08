@@ -1,0 +1,23 @@
+# Configuration for generating playback smoke data
+num_episodes: 50
+episode_steps: 200
+output_path: "data/smoke_playback_hf"
+
+# Simulation grid
+x_size: 30.0
+y_size: 30.0
+resolution: 0.2
+dt: 0.1
+
+# Randomization parameters
+num_blobs_range: [4, 8]
+blob_min_dist: 5.0
+blob_spread_range: [1.0, 3.0]
+blob_intensity: 1.0
+
+# Physical parameters (SmokeParams defaults)
+wind_speed: 8.0
+emission_rate: 2.0
+diffusion_rate: 2.0
+decay_rate: 1.5
+buoyancy: 1.2

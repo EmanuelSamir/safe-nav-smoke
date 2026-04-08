@@ -2,7 +2,7 @@ import numpy as np
 import matplotlib.pyplot as plt
 import logging
 
-from src.utils import *
+from utils import *
 
 from agents.basic_robot import Robot, RobotParams
 from agents.dubins_robot import DubinsRobot

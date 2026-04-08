@@ -1,34 +1,47 @@
 name: "DynamicSmokeEnv"
-world_x_size: 100.0   # overridden by playback data if playback_path is set
-world_y_size: 100.0
+world_x_size: 30.0   # overridden by playback data if playback_path is set
+world_y_size: 30.0
 max_steps: 200        # overridden by playback data if playback_path is set
 clock: 0.1
+test: false
+num_episodes: 200
 
 # render: "human"     → live matplotlib window (use for debugging/demo)
 # render: "rgb_array" → no live window, frames saved to gif
-render: "rgb_array"
+render: "human"
 render_save_every: 2
 
-# Set to null to use DynamicSmoke (blob-based). Set to a file path to use
-# PlaybackSmoke, which overrides world_x_size, world_y_size and max_steps.
-playback_path: "data/playback_data/planning_smoke_200_steps.npz"
+# Set to null to use DynamicSmoke (blob-based). Set to a folder path to use
+# PlaybackSmoke (Hugging Face Dataset), which overrides world_x_size, world_y_size and max_steps.
+playback_path: "data/smoke_playback_hf"
 
 # Goal settings (used when playback_path is not set or as fallback)
-goal_location: [80.0, 50.0]
+goal_location: [5.0, 5.0]
 goal_radius: 0.5
 
 # Sensor settings (only used when NOT using PlaybackSmoke)
 # Experiments always override to GlobalSensor internally.
 sensor:
-  type: "global"
-  points_in_range: 32
-  fov_size_degrees: 50
+  type: "camera_1d"
+  num_rays: 64
+  fov_size_degrees: 90
+
+# Robot settings
+robot:
+  type: "dubins2d"
+  dt: 0.1
+  action_dim: 2
+  state_dim: 3
+  action_max: [5.0, 4.0]   # [linear velocity, angular velocity]
+  action_min: [0.0, -4.0]
+  state_max: [30.0, 30.0, 6.28]  # [x, y, theta]
+  state_min: [0.0, 0.0, 0.0]
 
 # Smoke blobs (only used when playback_path is null)
 smoke:
   resolution: 1.0
   blobs:
-    - {x: 20.0, y: 70.0, intensity: 1.0, spread: 2.0}
-    - {x: 40.0, y: 50.0, intensity: 1.0, spread: 3.0}
-    - {x: 60.0, y: 30.0, intensity: 1.0, spread: 2.0}
+    - {x: 10.0, y: 10.0, intensity: 1.0, spread: 2.0}
+    - {x: 10.0, y: 20.0, intensity: 1.0, spread: 3.0}
+    - {x: 10.0, y: 15.0, intensity: 1.0, spread: 2.0}
 
