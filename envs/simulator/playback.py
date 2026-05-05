@@ -72,13 +72,15 @@ class Playback:
         if self.current_step_idx < self.max_steps - 1:
             self.current_step_idx += 1
 
-    def get_smoke_map(self):
-        """Returns the current 2D smoke density map."""
+    def get_smoke_map(self, step_idx=None):
+        """Returns the 2D smoke density map at a specific step (default current)."""
         if self.current_episode_data is None:
             self.reset(0)
-        return self.current_episode_data[self.current_step_idx]
+        
+        target_step = step_idx if step_idx is not None else self.current_step_idx
+        return self.current_episode_data[target_step]
 
-    def get_smoke_density(self, pos: np.ndarray) -> np.ndarray:
+    def get_smoke_density(self, pos: np.ndarray, step_idx=None) -> np.ndarray:
         """Samples smoke density at world coordinates using interpolation."""
         if self.current_episode_data is None:
             self.reset(0)
@@ -91,10 +93,21 @@ class Playback:
         y_coords = (pos[:, 1] / self.resolution) - 0.5
         coords = np.stack([y_coords, x_coords])
 
-        grid = self.current_episode_data[self.current_step_idx]
+        target_step = step_idx if step_idx is not None else self.current_step_idx
+        grid = self.current_episode_data[target_step]
         values = map_coordinates(grid, coords, order=1, mode="constant", cval=0.0)
 
         return values.reshape(-1, 1)
+
+    def get_future_smoke_map(self, relative_step: int):
+        """Returns the smoke map at t + relative_step."""
+        target_step = min(self.current_step_idx + relative_step, self.max_steps - 1)
+        return self.get_smoke_map(step_idx=target_step)
+
+    def get_future_smoke_density(self, pos: np.ndarray, relative_step: int) -> np.ndarray:
+        """Samples smoke density at t + relative_step."""
+        target_step = min(self.current_step_idx + relative_step, self.max_steps - 1)
+        return self.get_smoke_density(pos, step_idx=target_step)
 
     def get_smoke_extent(self):
         """Returns the [xmin, xmax, ymin, ymax] extent of the world."""

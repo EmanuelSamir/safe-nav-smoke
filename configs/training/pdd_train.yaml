@@ -1,0 +1,28 @@
+# Hydra config for PDD (Probabilistic Diffusion Distillation) 
+# one-step shortcut trajectory policy
+name: "pdd_trajectory_train"
+seed: 42
+
+training:
+  batch_size: 32
+  max_steps: 50000
+  lr: 0.001
+  val_split: 0.1
+  val_check_interval: 200
+  log_every_n_steps: 10
+  save_top_k: 5
+  sc_ratio: 0.25  # Ratio of Self-Consistency vs Flow-Matching targets (Algorithm 1)
+  mode: "teacher_pretrain" # "teacher_pretrain" or "distill"
+
+data:
+  data_path: "data/distillation_v1"
+  window_size: 10
+  horizon: 15
+
+model:
+  latent_dim: 64
+  action_dim: 4 # [x, y, sin(th), cos(th)] relative waypoints
+  hidden_dim: 256
+  ema_decay: 0.999
+  M: 16            # Total discretization steps for the denoising ODE
+  teacher_ckpt: null # Path to pre-trained teacher for Stage 2

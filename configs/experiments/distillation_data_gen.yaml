@@ -1,0 +1,18 @@
+# configs/experiments/distillation_data_gen.yaml
+
+num_episodes: 500
+episode_steps: 200
+output_path: "data/distillation_v1"
+env_cfg_path: "configs/env/smoke_env.yaml"
+playback_data_path: "data/smoke_playback_hf"
+
+# Controller params
+num_samples: 100
+horizon: 15
+lambda_: 1.0
+
+# Start/Goal randomization
+blob_safety_radius: 2.0
+min_goal_dist: 15.0
+
+visualize: false

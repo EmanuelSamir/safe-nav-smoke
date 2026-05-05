@@ -326,6 +326,58 @@ class SmokeEnv(gym.Env):
         smoke_density_in_robot = self.smoke_simulator.get_smoke_density(np.array([pos_x, pos_y]))
         return smoke_density_in_robot
 
+    def get_future_smoke_density(self, pos: np.ndarray, relative_step: int):
+        """Returns smoke density at a specific position relative_step in the future."""
+        if hasattr(self.smoke_simulator, "get_future_smoke_density"):
+            return self.smoke_simulator.get_future_smoke_density(pos, relative_step)
+        # For non-playback/dynamic simulation, we might not have future sight
+        # in a real scenario, but for distillation we assume it exists in playback.
+        return self.smoke_simulator.get_smoke_density(pos)
+
+    def get_local_smoke_map(self, size_meters: float = None):
+        """Returns a high-resolution local crop of the smoke map centered at the robot."""
+        odom = self.get_robot_odom()
+        pos_x, pos_y = odom["location"]
+        
+        if size_meters is None:
+            # Default to v_max * 1.5s horizon
+            v_max = self.robot_params.action_max[0]
+            # Hardcoded 1.5s for now as discussed, or pull from config if available
+            size_meters = v_max * 1.5 * 2.0 # Full width is 2x radius
+
+        res = self.smoke_simulator.resolution
+        half_size_px = int((size_meters / 2) / res)
+        
+        # Grid indices
+        center_x_idx = int(pos_x / res)
+        center_y_idx = int(pos_y / res)
+        
+        full_map = self.smoke_simulator.get_smoke_map()
+        H, W = full_map.shape
+        
+        # Calculate bounds with padding
+        y_min = max(0, center_y_idx - half_size_px)
+        y_max = min(H, center_y_idx + half_size_px)
+        x_min = max(0, center_x_idx - half_size_px)
+        x_max = min(W, center_x_idx + half_size_px)
+        
+        crop = full_map[y_min:y_max, x_min:x_max]
+        
+        # Ensure fixed output size by padding if near boundaries
+        expected_dim = 2 * half_size_px
+        if crop.shape[0] < expected_dim or crop.shape[1] < expected_dim:
+            padded_crop = np.zeros((expected_dim, expected_dim), dtype=np.float32)
+            # Offset in padded_crop
+            start_y = max(0, half_size_px - center_y_idx)
+            start_x = max(0, half_size_px - center_x_idx)
+            
+            # Clip crop dimensions if they exceed padded_crop (shouldn't happen but safe)
+            h_c, w_c = crop.shape
+            padded_crop[start_y:start_y+h_c, start_x:start_x+w_c] = crop
+            return padded_crop
+            
+        return crop
+
     def _get_obs(self):
         odom = self.get_robot_odom()
         pos_x, pos_y = odom["location"]
