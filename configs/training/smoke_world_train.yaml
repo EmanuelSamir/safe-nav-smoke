@@ -17,3 +17,11 @@ data:
 model:
   modes: 12
   latent_dim: 128
+
+# Hydra settings for output directory organization
+hydra:
+  run:
+    dir: outputs/training/${now:%Y-%m-%d}/${now:%H-%M-%S}
+  sweep:
+    dir: outputs/training/multirun/${now:%Y-%m-%d}/${now:%H-%M-%S}
+    subdir: ${hydra.job.num}

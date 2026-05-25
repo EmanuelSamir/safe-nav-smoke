@@ -21,3 +21,11 @@ emission_rate: 2.0
 diffusion_rate: 2.0
 decay_rate: 1.5
 buoyancy: 1.2
+
+# Hydra settings for output directory organization
+hydra:
+  run:
+    dir: outputs/playback_generation/${now:%Y-%m-%d}/${now:%H-%M-%S}
+  sweep:
+    dir: outputs/playback_generation/multirun/${now:%Y-%m-%d}/${now:%H-%M-%S}
+    subdir: ${hydra.job.num}

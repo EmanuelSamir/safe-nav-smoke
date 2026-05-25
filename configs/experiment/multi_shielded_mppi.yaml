@@ -1,0 +1,21 @@
+# @package experiment
+defaults:
+  - base
+
+name: "multi_shielded_mppi_experiment"
+type: "multi-shielded-mppi"
+
+# Decentralized MPC Safety settings
+time_horizon: 14
+samples: 120
+device: "cpu"
+lambda_: 1.2
+
+# HOCBF Multi-Agent constraints parameters
+r_sense: 8.0    # Sensing radius for local neighbor detection
+d_safe: 2.4     # Minimum safety separation distance between physical envelopes
+cbf_k1: 1.5     # HOCBF Class-K function weight 1
+cbf_k2: 1.5     # HOCBF Class-K function weight 2
+
+# Dataset indexing
+episode_idx: null

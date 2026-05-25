@@ -14,7 +14,7 @@ from envs.simulator.playback_schema import SmokeDataSchema
 from envs.simulator.smoke import BlobParams, Smoke, SmokeParams
 
 
-@hydra.main(version_base=None, config_path="configs/experiments", config_name="playback_generation")
+@hydra.main(version_base=None, config_path="configs/experiment", config_name="playback_generation")
 def main(cfg: DictConfig):
     # Parameters from config
     num_episodes = cfg.get("num_episodes", 10)

@@ -95,11 +95,13 @@ def main(cfg: DictConfig):
 
     print(f"Starting data collection: {num_episodes} episodes, {steps_per_episode} steps each.")
 
+    single_action_space = env.agents[0].action_space if hasattr(env, "agents") else env.action_space
+
     controller = RandomizedLQRController(
         env.env_params.world_x_size,
         env.env_params.world_y_size,
         robot_type=env.robot_params.robot_type,
-        action_space=env.action_space,
+        action_space=single_action_space,
     )
     print(env.action_space)
 
@@ -114,31 +116,39 @@ def main(cfg: DictConfig):
                 full_map = env.smoke_simulator.get_smoke_map().copy()
 
                 # 2. Get action from randomized controller
-                action = controller.get_action(obs)
+                if env.env_params.num_agents == 1:
+                    action = controller.get_action(obs)
+                else:
+                    action = {
+                        f"agent_{i}": controller.get_action(obs[f"agent_{i}"])
+                        for i in range(env.env_params.num_agents)
+                    }
 
-                # 3. Record current step (Standard Replay Buffer: s, a)
-                current_row = {
-                    SmokeDataSchema.OBS_LOCATION: obs["location"].tolist(),
-                    SmokeDataSchema.OBS_ANGLE: [float(obs["angle"])],
-                    SmokeDataSchema.OBS_READINGS: obs["smoke_density"].tolist(),
-                    SmokeDataSchema.OBS_FULL_MAP: full_map.tolist(),
-                    SmokeDataSchema.ACTION: action.tolist(),
-                }
-
-                # 4. Step environment
+                # 3. Step environment
                 next_obs, reward, terminated, truncated, _ = env.step(action)
                 next_full_map = env.smoke_simulator.get_smoke_map().copy()
 
                 if test_mode:
                     env._render_frame(controller=controller)
-                    print(
-                        f"Recorded Step Data - Location: {np.round(obs['location'], 2)}, Action: {np.round(action, 2)}"
-                    )
-                    print(f"Observation: {np.round(obs['smoke_density'], 1)}")
+                    if env.env_params.num_agents == 1:
+                        print(
+                            f"Recorded Step Data - Location: {np.round(obs['location'], 2)}, Action: {np.round(action, 2)}"
+                        )
+                        print(f"Observation: {np.round(obs['smoke_density'], 1)}")
+                    else:
+                        print(
+                            f"Recorded Step Data - Agent 0 Location: {np.round(obs['agent_0']['location'], 2)}, Action: {np.round(action['agent_0'], 2)}"
+                        )
+                        print(f"Agent 0 Observation: {np.round(obs['agent_0']['smoke_density'], 1)}")
 
-                # 5. Add next state and RL signals (s', r, d)
-                current_row.update(
-                    {
+                # 4. Yield transition for each agent
+                if env.env_params.num_agents == 1:
+                    current_row = {
+                        SmokeDataSchema.OBS_LOCATION: obs["location"].tolist(),
+                        SmokeDataSchema.OBS_ANGLE: [float(obs["angle"])],
+                        SmokeDataSchema.OBS_READINGS: obs["smoke_density"].tolist(),
+                        SmokeDataSchema.OBS_FULL_MAP: full_map.tolist(),
+                        SmokeDataSchema.ACTION: action.tolist(),
                         SmokeDataSchema.NEXT_OBS_LOCATION: next_obs["location"].tolist(),
                         SmokeDataSchema.NEXT_OBS_READINGS: next_obs["smoke_density"].tolist(),
                         SmokeDataSchema.NEXT_OBS_FULL_MAP: next_full_map.tolist(),
@@ -146,13 +156,40 @@ def main(cfg: DictConfig):
                         SmokeDataSchema.TERMINATED: bool(terminated),
                         SmokeDataSchema.TRUNCATED: bool(truncated),
                     }
-                )
+                    yield current_row
+                else:
+                    for i in range(env.env_params.num_agents):
+                        agent_key = f"agent_{i}"
+                        agent_obs = obs[agent_key]
+                        agent_next_obs = next_obs[agent_key]
+                        agent_action = action[agent_key]
+                        agent_reward = reward[agent_key]
+                        agent_terminated = terminated[agent_key]
+                        agent_truncated = truncated[agent_key]
 
-                yield current_row
+                        current_row = {
+                            SmokeDataSchema.OBS_LOCATION: agent_obs["location"].tolist(),
+                            SmokeDataSchema.OBS_ANGLE: [float(agent_obs["angle"])],
+                            SmokeDataSchema.OBS_READINGS: agent_obs["smoke_density"].tolist(),
+                            SmokeDataSchema.OBS_FULL_MAP: full_map.tolist(),
+                            SmokeDataSchema.ACTION: agent_action.tolist(),
+                            SmokeDataSchema.NEXT_OBS_LOCATION: agent_next_obs["location"].tolist(),
+                            SmokeDataSchema.NEXT_OBS_READINGS: agent_next_obs["smoke_density"].tolist(),
+                            SmokeDataSchema.NEXT_OBS_FULL_MAP: next_full_map.tolist(),
+                            SmokeDataSchema.REWARD: float(agent_reward),
+                            SmokeDataSchema.TERMINATED: bool(agent_terminated),
+                            SmokeDataSchema.TRUNCATED: bool(agent_truncated),
+                        }
+                        yield current_row
+
                 obs = next_obs
 
-                if terminated or truncated:
-                    break
+                if env.env_params.num_agents == 1:
+                    if terminated or truncated:
+                        break
+                else:
+                    if any(terminated.values()) or any(truncated.values()):
+                        break
 
     # 3. Create or consume the generator based on test mode
     if test_mode:

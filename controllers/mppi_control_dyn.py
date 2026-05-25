@@ -1,29 +1,33 @@
 # mppi_planner.py
 import logging
 import warnings
-from dataclasses import dataclass
 from collections import deque
+from dataclasses import dataclass
+
 import numpy as np
 import torch
 from matplotlib import pyplot as plt
 from tqdm import tqdm
 
-from controllers.mppi import MPPI
-from utils import world_to_index
+from agents.basic_robot import RobotParams
 from agents.dubins_robot import DubinsRobot
 from agents.dubins_robot_fixed_velocity import DubinsRobotFixedVelocity
 from agents.unicycle_robot import UnicycleRobot
-from agents.basic_robot import RobotParams
+from controllers.mppi import MPPI
 
-def get_value_in_map_from_coords(states_np: np.ndarray, coords: np.ndarray, map_data: np.ndarray) -> np.ndarray:
-    """
-    Given an array of states (K, 2), an array of coordinates (N, 2), and values (N,),
+
+def get_value_in_map_from_coords(
+    states_np: np.ndarray, coords: np.ndarray, map_data: np.ndarray
+) -> np.ndarray:
+    """Given an array of states (K, 2), an array of coordinates (N, 2), and values (N,),
     finds the nearest neighbor in coords for each state and returns the corresponding map_data.
     """
     from scipy.spatial import KDTree
+
     tree = KDTree(coords)
     _, idxs = tree.query(states_np)
     return map_data[idxs]
+
 
 warnings.filterwarnings("ignore")
 logger = logging.getLogger(__name__)
@@ -41,12 +45,12 @@ class MPPIControlParams:
     noise_abs_cost: bool = False
     alpha_noise_sigma: float = 10.0
 
+
 # ==========================================================
 # NOMINAL CONTROL WRAPPER
 # ==========================================================
 class MPPIControlDyn:
-    """
-    High-level wrapper for MPPI-based control of a Dubins robot.
+    """High-level wrapper for MPPI-based control of a Dubins robot.
     Handles map setup, cost computation, and control loop.
     """
 
@@ -82,29 +86,76 @@ class MPPIControlDyn:
     #  DYNAMICS INTERFACE
     # ======================================================
     def dynamics(self, states: torch.Tensor, actions: torch.Tensor, t: int) -> torch.Tensor:
-        """
-        Applies Dubins dynamics for a batch of states and actions.
+        """Applies physical dynamics forecasts for a batch of states and actions.
+        Leverages fully vectorized PyTorch RK4 math for Dubins vehicles to avoid Python GIL bottlenecks.
         """
         if states.ndim == 1:
             states = states.unsqueeze(0)
         if actions.ndim == 1:
             actions = actions.unsqueeze(0)
 
-        next_states = []
-        for s, a in zip(states, actions):
-            self.robot.reset(s)
-            self.robot.dynamic_step(a.cpu().numpy())
-            next_states.append(self.robot.get_state())
+        robot_type = getattr(self.robot.robot_params, "robot_type", "dubins2d")
 
-        return torch.stack(next_states).to(self.device)
+        # 1. Accelerate via FULLY VECTORIZED batch Tensor RK4 for Dubins kinematics
+        if robot_type.startswith("dubins"):
+            # Port control limits to active GPU/CPU device
+            u_min = torch.tensor(
+                self.robot.robot_params.action_min, device=self.device, dtype=self.dtype
+            )
+            u_max = torch.tensor(
+                self.robot.robot_params.action_max, device=self.device, dtype=self.dtype
+            )
+
+            # Clamp actions concurrently inside the GPU/CPU tensor block
+            v_clamped = torch.clamp(actions[:, 0], u_min[0], u_max[0])
+            omega_clamped = torch.clamp(actions[:, 1], u_min[1], u_max[1])
+
+            dt = float(self.robot.dt)
+
+            def derivative(s, v, omega):
+                # Returns [dx, dy, dtheta] derivative shape (K, 3)
+                theta = s[:, 2]
+                dx = torch.cos(theta) * v
+                dy = torch.sin(theta) * v
+                dtheta = omega
+                return torch.stack([dx, dy, dtheta], dim=-1)
+
+            # Vectorized 4th-Order Runge-Kutta propagation
+            k1 = derivative(states, v_clamped, omega_clamped)
+            k2 = derivative(states + 0.5 * dt * k1, v_clamped, omega_clamped)
+            k3 = derivative(states + 0.5 * dt * k2, v_clamped, omega_clamped)
+            k4 = derivative(states + dt * k3, v_clamped, omega_clamped)
+
+            next_states = states + (dt / 6.0) * (k1 + 2.0 * k2 + 2.0 * k3 + k4)
+
+            # Apply physical bounds to tensors
+            x_max = float(self.robot.robot_params.state_max[0])
+            y_max = float(self.robot.robot_params.state_max[1])
+
+            # Clone and constrain components in-place
+            out_states = next_states.clone()
+            out_states[:, 0] = torch.clamp(out_states[:, 0], 0.0, x_max)
+            out_states[:, 1] = torch.clamp(out_states[:, 1], 0.0, y_max)
+            out_states[:, 2] = torch.remainder(out_states[:, 2], 2.0 * np.pi)
+
+            return out_states
+
+        # 2. Fallback to general, robust sequential CPU simulation for non-Dubins dynamics
+        else:
+            next_states = []
+            for s, a in zip(states, actions):
+                self.robot.reset(s.detach().cpu().numpy())
+                self.robot.dynamic_step(a.cpu().numpy())
+                next_states.append(
+                    torch.tensor(self.robot.get_state(), dtype=self.dtype, device=self.device)
+                )
+            return torch.stack(next_states)
 
     # ======================================================
     #  MPPI PLANNER INITIALIZATION
     # ======================================================
     def _init_mppi_planner(self) -> MPPI:
-        """
-        Configure and instantiate the MPPI planner.
-        """
+        """Configure and instantiate the MPPI planner."""
         sigma = self.params.alpha_noise_sigma * np.diag(
             self.robot.robot_params.action_max - self.robot.robot_params.action_min
         )
@@ -137,31 +188,30 @@ class MPPIControlDyn:
         self._goal = torch.tensor(goal_position, dtype=self.dtype, device=self.device)
 
     def set_maps(self, maps: deque):
-        """
-        Sets a deque of tuple of (coords, flatten_risk_map) (0 = low risk -> high risk).
+        """Sets a deque of tuple of (coords, flatten_risk_map) (0 = low risk -> high risk).
         coords: np.ndarray, shape (n, 2)
         flatten_risk_map: np.ndarray, shape (n,)
         The deque is used to store the maps for future planning steps.
         """
-        assert len(maps) == self.params.horizon, "Maps deque must have the same length as the horizon"
+        assert len(maps) == self.params.horizon, (
+            "Maps deque must have the same length as the horizon"
+        )
         for coords, flatten_risk_map in maps:
             assert coords.shape[1] == 2, "Coords must be a 2D array"
-            assert flatten_risk_map.shape[0] == coords.shape[0], "Flatten risk map must have the same number of rows as coords"
+            assert flatten_risk_map.shape[0] == coords.shape[0], (
+                "Flatten risk map must have the same number of rows as coords"
+            )
             self._maps.append((coords, flatten_risk_map))
 
     def set_state(self, state):
-        """
-        Sets the true or simulated robot state (x, y, theta).
-        """
+        """Sets the true or simulated robot state (x, y, theta)."""
         self.robot.reset(state)
 
     # ======================================================
     #  CONTROL COMPUTATION
     # ======================================================
     def get_command(self) -> torch.Tensor:
-        """
-        Compute the next control input given the current state.
-        """
+        """Compute the next control input given the current state."""
         if self._goal is None:
             logger.warning("Goal not set. Returning zero action.")
             return torch.zeros_like(
@@ -182,9 +232,7 @@ class MPPIControlDyn:
     #  TRAJECTORY HANDLING
     # ======================================================
     def get_sampled_trajectories(self):
-        """
-        Returns sampled trajectories (K, T, nx) if available.
-        """
+        """Returns sampled trajectories (K, T, nx) if available."""
         if getattr(self.planner, "synthetic_states", None) is None:
             logger.warning("No trajectories available yet.")
             return None
@@ -194,8 +242,7 @@ class MPPIControlDyn:
     #  COST FUNCTIONS
     # ======================================================
     def _compute_risk_cost(self, states: torch.Tensor, t: int) -> torch.Tensor:
-        """
-        Compute collision cost for states in world coordinates.
+        """Compute collision cost for states in world coordinates.
         states: torch.Tensor, shape (K, nx)  — batch of robot states
         t: int — horizon step index
         Returns:
@@ -209,7 +256,7 @@ class MPPIControlDyn:
         coords, flatten_risk_map = self._maps[map_idx]
 
         # Convert torch states → numpy for the nearest-neighbor lookup
-        states_np = states[:, :2].detach().cpu().numpy()   # (K, 2)
+        states_np = states[:, :2].detach().cpu().numpy()  # (K, 2)
 
         # Ensure coords / risk map are numpy
         if not isinstance(coords, np.ndarray):
@@ -222,18 +269,14 @@ class MPPIControlDyn:
         return torch.tensor(risk_np, dtype=self.dtype, device=self.device)
 
     def running_cost(self, states: torch.Tensor, actions: torch.Tensor, t: int) -> torch.Tensor:
-        """
-        Weighted sum of goal distance and risk cost.
-        """
-        w=(1.0, 20.0)
+        """Weighted sum of goal distance and risk cost."""
+        w = (1.0, 20.0)
         dist_cost = torch.norm(states[:, :2] - self._goal, dim=1)
         risk_cost = self._compute_risk_cost(states, t)
         return w[0] * dist_cost + w[1] * risk_cost
 
     def terminal_state_cost(self, states: torch.Tensor) -> torch.Tensor:
-        """
-        Strong negative reward for reaching the goal safely.
-        """
+        """Strong negative reward for reaching the goal safely."""
         K, T, nx = states.shape
         goal_reached = torch.norm(states[:, :, :2] - self._goal, dim=2) < self._goal_thresh
         cost = torch.zeros(K, dtype=self.dtype, device=self.device)
@@ -246,10 +289,8 @@ class MPPIControlDyn:
     # ======================================================
     #  VISUALIZATION
     # ======================================================
-    def visualize_rollouts(self, ax):
-        """
-        Plot all sampled trajectories and the weighted mean path.
-        """
+    def visualize_rollouts(self, ax, color="blue", draw_samples=True):
+        """Plot all sampled trajectories and the weighted mean path."""
         trajectories = self.get_sampled_trajectories()
         if trajectories is None:
             return
@@ -257,25 +298,26 @@ class MPPIControlDyn:
         omega = self.planner.omega.detach().cpu()
         weighted_traj = (omega[:, None, None] * trajectories).sum(dim=0).numpy()
 
-        for traj in trajectories:
-            ax.plot(traj[:, 0], traj[:, 1], color="gray", alpha=0.3, linewidth=0.5)
+        if draw_samples:
+            for traj in trajectories:
+                ax.plot(traj[:, 0], traj[:, 1], color="gray", alpha=0.2, linewidth=0.5)
 
-        ax.plot(weighted_traj[:, 0], weighted_traj[:, 1], color="blue", linewidth=2)
+        ax.plot(weighted_traj[:, 0], weighted_traj[:, 1], color=color, linewidth=2)
 
 
 if __name__ == "__main__":
     robot_params = RobotParams.load_from_yaml("agents/dubins2d_cfg.yaml")
-    robot_params.state_max = np.array([50, 35]) # (x, y)
+    robot_params.state_max = np.array([50, 35])  # (x, y)
     robot_params.state_min = np.array([0, 0])
     goal_thresh = 1.0
-    device = 'cpu'
+    device = "cpu"
     dtype = torch.float32
     dt = 0.1
 
     state = torch.tensor([1, 1, 0.0])
     nominal_control = MPPIControlDyn(robot_params, "dubins2d", goal_thresh, device, dtype, dt)
     nominal_control.set_state(state)
-    nominal_control.set_goal([25.0, 10.0]) # (x, y)
+    nominal_control.set_goal([25.0, 10.0])  # (x, y)
 
     H, W = 35, 50
     map_data = np.zeros((H, W), dtype=bool)  # y, x
@@ -284,7 +326,7 @@ if __name__ == "__main__":
     # generate coordinates (x, y)
     x = np.arange(W)
     y = np.arange(H)
-    X, Y = np.meshgrid(x, y, indexing='xy')
+    X, Y = np.meshgrid(x, y, indexing="xy")
     coords = np.stack([X.ravel(), Y.ravel()], axis=-1)  # (N, 2)
 
     flatten_risk_map = map_data.ravel()
@@ -295,14 +337,14 @@ if __name__ == "__main__":
 
     f, ax = plt.subplots()
 
-    ax.imshow(map_data, origin='lower', cmap='gray', extent=[0, 50, 0, 35])
+    ax.imshow(map_data, origin="lower", cmap="gray", extent=[0, 50, 0, 35])
 
     for i in tqdm(range(200)):
         for line in ax.lines:
             line.remove()
 
-        ax.scatter(state[0].item(), state[1].item(), c='blue', marker='.', s=1)
-        
+        ax.scatter(state[0].item(), state[1].item(), c="blue", marker=".", s=1)
+
         u = nominal_control.get_command()
         nominal_control.visualize_rollouts(ax)
 
@@ -311,9 +353,6 @@ if __name__ == "__main__":
         simulator.dynamic_step(u_sim)
         state = simulator.get_state()
         nominal_control.set_state(state)
-        
+
         plt.draw()
         plt.pause(0.01)
-
-
-

@@ -1,7 +1,7 @@
 defaults:
   - env: smoke_env
   - agent: dubins
-  - experiment: vaessm
+  - experiment: default
   - _self_
 
 # Global settings
@@ -15,3 +15,11 @@ logger:
   run_name: "${experiment.name}_${now:%m%d_%H%M}"
   log_frequency: 1
   save_video: true
+
+# Hydra settings for output directory organization
+hydra:
+  run:
+    dir: outputs/experiments/${now:%Y-%m-%d}/${now:%H-%M-%S}
+  sweep:
+    dir: outputs/experiments/multirun/${now:%Y-%m-%d}/${now:%H-%M-%S}
+    subdir: ${hydra.job.num}

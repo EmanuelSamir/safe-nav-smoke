@@ -1,13 +1,19 @@
-
-import numpy as np
 import cvxpy as cp
+import numpy as np
 import skfmm
-from dataclasses import dataclass
-from envs.smoke_env import EnvParams, SmokeEnv
+
 from agents.basic_robot import RobotParams
+from envs.smoke_env import EnvParams
+
 
 class CBFController:
-    def __init__(self, env_params: EnvParams, robot_params: RobotParams, goal: np.ndarray, smoke_threshold: float = 0.75):
+    def __init__(
+        self,
+        env_params: EnvParams,
+        robot_params: RobotParams,
+        goal: np.ndarray,
+        smoke_threshold: float = 0.75,
+    ):
         self.env_params = env_params
         self.robot_params = robot_params
         self.goal = goal
@@ -27,11 +33,9 @@ class CBFController:
         self.alpha = lambda h: self.k * h
 
         assert self.R.shape == (self.n_u, self.n_u), f"R must be of shape {self.n_u}x{self.n_u}"
-        
+
     def nominal_control(self, state: np.ndarray):
-        """
-        state: [x, y, angle]
-        """
+        """state: [x, y, angle]"""
         v_max = self.u_max[0]
         w_min = self.u_min[1]
         w_max = self.u_max[1]
@@ -42,7 +46,7 @@ class CBFController:
         desired_angle = np.arctan2(self.goal[1] - location[1], self.goal[0] - location[0])
         e_angle = desired_angle - angle
         e_angle = (e_angle + np.pi) % (2 * np.pi) - np.pi
-        
+
         if np.isclose(e_angle, 0.0, atol=1e-2):
             w = 0.0
         elif np.sign(e_angle) > 0:
@@ -53,10 +57,14 @@ class CBFController:
         u = np.array([v_max, w])
         return u
 
-    def update_h_discrete(self, smoke_values: np.ndarray, smoke_positions: np.ndarray, robot_pose: np.ndarray):
+    def update_h_discrete(
+        self, smoke_values: np.ndarray, smoke_positions: np.ndarray, robot_pose: np.ndarray
+    ):
         assert smoke_values.ndim == 1, "Smoke values must be a 1D array"
         assert smoke_positions.ndim == 2, "Smoke positions must be a 2D array"
-        assert smoke_values.shape[0] == smoke_positions.shape[0], "Smoke values and positions must have the same length"
+        assert smoke_values.shape[0] == smoke_positions.shape[0], (
+            "Smoke values and positions must have the same length"
+        )
 
         x_min = np.min(smoke_positions[:, 0])
         x_max = np.max(smoke_positions[:, 0])
@@ -67,9 +75,9 @@ class CBFController:
         ratio = (x_max - x_min) / (y_max - y_min)
         # H = np.rint(np.sqrt(N / ratio)).astype(int)
         # W = np.rint(np.sqrt(N * ratio)).astype(int)
-        Hs = [int(np.floor(np.sqrt(N/ratio))), int(np.ceil(np.sqrt(N/ratio)))]
-        Ws = [int(np.floor(np.sqrt(N*ratio))), int(np.ceil(np.sqrt(N*ratio)))]
-        H,W = next((h,w) for h in Hs for w in Ws if h>0 and w>0 and h*w==N)
+        Hs = [int(np.floor(np.sqrt(N / ratio))), int(np.ceil(np.sqrt(N / ratio)))]
+        Ws = [int(np.floor(np.sqrt(N * ratio))), int(np.ceil(np.sqrt(N * ratio)))]
+        H, W = next((h, w) for h in Hs for w in Ws if h > 0 and w > 0 and h * w == N)
 
         smoke_map = smoke_values.reshape(H, W)
         # 1 is free, 0 is occupied
@@ -98,7 +106,7 @@ class CBFController:
         self.h_discrete_artifacts["x_range"] = [x_min, x_max]
         self.h_discrete_artifacts["y_range"] = [y_min, y_max]
         self.h_discrete_artifacts["W"] = W
-        self.h_discrete_artifacts["H"] = H  
+        self.h_discrete_artifacts["H"] = H
         self.h_discrete_artifacts["grid_points"] = smoke_positions
         self.h_discrete_artifacts["h"] = h
         self.h_discrete_artifacts["dh_dx"] = dh_dx
@@ -134,9 +142,14 @@ class CBFController:
 
         idx = self._nearest_index(pose)
         if return_gradient:
-            return self.h_discrete_artifacts["h"][idx], self.h_discrete_artifacts["dh_dx"][idx], self.h_discrete_artifacts["dh_dy"][idx], self.h_discrete_artifacts["dh_dth"][idx]
+            return (
+                self.h_discrete_artifacts["h"][idx],
+                self.h_discrete_artifacts["dh_dx"][idx],
+                self.h_discrete_artifacts["dh_dy"][idx],
+                self.h_discrete_artifacts["dh_dth"][idx],
+            )
         return self.h_discrete_artifacts["h"][idx]
-        
+
     def get_command(self, state, f, g):
         u_nom = self.nominal_control(state)
         v_nom, w_nom = u_nom
@@ -195,7 +208,3 @@ class CBFController:
             return u_nom
 
         return u.value
-
-
-        
-

@@ -18,11 +18,19 @@ playback_path: "data/smoke_playback_hf"
 # Goal settings (used when playback_path is not set or as fallback)
 goal_location: [5.0, 5.0]
 goal_radius: 0.5
+num_agents: 1
+goal_locations: null
+initial_locations: null
+
+# Collision settings
+collision_radius: 0.8
+terminate_on_collision: false
+collision_penalty: -10.0
 
 # Sensor settings (only used when NOT using PlaybackSmoke)
 # Experiments always override to GlobalSensor internally.
 sensor:
-  type: "camera_1d"
+  type: "global"
   num_rays: 64
   fov_size_degrees: 90
 
@@ -33,7 +41,7 @@ robot:
   action_dim: 2
   state_dim: 3
   action_max: [5.0, 4.0]   # [linear velocity, angular velocity]
-  action_min: [0.0, -4.0]
+  action_min: [0.5, -4.0]
   state_max: [30.0, 30.0, 6.28]  # [x, y, theta]
   state_min: [0.0, 0.0, 0.0]
 
@@ -44,4 +52,12 @@ smoke:
     - {x: 10.0, y: 10.0, intensity: 1.0, spread: 2.0}
     - {x: 10.0, y: 20.0, intensity: 1.0, spread: 3.0}
     - {x: 10.0, y: 15.0, intensity: 1.0, spread: 2.0}
+
+# Hydra settings for output directory organization
+hydra:
+  run:
+    dir: outputs/data_generation/${now:%Y-%m-%d}/${now:%H-%M-%S}
+  sweep:
+    dir: outputs/data_generation/multirun/${now:%Y-%m-%d}/${now:%H-%M-%S}
+    subdir: ${hydra.job.num}
 
