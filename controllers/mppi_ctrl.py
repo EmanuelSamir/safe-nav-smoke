@@ -11,8 +11,6 @@ from tqdm import tqdm
 
 from agents.basic_robot import RobotParams
 from agents.dubins_robot import DubinsRobot
-from agents.dubins_robot_fixed_velocity import DubinsRobotFixedVelocity
-from agents.unicycle_robot import UnicycleRobot
 from controllers.mppi import MPPI
 
 
@@ -37,7 +35,7 @@ logger = logging.getLogger(__name__)
 # CONFIG DATACLASS
 # ==========================================================
 @dataclass
-class MPPIControlParams:
+class MPPICtrlParams:
     num_samples: int = 50
     horizon: int = 14
     device: str = "cpu"
@@ -49,7 +47,7 @@ class MPPIControlParams:
 # ==========================================================
 # NOMINAL CONTROL WRAPPER
 # ==========================================================
-class MPPIControlDyn:
+class MPPICtrl:
     """High-level wrapper for MPPI-based control of a Dubins robot.
     Handles map setup, cost computation, and control loop.
     """
@@ -61,7 +59,7 @@ class MPPIControlDyn:
         goal_thresh: float = 0.1,
         device="cpu",
         dtype=torch.float32,
-        mppi_params: MPPIControlParams = MPPIControlParams(),
+        mppi_params: MPPICtrlParams = MPPICtrlParams(),
         dt=0.1,
     ):
         self.device = device
@@ -70,10 +68,8 @@ class MPPIControlDyn:
         self.robot_params = robot_params
         if robot_type == "dubins2d":
             self.robot = DubinsRobot(robot_params)
-        elif robot_type == "dubins2d_fixed_velocity":
-            self.robot = DubinsRobotFixedVelocity(robot_params)
-        elif robot_type == "unicycle2d":
-            self.robot = UnicycleRobot(robot_params)
+        else:
+            raise ValueError(f"Unknown robot type: {robot_type}")
         self.params = mppi_params
 
         self._goal = None
@@ -87,69 +83,9 @@ class MPPIControlDyn:
     # ======================================================
     def dynamics(self, states: torch.Tensor, actions: torch.Tensor, t: int) -> torch.Tensor:
         """Applies physical dynamics forecasts for a batch of states and actions.
-        Leverages fully vectorized PyTorch RK4 math for Dubins vehicles to avoid Python GIL bottlenecks.
+        Delegates computation to the robot agent class to leverage model-specific high-performance dynamics.
         """
-        if states.ndim == 1:
-            states = states.unsqueeze(0)
-        if actions.ndim == 1:
-            actions = actions.unsqueeze(0)
-
-        robot_type = getattr(self.robot.robot_params, "robot_type", "dubins2d")
-
-        # 1. Accelerate via FULLY VECTORIZED batch Tensor RK4 for Dubins kinematics
-        if robot_type.startswith("dubins"):
-            # Port control limits to active GPU/CPU device
-            u_min = torch.tensor(
-                self.robot.robot_params.action_min, device=self.device, dtype=self.dtype
-            )
-            u_max = torch.tensor(
-                self.robot.robot_params.action_max, device=self.device, dtype=self.dtype
-            )
-
-            # Clamp actions concurrently inside the GPU/CPU tensor block
-            v_clamped = torch.clamp(actions[:, 0], u_min[0], u_max[0])
-            omega_clamped = torch.clamp(actions[:, 1], u_min[1], u_max[1])
-
-            dt = float(self.robot.dt)
-
-            def derivative(s, v, omega):
-                # Returns [dx, dy, dtheta] derivative shape (K, 3)
-                theta = s[:, 2]
-                dx = torch.cos(theta) * v
-                dy = torch.sin(theta) * v
-                dtheta = omega
-                return torch.stack([dx, dy, dtheta], dim=-1)
-
-            # Vectorized 4th-Order Runge-Kutta propagation
-            k1 = derivative(states, v_clamped, omega_clamped)
-            k2 = derivative(states + 0.5 * dt * k1, v_clamped, omega_clamped)
-            k3 = derivative(states + 0.5 * dt * k2, v_clamped, omega_clamped)
-            k4 = derivative(states + dt * k3, v_clamped, omega_clamped)
-
-            next_states = states + (dt / 6.0) * (k1 + 2.0 * k2 + 2.0 * k3 + k4)
-
-            # Apply physical bounds to tensors
-            x_max = float(self.robot.robot_params.state_max[0])
-            y_max = float(self.robot.robot_params.state_max[1])
-
-            # Clone and constrain components in-place
-            out_states = next_states.clone()
-            out_states[:, 0] = torch.clamp(out_states[:, 0], 0.0, x_max)
-            out_states[:, 1] = torch.clamp(out_states[:, 1], 0.0, y_max)
-            out_states[:, 2] = torch.remainder(out_states[:, 2], 2.0 * np.pi)
-
-            return out_states
-
-        # 2. Fallback to general, robust sequential CPU simulation for non-Dubins dynamics
-        else:
-            next_states = []
-            for s, a in zip(states, actions):
-                self.robot.reset(s.detach().cpu().numpy())
-                self.robot.dynamic_step(a.cpu().numpy())
-                next_states.append(
-                    torch.tensor(self.robot.get_state(), dtype=self.dtype, device=self.device)
-                )
-            return torch.stack(next_states)
+        return self.robot.dynamics(states, actions)
 
     # ======================================================
     #  MPPI PLANNER INITIALIZATION
@@ -218,12 +154,14 @@ class MPPIControlDyn:
                 torch.tensor(self.robot.robot_params.action_min, device=self.device)
             )
 
-        x, y, theta = self.robot.get_state()
-        state = torch.tensor([x, y, theta], dtype=self.dtype, device=self.device)
+        state_np = self.robot.get_state()
+        state = torch.tensor(state_np, dtype=self.dtype, device=self.device)
         dist_to_goal = torch.norm(state[:2] - self._goal)
 
         if dist_to_goal < self._goal_thresh:
-            return torch.zeros_like(state[:2])
+            return torch.zeros(
+                self.robot.robot_params.action_dim, dtype=self.dtype, device=self.device
+            )
 
         command = self.planner.command(state)
         return command
@@ -306,7 +244,13 @@ class MPPIControlDyn:
 
 
 if __name__ == "__main__":
-    robot_params = RobotParams.load_from_yaml("agents/dubins2d_cfg.yaml")
+    robot_params = RobotParams(
+        action_dim=2,
+        state_dim=3,
+        action_min=[0.0, -4.0],
+        action_max=[6.0, 4.0],
+        dt=0.1,
+    )
     robot_params.state_max = np.array([50, 35])  # (x, y)
     robot_params.state_min = np.array([0, 0])
     goal_thresh = 1.0
@@ -315,7 +259,7 @@ if __name__ == "__main__":
     dt = 0.1
 
     state = torch.tensor([1, 1, 0.0])
-    nominal_control = MPPIControlDyn(robot_params, "dubins2d", goal_thresh, device, dtype, dt)
+    nominal_control = MPPICtrl(robot_params, "dubins2d", goal_thresh, device, dtype, dt=dt)
     nominal_control.set_state(state)
     nominal_control.set_goal([25.0, 10.0])  # (x, y)
 
@@ -330,7 +274,7 @@ if __name__ == "__main__":
     coords = np.stack([X.ravel(), Y.ravel()], axis=-1)  # (N, 2)
 
     flatten_risk_map = map_data.ravel()
-    nominal_control.set_maps(deque([(coords, flatten_risk_map)] * 10))
+    nominal_control.set_maps(deque([(coords, flatten_risk_map)] * nominal_control.params.horizon))
 
     simulator = DubinsRobot(robot_params)
     simulator.reset(state)

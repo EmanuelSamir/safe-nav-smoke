@@ -23,7 +23,7 @@ from omegaconf import DictConfig
 from tqdm import tqdm
 
 from experiments.base_experiment import BaseExperiment
-from controllers.mppi_control_dyn import MPPIControlDyn, MPPIControlParams
+from controllers.mppi_ctrl import MPPICtrl, MPPICtrlParams
 from envs.wrappers.smoke_forecast_wrapper import SmokeForecastWrapper
 from envs.smoke_env import EnvParams, SmokeEnv, SmokeParams
 from agents.basic_robot import RobotParams
@@ -142,11 +142,11 @@ class BehaviorPredictionExperiment(BaseExperiment):
 
         # --- Controller ------------------------------------------------
         horizon = self.cfg.experiment.time_horizon
-        mppi_params = MPPIControlParams(
+        mppi_params = MPPICtrlParams(
             horizon=horizon,
             num_samples=self.cfg.experiment.get("samples", 50),
         )
-        self.controller = MPPIControlDyn(
+        self.controller = MPPICtrl(
             self.robot_params,
             self.cfg.agent.name,
             mppi_params=mppi_params,

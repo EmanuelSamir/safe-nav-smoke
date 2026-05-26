@@ -3,14 +3,15 @@ import torch
 from controllers.mppi import MPPI
 
 
-class ShieldedMPPI(MPPI):
-    """Shielded Model Predictive Path Integral (Shielded MPPI) Controller.
+class DualGuard(MPPI):
+    """Shielded Model Predictive Path Integral (DualGuard MPPI) Controller.
 
-    Based on the "DualGuard MPPI" algorithm, but customized to use a Control Barrier Function (CBF)
-    safety index h(x) instead of an HJ Reachability value V(x).
+    Based on the "DualGuard MPPI" algorithm. This is the generic base class that uses a modular
+    safety index function and a safe backup control policy to perform "Safe Rollouts" and
+    apply an "Output Safety Filter".
 
     The key mechanism is "Safe Rollouts":
-    - During nominal trajectory sampling, if a simulated state violates safety (h(x) < margin),
+    - During nominal trajectory sampling, if a simulated state violates safety (safety_function(x) < margin),
       the rollout action perturbation is overridden by a perturbation leading to the safe control policy:
       Delta^k_j = u_safe*(x_j) - u_j.
     - The updated control sequence then computes its weight based on these corrected trajectories.
@@ -23,18 +24,18 @@ class ShieldedMPPI(MPPI):
     def __init__(
         self,
         *args,
-        cbf_h_function,  # function(state_tensor) -> h_values: shape (K,) or (K, 1)
+        safety_function,  # function(state_tensor) -> values: shape (K,) or (K, 1)
         safe_control_function,  # function(state_tensor) -> safe_actions: shape (K, nu)
-        safe_margin=0.0,  # Safe set is defined where h(x) >= safe_margin
+        safe_margin=0.0,  # Safe set is defined where safety_function(x) >= safe_margin
         **kwargs,
     ):
         """Args:
-        cbf_h_function (callable): Evaluates the safety index h(x) on a batch of states.
+        safety_function (callable): Evaluates the safety index/value on a batch of states.
         safe_control_function (callable): Computes the safe backup control u_safe(x) on a batch of states.
         safe_margin (float): Offset for safety boundary.
         """
         super().__init__(*args, **kwargs)
-        self.cbf_h_function = cbf_h_function
+        self.safety_function = safety_function
         self.safe_control_function = safe_control_function
         self.safe_margin = safe_margin
 
@@ -82,15 +83,15 @@ class ShieldedMPPI(MPPI):
             # === Safe Shield Check (Algorithm 1: "Safe Rollouts") ===
             # Evaluate safety condition of current state x_j BEFORE propagating, passing time step 't'
             try:
-                h_val = self.cbf_h_function(state, t)
+                safety_val = self.safety_function(state, t)
             except TypeError:
-                h_val = self.cbf_h_function(state)
+                safety_val = self.safety_function(state)
 
-            if h_val.dim() > 1:
-                h_val = h_val.squeeze(-1)
+            if safety_val.dim() > 1:
+                safety_val = safety_val.squeeze(-1)
 
             # Compute boolean mask where state is unsafe
-            unsafe_mask = h_val < self.safe_margin  # (K,)
+            unsafe_mask = safety_val < self.safe_margin  # (K,)
 
             # Nominal perturbed action sampled originally
             u_nominal_t = actions[:, t]  # (K, nu)
@@ -152,15 +153,15 @@ class ShieldedMPPI(MPPI):
         # 2. Apply Output Safety Filter (Algorithm 1: "Output Filter")
         # Check if the ACTUAL measured current state x_0 is safe (t=0)
         try:
-            h_val = self.cbf_h_function(self.state.unsqueeze(0), 0)
+            safety_val = self.safety_function(self.state.unsqueeze(0), 0)
         except TypeError:
-            h_val = self.cbf_h_function(self.state.unsqueeze(0))
+            safety_val = self.safety_function(self.state.unsqueeze(0))
 
-        if h_val.dim() > 1:
-            h_val = h_val.squeeze(-1)
-        h_val = h_val.squeeze()  # Scalar float tensor
+        if safety_val.dim() > 1:
+            safety_val = safety_val.squeeze(-1)
+        safety_val = safety_val.squeeze()  # Scalar float tensor
 
-        if h_val < self.safe_margin:
+        if safety_val < self.safe_margin:
             # Current state is unsafe! Hard-override output with safe policy u_safe*(x_0) at t=0
             try:
                 u_safe_0 = self.safe_control_function(self.state.unsqueeze(0), 0).squeeze(0)

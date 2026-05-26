@@ -10,8 +10,8 @@ from omegaconf import DictConfig, OmegaConf
 from tqdm import tqdm
 
 from agents.basic_robot import RobotParams
-from controllers.mppi_control_dyn import MPPIControlParams
-from controllers.multi_shielded_mppi_control import MultiShieldedMPPIControl
+from controllers.mppi_ctrl import MPPICtrlParams
+from controllers.multi_dual_guard_cbf_ctrl import MultiDualGuardCBFCtrl
 from envs.smoke_env import SmokeEnv
 from experiments.base_experiment import BaseExperiment
 
@@ -96,7 +96,7 @@ class MultiShieldedMPPIExperiment(BaseExperiment):
 
         # 4. Initialize the Decentralized Shielded MPPI Control Orchestrator
         horizon = self.cfg.experiment.time_horizon
-        mppi_params = MPPIControlParams(
+        mppi_params = MPPICtrlParams(
             horizon=horizon,
             num_samples=self.cfg.experiment.get("samples", 120),
             device=self.cfg.experiment.get("device", "cpu"),
@@ -109,8 +109,8 @@ class MultiShieldedMPPIExperiment(BaseExperiment):
         k1 = self.cfg.experiment.get("cbf_k1", 2.5)
         k2 = self.cfg.experiment.get("cbf_k2", 2.5)
 
-        log.info(f"Initializing MultiShieldedMPPIControl | r_sense={r_sense} | d_safe={d_safe}")
-        self.controller = MultiShieldedMPPIControl(
+        log.info(f"Initializing MultiDualGuardCBFCtrl | r_sense={r_sense} | d_safe={d_safe}")
+        self.controller = MultiDualGuardCBFCtrl(
             num_agents=self.env.env_params.num_agents,
             robot_params=self.robot_params,
             robot_type=self.env.robot_params.robot_type,

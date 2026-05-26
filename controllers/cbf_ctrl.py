@@ -1,9 +1,37 @@
-import cvxpy as cp
 import numpy as np
+import torch
 import skfmm
 
-from agents.basic_robot import RobotParams
+from agents.basic_robot import RobotParams, solve_qp_batch_pytorch
 from envs.smoke_env import EnvParams
+
+
+def solve_qp_numpy(
+    u_nom: np.ndarray,
+    R_diag: np.ndarray,
+    A: np.ndarray,
+    C: float,
+    u_min: np.ndarray,
+    u_max: np.ndarray,
+    max_iters: int = 20,
+    rho: float = 10.0
+) -> np.ndarray:
+    """NumPy wrapper that converts arguments to PyTorch tensors,
+    calls solve_qp_batch_pytorch, and converts the result back to NumPy.
+    Keeps NumPy-to-PyTorch interface details encapsulated locally.
+    """
+    device = "cpu"
+    u_nom_t = torch.tensor(u_nom, dtype=torch.float32, device=device)
+    R_diag_t = torch.tensor(R_diag, dtype=torch.float32, device=device)
+    A_t = torch.tensor(A, dtype=torch.float32, device=device)
+    C_t = torch.tensor(C, dtype=torch.float32, device=device)
+    u_min_t = torch.tensor(u_min, dtype=torch.float32, device=device)
+    u_max_t = torch.tensor(u_max, dtype=torch.float32, device=device)
+
+    u_t = solve_qp_batch_pytorch(
+        u_nom_t, R_diag_t, A_t, C_t, u_min_t, u_max_t, max_iters, rho
+    )
+    return u_t.detach().cpu().numpy()
 
 
 class CBFController:
@@ -170,7 +198,6 @@ class CBFController:
         Q = -h_x * np.sin(th) + h_y * np.cos(th)
 
         # P(x): curvature of distance field
-        # approximated as 0 (good enough)
         P = 0.0
 
         # nominal second derivative ddot_h
@@ -188,23 +215,11 @@ class CBFController:
             - dddh_dw * w_nom
         )
 
-        u = cp.Variable(2)
-        xi = cp.Variable(nonneg=True)
+        A = np.array([dddh_dv, dddh_dw])
+        R_diag = np.array([self.R[0, 0], self.R[1, 1]])
 
-        # constraint A_v*v + A_w*w + C >= -xi
-        cbf_constraint = dddh_dv * u[0] + dddh_dw * u[1] + C >= -xi
-
-        cost = 0.5 * cp.quad_form(u - u_nom, self.R) + self.rho * cp.square(xi)
-        constraints = [
-            cbf_constraint,
-            u >= self.u_min,
-            u <= self.u_max,
-        ]
-
-        prob = cp.Problem(cp.Minimize(cost), constraints)
-        prob.solve(solver=cp.OSQP)
-
-        if prob.status not in ["optimal", "optimal_inaccurate"] or u.value is None:
-            return u_nom
-
-        return u.value
+        # Execute high-performance ADMM solver in NumPy
+        u_safe = solve_qp_numpy(
+            u_nom, R_diag, A, C, self.u_min, self.u_max, max_iters=20, rho=10.0
+        )
+        return u_safe
