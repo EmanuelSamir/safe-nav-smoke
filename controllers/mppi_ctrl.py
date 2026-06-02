@@ -214,15 +214,13 @@ class MPPICtrl:
         return w[0] * dist_cost + w[1] * risk_cost
 
     def terminal_state_cost(self, states: torch.Tensor) -> torch.Tensor:
-        """Strong negative reward for reaching the goal safely."""
+        """Strong negative reward for reaching the goal safely at the end of the horizon."""
         K, T, nx = states.shape
-        goal_reached = torch.norm(states[:, :, :2] - self._goal, dim=2) < self._goal_thresh
-        cost = torch.zeros(K, dtype=self.dtype, device=self.device)
-
-        for k in range(K):
-            if goal_reached[k].any():
-                cost[k] = -100.0  # safe goal reward
+        # Vectorized check of the final state in the horizon (states[:, -1, :2])
+        dist_terminal = torch.norm(states[:, -1, :2] - self._goal, dim=1)
+        cost = torch.where(dist_terminal < self._goal_thresh, -100.0, 0.0)
         return cost
+
 
     # ======================================================
     #  VISUALIZATION

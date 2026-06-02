@@ -6,65 +6,94 @@ from typing import Any, Dict
 import numpy as np
 import torch
 
-from controllers.dual_guard import DualGuard
 from controllers.mppi_ctrl import MPPICtrl, MPPICtrlParams
 
 logger = logging.getLogger(__name__)
 
 
 # ==========================================================
-#  PRIVATE: MPPICtrl backed by DualGuard instead of MPPI
+#  PRIVATE: MPPICtrl with CBF Running Cost Penalty
 # ==========================================================
-class _DualGuardMPPICtrl(MPPICtrl):
-    """MPPICtrl whose planner is DualGuard.
+class _CBFPenalizeMPPICtrl(MPPICtrl):
+    """MPPICtrl whose running cost is augmented with a proportional CBF penalty.
 
-    `safety_function` and `safe_control_function` are set to None at init and
-    injected at each planning step by MultiDualGuardCBFCtrl, allowing fully
-    decentralized per-agent CBF constraints.
+    Penalizes samples that transgress the safety boundaries at the lookahead point
+    and the robot center:
+        C_cbf = C * max(-h(z_1) + alpha * h(z_2), 0)
     """
 
-    def _init_mppi_planner(self) -> DualGuard:
-        sigma = self.params.alpha_noise_sigma * np.diag(
-            self.robot.robot_params.action_max - self.robot.robot_params.action_min
-        )
-        return DualGuard(
-            dynamics=self.dynamics,
-            running_cost=self.running_cost,
-            terminal_state_cost=self.terminal_state_cost,
-            nx=self.robot.robot_params.state_dim,
-            noise_sigma=torch.tensor(sigma, dtype=self.dtype, device=self.device),
-            num_samples=self.params.num_samples,
-            horizon=self.params.horizon,
-            device=self.device,
-            u_min=torch.tensor(
-                self.robot.robot_params.action_min, dtype=self.dtype, device=self.device
-            ),
-            u_max=torch.tensor(
-                self.robot.robot_params.action_max, dtype=self.dtype, device=self.device
-            ),
-            lambda_=self.params.lambda_,
-            noise_abs_cost=self.params.noise_abs_cost,
-            step_dependent_dynamics=True,
-            safety_function=None,  # injected per planning step
-            safe_control_function=None,  # injected per planning step
-            safe_margin=0.0,
-        )
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.current_neighbors = []
+        self.d_safe = 1.2
+        self.k1 = 2.5
+        self.C_pen = 1000.0
+        self.alpha_pen = 1.0
+
+    def running_cost(self, states: torch.Tensor, actions: torch.Tensor, t: int) -> torch.Tensor:
+        """Weighted sum of goal distance, risk cost, and proportional CBF penalty."""
+        # 1. Base running cost (goal distance + environmental risk map)
+        cost = super().running_cost(states, actions, t)
+
+        # 2. Add proportional CBF penalty if neighbors exist
+        if len(self.current_neighbors) == 0:
+            return cost
+
+        K = states.shape[0]
+        device = states.device
+
+        # Ego coordinates [x, y, theta]
+        p_i_center = states[:, :2]
+        theta = states[:, 2]
+
+        # Ego safety/lookahead point
+        p_i_safe = p_i_center + self.robot.L * torch.stack([torch.cos(theta), torch.sin(theta)], dim=1)
+
+        # Neighbor coordinates
+        if isinstance(self.current_neighbors, list):
+            neighbors_tensor = torch.stack(self.current_neighbors).to(device)
+        else:
+            neighbors_tensor = self.current_neighbors.to(device)
+
+        p_j_center = neighbors_tensor[:, :2]
+        theta_j = neighbors_tensor[:, 2]
+
+        # Neighbor safety/lookahead point
+        p_j_safe = p_j_center + self.robot.L * torch.stack([torch.cos(theta_j), torch.sin(theta_j)], dim=1)
+
+        # Predict neighbor velocities and positions at future time t
+        v_nominal = self.robot.action_max[0] / 2.0
+        v_j_x = v_nominal * torch.cos(theta_j)
+        v_j_y = v_nominal * torch.sin(theta_j)
+        v_j = torch.stack([v_j_x, v_j_y], dim=1)  # (N_neigh, 2)
+
+        # A. Lookahead point barrier (z_1)
+        p_j_pred_safe = p_j_safe + v_j * (t * self.dt)
+        d_safe_barrier = self.d_safe + 2.0 * self.robot.L + 0.2
+        p_rel_safe = p_i_safe.unsqueeze(1) - p_j_pred_safe.unsqueeze(0)  # (K, N_neigh, 2)
+        dist_sq_safe = torch.sum(p_rel_safe**2, dim=2)  # (K, N_neigh)
+        h1_all = dist_sq_safe - d_safe_barrier**2  # (K, N_neigh)
+        h1, _ = torch.min(h1_all, dim=1)  # (K,) critical lookahead barrier
+
+        # B. Center point barrier (z_2)
+        p_j_pred_center = p_j_center + v_j * (t * self.dt)
+        p_rel_center = p_i_center.unsqueeze(1) - p_j_pred_center.unsqueeze(0)  # (K, N_neigh, 2)
+        dist_sq_center = torch.sum(p_rel_center**2, dim=2)  # (K, N_neigh)
+        h2_all = dist_sq_center - self.d_safe**2  # (K, N_neigh)
+        h2, _ = torch.min(h2_all, dim=1)  # (K,) critical center barrier
+
+        # Proportional CBF Penalty: Ccbf = C * max(-h1 + alpha * h2, 0)
+        penalty = self.C_pen * torch.clamp(-h1 + self.alpha_pen * h2, min=0.0)
+
+        return cost + penalty
 
 
 # ==========================================================
-#  MULTI-AGENT DECENTRALIZED DUALGUARD-CBF MANAGER
+#  MULTI-AGENT DECENTRALIZED CBF-PENALIZE MANAGER
 # ==========================================================
-class MultiDualGuardCBFCtrl:
-    """Centralized orchestrator for decentralized multi-agent collision-free
-    planning using CBF safety functions inside DualGuard MPPI.
-
-    Each agent holds an independent `_DualGuardMPPICtrl` (= MPPICtrl + DualGuard
-    planner). At every step, per-agent CBF functions are wired into the planner:
-        safety_function      = robot.cbf_h_function(states, neighbors, ...)  -> h(x)
-        safe_control_function = robot.cbf_safe_control(states, neighbors, ...) -> u_safe (QP-CBF)
-
-    For HJ-based safety (future): swap to safety_function = value_function,
-    safe_control_function = least_restrictive_filter.
+class MultiCBFPenalizeCtrl:
+    """Centralized orchestrator for decentralized multi-agent safe navigation
+    using proportional CBF penalties directly in MPPI cost evaluation.
     """
 
     def __init__(
@@ -80,7 +109,8 @@ class MultiDualGuardCBFCtrl:
         r_sense: float = 6.0,
         d_safe: float = 1.2,
         k1: float = 2.5,
-        k2: float = 2.5,
+        C_pen: float = 1000.0,
+        alpha_pen: float = 1.0,
     ):
         self.num_agents = num_agents
         self.device = device
@@ -88,11 +118,12 @@ class MultiDualGuardCBFCtrl:
         self.r_sense = r_sense
         self.d_safe = d_safe
         self.k1 = k1
-        self.k2 = k2
+        self.C_pen = C_pen
+        self.alpha_pen = alpha_pen
         self.dt = dt
 
-        self.agents_controllers: Dict[str, _DualGuardMPPICtrl] = {
-            f"agent_{i}": _DualGuardMPPICtrl(
+        self.agents_controllers: Dict[str, _CBFPenalizeMPPICtrl] = {
+            f"agent_{i}": _CBFPenalizeMPPICtrl(
                 robot_params=robot_params,
                 robot_type=robot_type,
                 goal_thresh=goal_thresh,
@@ -104,12 +135,8 @@ class MultiDualGuardCBFCtrl:
             for i in range(num_agents)
         }
 
-        # Persistent executor to avoid thread spawn/tear-down overhead on each step
         self.executor = ThreadPoolExecutor(max_workers=num_agents)
 
-    # ======================================================
-    #  EXTERNAL INTERFACE
-    # ======================================================
     def set_goals(self, goals: Dict[str, Any]):
         """Set goals per agent. Format: {"agent_0": [gx, gy], ...}"""
         for key, goal_pos in goals.items():
@@ -117,21 +144,12 @@ class MultiDualGuardCBFCtrl:
                 self.agents_controllers[key].set_goal(goal_pos)
 
     def set_maps(self, maps_deque: deque):
-        """Broadcast a shared risk-map deque to all agent controllers."""
+        """Broadcast shared risk-map deque to all agent controllers."""
         for ctrl in self.agents_controllers.values():
             ctrl.set_maps(maps_deque)
 
     def get_commands(self, current_obs: Dict[str, Dict[str, Any]]) -> Dict[str, torch.Tensor]:
-        """Decentralized planning step.
-
-        Args:
-            current_obs: observation dict from the environment, keyed by agent id.
-                         Each value must contain at minimum: 'location' (2,), 'angle' (float).
-
-        Returns:
-            Dict mapping agent id -> control tensor.
-        """
-        # Build raw state tensors [x, y, theta] for all agents
+        """Decentralized planning step with CBF-penalized cost functions."""
         agents_states = {
             key: torch.tensor(
                 [obs["location"][0], obs["location"][1], obs["angle"]],
@@ -141,16 +159,14 @@ class MultiDualGuardCBFCtrl:
             if obs is not None and key in self.agents_controllers
         }
 
-        def plan_agent(ego_key: str, ego_ctrl: _DualGuardMPPICtrl) -> tuple:
+        def plan_agent(ego_key: str, ego_ctrl: _CBFPenalizeMPPICtrl) -> tuple:
             if ego_key not in agents_states:
                 return ego_key, None
 
             ego_state = agents_states[ego_key]
-
-            # 1. Sync robot state
             ego_ctrl.set_state(ego_state.numpy())
 
-            # 2. Local sensing: neighbors within r_sense
+            # Local neighbor sensing
             ego_pos = ego_state[:2]
             neighbors = [
                 state
@@ -158,22 +174,13 @@ class MultiDualGuardCBFCtrl:
                 if k != ego_key and torch.norm(ego_pos - state[:2]) <= self.r_sense
             ]
 
-            # 3. Wire CBF safety functions into DualGuard for this step
-            #    safety_function  : h(x)   (CBF value — positive = safe)
-            #    safe_control_function : u_safe (QP-CBF analytical solution)
-            u_min = ego_ctrl.planner.u_min
-            u_max = ego_ctrl.planner.u_max
+            # Inject neighbors and safety metrics
+            ego_ctrl.current_neighbors = neighbors
+            ego_ctrl.d_safe = self.d_safe
+            ego_ctrl.k1 = self.k1
+            ego_ctrl.C_pen = self.C_pen
+            ego_ctrl.alpha_pen = self.alpha_pen
 
-            ego_ctrl.planner.safety_function = lambda states, t: ego_ctrl.robot.cbf_h_function(
-                states, neighbors, self.d_safe, self.k1, self.dt, t
-            )
-            ego_ctrl.planner.safe_control_function = lambda states, t: (
-                ego_ctrl.robot.cbf_safe_control(
-                    states, neighbors, self.d_safe, self.k1, self.k2, self.dt, t, u_min, u_max
-                )
-            )
-
-            # 4. Plan
             return ego_key, ego_ctrl.get_command()
 
         commands: Dict[str, torch.Tensor] = {}
@@ -184,7 +191,6 @@ class MultiDualGuardCBFCtrl:
                 if cmd is not None:
                     commands[k] = cmd
         else:
-            # Reuse the persistent executor to avoid per-step thread pool creation/destruction overhead
             futures = [
                 self.executor.submit(plan_agent, key, ctrl)
                 for key, ctrl in self.agents_controllers.items()
@@ -199,16 +205,8 @@ class MultiDualGuardCBFCtrl:
     def visualize_rollouts(self, ax, draw_samples: bool = False):
         """Plot weighted-mean rollout paths for every agent."""
         colors = [
-            "#1f77b4",
-            "#ff7f0e",
-            "#2ca02c",
-            "#d62728",
-            "#9467bd",
-            "#8c564b",
-            "#e377c2",
-            "#7f7f7f",
-            "#bcbd22",
-            "#17becf",
+            "#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd",
+            "#8c564b", "#e377c2", "#7f7f7f", "#bcbd22", "#17becf"
         ]
         for i, (key, ctrl) in enumerate(self.agents_controllers.items()):
             ctrl.visualize_rollouts(ax, color=colors[i % len(colors)], draw_samples=draw_samples)
@@ -221,17 +219,16 @@ if __name__ == "__main__":
     from agents.basic_robot import RobotParams
     from agents.dubins_robot import DubinsRobot
 
-    print("🧪 Iniciando simulación Swarm Circle Swap (10 drones) con HOCBF Shielding...")
+    print("🧪 Iniciando simulación Swarm Circle Swap (10 drones) con CBF Penalize Controller...")
 
     device = "cuda" if torch.cuda.is_available() else "cpu"
     DT = 0.1
     N_DRONES = 10
     CIRCLE_RADIUS = 10.0
     D_SAFE = 1.6
-    R_SENSE = 3.0
+    R_SENSE = 4.0
     GOAL_THRESH = 0.6
 
-    # 1. Configuración de parámetros físicos
     robot_params = RobotParams(
         action_dim=2,
         state_dim=3,
@@ -244,7 +241,7 @@ if __name__ == "__main__":
     )
 
     mppi_params = MPPICtrlParams(num_samples=100, horizon=15, lambda_=1.2)
-    multi_ctrl = MultiDualGuardCBFCtrl(
+    multi_ctrl = MultiCBFPenalizeCtrl(
         num_agents=N_DRONES,
         robot_params=robot_params,
         robot_type="dubins2d",
@@ -255,10 +252,10 @@ if __name__ == "__main__":
         r_sense=R_SENSE,
         d_safe=D_SAFE,
         k1=2.5,
-        k2=2.5,
+        C_pen=1500.0,
+        alpha_pen=1.0,
     )
 
-    # 2. Establecer metas y posiciones iniciales
     goals_dict = {}
     trajectories = {f"agent_{i}": [] for i in range(N_DRONES)}
     sims = {}
@@ -280,7 +277,7 @@ if __name__ == "__main__":
 
     multi_ctrl.set_goals(goals_dict)
 
-    # Dummy risk map deque para MPPI
+    # Dummy risk map deque for MPPI
     _xs = np.arange(-CIRCLE_RADIUS - 2, CIRCLE_RADIUS + 2, 0.5)
     _ys = np.arange(-CIRCLE_RADIUS - 2, CIRCLE_RADIUS + 2, 0.5)
     _coords = (
@@ -289,14 +286,13 @@ if __name__ == "__main__":
     _risk = np.zeros(len(_coords), dtype=np.float32)
     multi_ctrl.set_maps(deque([(_coords, _risk)] * mppi_params.horizon, maxlen=mppi_params.horizon))
 
-    # 3. Configurar visualización en tiempo real
     plt.ion()
     fig, ax = plt.subplots(figsize=(8, 8))
     ax.set_xlim(-CIRCLE_RADIUS - 2, CIRCLE_RADIUS + 2)
     ax.set_ylim(-CIRCLE_RADIUS - 2, CIRCLE_RADIUS + 2)
     ax.grid(True)
     ax.set_aspect("equal", adjustable="box")
-    ax.set_title("Circular Swap - Swarm Circle Swap HOCBF Real-time (Dubins)")
+    ax.set_title("Circular Swap - Swarm Circle Swap CBF Penalize Real-time (Dubins)")
 
     spawn_circ = plt.Circle(
         (0, 0), CIRCLE_RADIUS, color="gray", fill=False, linestyle="--", alpha=0.5
@@ -324,7 +320,6 @@ if __name__ == "__main__":
     plt.draw()
     plt.pause(0.1)
 
-    # 4. Ejecutar la simulación con actualización en tiempo real
     print("🚀 Iniciando bucle de control (120 pasos)...")
     max_steps = 120
     for step in tqdm(range(max_steps)):
@@ -346,7 +341,6 @@ if __name__ == "__main__":
             state = sims[key].get_state().copy()
             trajectories[key].append(state)
 
-            # Actualizar gráfico en tiempo real
             drone_patches[i].center = (state[0], state[1])
             trail_x = [pt[0] for pt in trajectories[key]]
             trail_y = [pt[1] for pt in trajectories[key]]
@@ -373,6 +367,5 @@ if __name__ == "__main__":
 
     print(f"\nDistancia mínima de separación: {min_dist_overall:.4f} metros (D_SAFE = {D_SAFE})")
 
-    # Mantener el gráfico abierto
     plt.ioff()
     plt.show()

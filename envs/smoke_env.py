@@ -11,8 +11,8 @@ from omegaconf import DictConfig, OmegaConf
 
 from agents.basic_robot import RobotParams
 from agents.dubins_robot import DubinsRobot
-from agents.dubins_robot_fixed_velocity import DubinsRobotFixedVelocity
-from agents.unicycle_robot import UnicycleRobot
+# from agents.dubins_robot_fixed_velocity import DubinsRobotFixedVelocity
+# from agents.unicycle_robot import UnicycleRobot
 from envs.simulator.playback import Playback, PlaybackParams
 from envs.simulator.sensor import (
     Camera1DSensor,
@@ -76,11 +76,11 @@ class SmokeAgent:
         # Robot Object creation
         rtype = robot_params.robot_type
         if rtype == "unicycle":
-            self.robot = UnicycleRobot(robot_params)
+            raise NotImplementedError("UnicycleRobot is deprecated. Use dubins2d instead.")
         elif rtype == "dubins2d":
             self.robot = DubinsRobot(robot_params)
         elif rtype == "dubins2d_fixed_velocity":
-            self.robot = DubinsRobotFixedVelocity(robot_params)
+            raise NotImplementedError("DubinsRobotFixedVelocity is deprecated. Use dubins2d instead.")
         else:
             raise NotImplementedError(f"Robot type {rtype} not implemented")
 
@@ -720,31 +720,31 @@ class SmokeEnv(gym.Env):
                 zorder=5,
             )
 
-            # 2. Render Physical Collision Boundary (Solid Dark Red circle)
+            # 2. Render Physical Collision Boundary (Solid Bright Red circle)
             col_radius = self.env_params.collision_radius
             circ_phys = Circle(
                 (pos_x, pos_y), 
                 radius=col_radius, 
                 facecolor="none", 
-                edgecolor="#8B0000", 
+                edgecolor="#FF3366", # Bright Crimson Red
                 linestyle="-", 
-                linewidth=1.2, 
-                alpha=0.7, 
+                linewidth=1.6, 
+                alpha=0.9, 
                 zorder=4
             )
             self.window["ax"].add_patch(circ_phys)
 
-            # 3. Render Control Safety Radius if provided by the experiment controller (Dotted Blue circle)
+            # 3. Render Control Safety Radius if provided by the experiment controller (Dotted Neon Cyan circle)
             if controller is not None and hasattr(controller, "d_safe"):
                 safe_rad = float(controller.d_safe) / 2.0  # Represents radius per robot
                 circ_safe = Circle(
                     (pos_x, pos_y), 
                     radius=safe_rad, 
                     facecolor="none", 
-                    edgecolor="#0000FF", 
+                    edgecolor="#00FFFF", # Neon Cyan
                     linestyle="--", 
-                    linewidth=1.0, 
-                    alpha=0.5, 
+                    linewidth=1.6, 
+                    alpha=0.9, 
                     zorder=4
                 )
                 self.window["ax"].add_patch(circ_safe)

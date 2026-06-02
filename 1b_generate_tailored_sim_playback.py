@@ -10,6 +10,7 @@ from tqdm import tqdm
 # Add project root to path
 sys.path.append(os.getcwd())
 
+from envs.simulator.playback_schema import SmokeDataSchema
 from envs.simulator.smoke import BlobParams, Smoke, SmokeParams
 
 
@@ -21,9 +22,10 @@ def main():
     args = parser.parse_args()
 
     # Parameters
-    NUM_EPISODES = 1 if args.test else 120
+    NUM_EPISODES = 1 if args.test else 100
     EPISODE_STEPS = 200
-    OUTPUT_PATH = "data/planning_smoke_200_steps.npz"
+    OUTPUT_PATH = "data/planning_smoke_200_steps_100_episodes"
+    dt = 0.1
 
     # Ensure data directory exists
     os.makedirs(os.path.dirname(OUTPUT_PATH), exist_ok=True)
@@ -121,7 +123,7 @@ def main():
                 plt.pause(0.01)
 
             # Advance simulation
-            sim.step()
+            sim.step(dt=dt)
 
     print(f"Generation complete in {time.time() - start_time:.2f}s")
 
@@ -130,19 +132,26 @@ def main():
         plt.show()
         return
 
-    print(f"Saving to {OUTPUT_PATH}...")
+    print(f"Saving to {OUTPUT_PATH} (Hugging Face Dataset format)...")
 
-    # Save compressed
-    np.savez_compressed(
-        OUTPUT_PATH,
-        smoke_data=all_data,
-        x_size=x_size,
-        y_size=y_size,
-        resolution=resolution,
-        dt=0.1,  # standard dt
-    )
+    # Create dataset dictionary
+    # Instead of one big 4D array, we save per episode for better HF handling
+    dataset_dict = {
+        SmokeDataSchema.SMOKE_DATA: [all_data[ep].tolist() for ep in range(NUM_EPISODES)],
+        SmokeDataSchema.X_SIZE: [float(x_size)] * NUM_EPISODES,
+        SmokeDataSchema.Y_SIZE: [float(y_size)] * NUM_EPISODES,
+        SmokeDataSchema.RESOLUTION: [float(resolution)] * NUM_EPISODES,
+        SmokeDataSchema.DT: [float(dt)] * NUM_EPISODES,
+        "episode_id": list(range(NUM_EPISODES)),
+    }
 
-    print(f"Saved {(os.path.getsize(OUTPUT_PATH) / 1024 / 1024):.2f} MB")
+    from datasets import Dataset
+
+    ds = Dataset.from_dict(dataset_dict)
+    ds.save_to_disk(OUTPUT_PATH)
+
+    print(f"Saved dataset to {OUTPUT_PATH}. Features: {ds.features}")
+    print(f"Data structure: Each row is one episode with {EPISODE_STEPS} steps of {H}x{W} maps.")
 
 
 if __name__ == "__main__":
