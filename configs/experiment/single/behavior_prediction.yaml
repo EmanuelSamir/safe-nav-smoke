@@ -9,8 +9,8 @@ type: "behavior-prediction"
 time_horizon: 15
 samples: 50
 
-# Model selection — one of: gp | rnp | rnp_multistep | fno | fno_3d
-model_type: "fno_3d"
+# Model selection — one of: gp | rnp | rnp_multistep | fno
+model_type: "fno"
 
 # Path to trained .pt checkpoint (not required for gp)
 checkpoint_path: "/Users/emanuelsamir/Documents/dev/cmu/research/experiments/7_safe_nav_smoke/outputs/2026-02-24/14-10-03_fno_3d/checkpoints/best_model.pt"

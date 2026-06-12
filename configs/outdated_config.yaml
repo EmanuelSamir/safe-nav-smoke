@@ -1,0 +1,26 @@
+defaults:
+  - env: smoke_env
+  - agent: dubins
+  - experiment: single/base
+  - _self_
+
+# Global settings
+exp_name: "default"
+seed: 42
+debug: false
+output_dir: "outputs/${exp_name}/${now:%Y-%m-%d}/${now:%H-%M-%S}"
+
+# Logging
+logger:
+  project_name: "safe-nav-smoke"
+  run_name: "${experiment.name}_${now:%m%d_%H%M}"
+  log_frequency: 1
+  save_video: true
+
+# Hydra settings for output directory organization
+hydra:
+  run:
+    dir: outputs/${exp_name}/${now:%Y-%m-%d}/${now:%H-%M-%S}
+  sweep:
+    dir: outputs/${exp_name}/multirun/${now:%Y-%m-%d}/${now:%H-%M-%S}
+    subdir: ${hydra.job.num}
