@@ -4,7 +4,12 @@ from typing import Optional
 import matplotlib.pyplot as plt
 import numpy as np
 import phi.field
-from phi import flow
+from phi.torch import flow
+from phi.torch.flow import TORCH
+
+# Configurar GPU por defecto en PyTorch para phiflow
+TORCH.set_default_device('GPU')
+
 
 from env.simulator.sensor import (
     DownwardsSensorParams,

@@ -14,3 +14,9 @@ scikit-image
 pandas
 cvxpy
 scikit-fmm
+prefect==3.2.7
+fastapi==0.115.12
+starlette==0.46.2
+sse-starlette==0.10.3
+datasets
+

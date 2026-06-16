@@ -93,7 +93,7 @@ def main(cfg: DictConfig):
                 sim.step(dt=dt)
 
             yield {
-                SmokeDataSchema.SMOKE_DATA: episode_data.tolist(),
+                SmokeDataSchema.SMOKE_DATA: episode_data,
                 SmokeDataSchema.X_SIZE: float(x_size),
                 SmokeDataSchema.Y_SIZE: float(y_size),
                 SmokeDataSchema.RESOLUTION: float(resolution),
@@ -103,9 +103,19 @@ def main(cfg: DictConfig):
 
     print(f"Generating data using streaming generator (Hugging Face Dataset format)...")
 
+    import datasets
     from datasets import Dataset
 
-    ds = Dataset.from_generator(episode_generator)
+    features = datasets.Features({
+        SmokeDataSchema.SMOKE_DATA: datasets.Array3D(shape=(episode_steps, H, W), dtype="float32"),
+        SmokeDataSchema.X_SIZE: datasets.Value("float32"),
+        SmokeDataSchema.Y_SIZE: datasets.Value("float32"),
+        SmokeDataSchema.RESOLUTION: datasets.Value("float32"),
+        SmokeDataSchema.DT: datasets.Value("float32"),
+        "episode_id": datasets.Value("int32"),
+    })
+
+    ds = Dataset.from_generator(episode_generator, features=features, writer_batch_size=50)
 
     print(f"Generation complete in {time.time() - start_time:.2f}s. Saving to {output_path}...")
     ds.save_to_disk(output_path)
