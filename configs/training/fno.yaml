@@ -38,7 +38,7 @@ training:
   loss:
     name: "nll"
     beta: null
-    m_samples: 3
+    m_samples: 5
     normalize_l2: true
 
   optimizer:
