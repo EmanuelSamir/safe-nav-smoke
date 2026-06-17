@@ -7,8 +7,10 @@ import logging
 import random
 from io import BytesIO
 from pathlib import Path
+from typing import Optional
 
 import hydra
+import lightning as L
 import matplotlib.pyplot as plt
 import numpy as np
 import torch
@@ -16,11 +18,7 @@ import torch.optim as optim
 from omegaconf import DictConfig, OmegaConf
 from PIL import Image
 from torch.utils.data import DataLoader
-from torch.utils.tensorboard import SummaryWriter
-from tqdm import tqdm
-
 from pydantic import BaseModel, ConfigDict, Field
-from typing import Optional
 
 from src.models.fno import FNO, FNOConfig
 from src.models.shared.datasets import SequentialDataset, dense_sequential_collate_fn
@@ -84,26 +82,6 @@ class FNOTrainingGlobalSchema(BaseModel):
     training: FNOTrainingConfigSchema
 
 
-def save_checkpoint(model, optimizer, epoch, loss, cfg_dict, path):
-    torch.save(
-        {
-            "epoch": epoch,
-            "model_state_dict": model.state_dict(),
-            "optimizer_state_dict": optimizer.state_dict(),
-            "loss": loss,
-            "hyper_parameters": cfg_dict,
-        },
-        path,
-    )
-
-
-def make_times(t_offset: int, h_ctx: int, seq_len: int, device, B: int) -> torch.Tensor:
-    """Relative times [t_offset .. t_offset+h_ctx-1] normalised to [0,1]. → (B, h_ctx)"""
-    t = torch.arange(t_offset, t_offset + h_ctx, device=device, dtype=torch.float32)
-    t = t / max(seq_len - 1, 1)
-    return t.unsqueeze(0).expand(B, -1)
-
-
 def clip_grad_norm_(parameters, max_norm):
     if isinstance(parameters, torch.Tensor):
         parameters = [parameters]
@@ -128,9 +106,16 @@ def clip_grad_norm_(parameters, max_norm):
     return total_norm
 
 
+def make_times(t_offset: int, h_ctx: int, seq_len: int, device, B: int) -> torch.Tensor:
+    """Relative times [t_offset .. t_offset+h_ctx-1] normalised to [0,1]. → (B, h_ctx)"""
+    t = torch.arange(t_offset, t_offset + h_ctx, device=device, dtype=torch.float32)
+    t = t / max(seq_len - 1, 1)
+    return t.unsqueeze(0).expand(B, -1)
+
+
 def log_vis(model, loader, t_cfg: FNOTrainingConfigSchema, H, W, x_size, y_size, device, writer, epoch, rollout_steps=(1, 5, 10, 15)):
     model.eval()
-    ctx_obs, trg_obs, _ = next(iter(loader))ma
+    ctx_obs, trg_obs, _ = next(iter(loader))
     ctx_obs = ctx_obs.to(device)
 
     T = ctx_obs.xs.shape[1]
@@ -198,136 +183,95 @@ def log_vis(model, loader, t_cfg: FNOTrainingConfigSchema, H, W, x_size, y_size,
     plt.close()
 
 
-@hydra.main(version_base=None, config_path="../../configs/training", config_name="fno")
-def train(cfg: DictConfig):
-    # Pydantic configuration validation
-    cfg_container = OmegaConf.to_container(cfg, resolve=True)
-    if "training" in cfg_container and "model" in cfg_container["training"]:
-        # Map sequence length to seq_len_ref
-        cfg_container["training"]["model"]["seq_len_ref"] = cfg_container["training"]["data"]["sequence_length"]
+class FNODataModule(L.LightningDataModule):
+    def __init__(self, t_cfg: FNOTrainingConfigSchema, data_path: Path):
+        super().__init__()
+        self.t_cfg = t_cfg
+        self.data_path = data_path
+        self.train_ds = None
+        self.val_ds = None
 
-    global_cfg = FNOTrainingGlobalSchema.model_validate(cfg_container)
-    t_cfg = global_cfg.training
+    def setup(self, stage=None):
+        h_ctx = self.t_cfg.model.h_ctx
+        h_pred = self.t_cfg.model.h_pred
+        seq_len = self.t_cfg.data.sequence_length
+        max_ep = self.t_cfg.data.max_samples
 
-    print(f"Training FNO — {t_cfg.experiment_name}")
-    torch.manual_seed(t_cfg.seed)
-    np.random.seed(t_cfg.seed)
-    random.seed(t_cfg.seed)
+        self.train_ds = SequentialDataset(
+            data_path=str(self.data_path),
+            sequence_length=seq_len,
+            forecast_horizon=h_pred,
+            mode="train",
+            train_split=self.t_cfg.data.train_split,
+            max_episodes=max_ep,
+            dense=True,
+            downsample_factor=self.t_cfg.data.downsample_factor,
+        )
+        self.val_ds = SequentialDataset(
+            data_path=str(self.data_path),
+            sequence_length=seq_len,
+            forecast_horizon=h_pred,
+            mode="val",
+            train_split=self.t_cfg.data.train_split,
+            max_episodes=max_ep,
+            dense=True,
+            downsample_factor=self.t_cfg.data.downsample_factor,
+        )
 
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    if torch.backends.mps.is_available():
-        device = torch.device("mps")
-    print(f"Device: {device}")
+    def train_dataloader(self):
+        return DataLoader(
+            self.train_ds,
+            batch_size=self.t_cfg.data.batch_size,
+            shuffle=True,
+            collate_fn=dense_sequential_collate_fn,
+            num_workers=self.t_cfg.data.num_workers,
+        )
 
-    from hydra.core.hydra_config import HydraConfig
+    def val_dataloader(self):
+        return DataLoader(
+            self.val_ds,
+            batch_size=self.t_cfg.data.batch_size,
+            shuffle=False,
+            collate_fn=dense_sequential_collate_fn,
+            num_workers=self.t_cfg.data.num_workers,
+        )
 
-    output_dir = HydraConfig.get().runtime.output_dir
-    log_dir = os.path.join(output_dir, "logs")
-    ckpt_dir = os.path.join(output_dir, "checkpoints")
-    os.makedirs(log_dir, exist_ok=True)
-    os.makedirs(ckpt_dir, exist_ok=True)
 
-    with open(os.path.join(output_dir, "config_used.yaml"), "w") as f:
-        f.write(OmegaConf.to_yaml(cfg))
+class FNOLightningModule(L.LightningModule):
+    def __init__(self, t_cfg: FNOTrainingConfigSchema, H: int, W: int, x_size: float, y_size: float):
+        super().__init__()
+        self.save_hyperparameters(ignore=["H", "W", "x_size", "y_size"])
+        self.t_cfg = t_cfg
+        self.H = H
+        self.W = W
+        self.x_size = x_size
+        self.y_size = y_size
+        self.model = FNO(t_cfg.model)
+        self.loss_cfg = t_cfg.loss
+        self.opt_cfg = t_cfg.optimizer
+        
+        # Turn off automatic optimization to preserve manual backward step-by-step logic
+        self.automatic_optimization = False
 
-    writer = SummaryWriter(log_dir=log_dir)
+    def forward(self, ctx_w, times):
+        return self.model(ctx_w, times)
 
-    # Data
-    try:
-        root_dir = Path(hydra.utils.get_original_cwd())
-    except Exception:
-        root_dir = Path(os.getcwd())
-
-    data_path = root_dir / t_cfg.data.data_path
-    if not data_path.exists():
-        log.error(f"Data not found: {data_path}")
-        return
-
-    h_ctx = t_cfg.model.h_ctx
-    h_pred = t_cfg.model.h_pred
-    seq_len = t_cfg.data.sequence_length
-    max_ep = t_cfg.data.max_samples
-
-    assert seq_len > h_ctx + h_pred, (
-        f"sequence_length ({seq_len}) must be > h_ctx+h_pred ({h_ctx + h_pred})"
-    )
-
-    train_ds = SequentialDataset(
-        data_path=str(data_path),
-        sequence_length=seq_len,
-        forecast_horizon=h_pred,
-        mode="train",
-        train_split=t_cfg.data.train_split,
-        max_episodes=max_ep,
-        dense=True,
-        downsample_factor=t_cfg.data.downsample_factor,
-    )
-    val_ds = SequentialDataset(
-        data_path=str(data_path),
-        sequence_length=seq_len,
-        forecast_horizon=h_pred,
-        mode="val",
-        train_split=t_cfg.data.train_split,
-        max_episodes=max_ep,
-        dense=True,
-        downsample_factor=t_cfg.data.downsample_factor,
-    )
-
-    H, W = train_ds.H, train_ds.W
-    print(f"Grid {H}×{W}  h_ctx={h_ctx}  h_pred={h_pred}  train={len(train_ds)}  val={len(val_ds)}")
-
-    train_loader = DataLoader(
-        train_ds,
-        batch_size=t_cfg.data.batch_size,
-        shuffle=True,
-        collate_fn=dense_sequential_collate_fn,
-        num_workers=t_cfg.data.num_workers,
-    )
-    val_loader = DataLoader(
-        val_ds,
-        batch_size=t_cfg.data.batch_size,
-        shuffle=False,
-        collate_fn=dense_sequential_collate_fn,
-        num_workers=t_cfg.data.num_workers,
-    )
-
-    # Model
-    fno_cfg = t_cfg.model
-    model = FNO(fno_cfg).to(device)
-    print(f"FNO params: {sum(p.numel() for p in model.parameters()):,}")
-
-    # Optimizer
-    opt_cfg = t_cfg.optimizer
-    optimizer = optim.Adam(model.parameters(), lr=opt_cfg.lr)
-    scheduler = optim.lr_scheduler.CosineAnnealingLR(
-        optimizer, T_max=opt_cfg.max_epochs, eta_min=opt_cfg.min_lr
-    )
-
-    loss_cfg = t_cfg.loss
-    print(f"Loss configuration: name={loss_cfg.name}, beta={loss_cfg.beta}, m_samples={loss_cfg.m_samples}, normalize_l2={loss_cfg.normalize_l2}")
-
-    def beta_nll_loss(dist, gt, beta):
+    def beta_nll_loss(self, dist, gt, beta):
         var = dist.variance
         nll = 0.5 * (((dist.mean - gt) ** 2) / var + torch.log(var))
         weight = var.detach() ** beta
         loss = nll * weight
         return loss.mean()
 
-    def energy_score_loss(dist, gt, m_samples, normalize_l2):
-        # Generate M samples using rsample (reparameterization trick)
+    def energy_score_loss(self, dist, gt, m_samples, normalize_l2):
         samples = dist.rsample(torch.Size([m_samples]))  # (M, B, H, W, 1)
-
-        # Term 1: 1/M * sum_{j=1}^M ||u_i^j - u_i||_H
         diff_gt = samples - gt.unsqueeze(0)  # (M, B, H, W, 1)
         if normalize_l2:
-            # Root-mean-squared-difference over grid dimensions (-3, -2, -1)
             norm_gt = torch.sqrt(torch.mean(diff_gt ** 2, dim=(-3, -2, -1)) + 1e-8)  # (M, B)
         else:
-            # Raw L2 norm over grid dimensions
             norm_gt = torch.sqrt(torch.sum(diff_gt ** 2, dim=(-3, -2, -1)) + 1e-8)  # (M, B)
         term1 = norm_gt.mean(dim=0)  # (B,)
 
-        # Term 2: 1/(2*M*(M-1)) * sum_{j=1}^M sum_{h=1}^M ||u_i^j - u_i^h||_H
         samples1 = samples.unsqueeze(1)  # (M, 1, B, H, W, 1)
         samples2 = samples.unsqueeze(0)  # (1, M, B, H, W, 1)
         diff_pairwise = samples1 - samples2  # (M, M, B, H, W, 1)
@@ -340,129 +284,243 @@ def train(cfg: DictConfig):
         loss = term1 - term2
         return loss.mean()
 
-    def criterion(dist, gt):
-        if loss_cfg.name == "energy_score":
-            return energy_score_loss(dist, gt, m_samples=loss_cfg.m_samples, normalize_l2=loss_cfg.normalize_l2)
-        elif loss_cfg.name == "nll":
-            if loss_cfg.beta is not None:
-                return beta_nll_loss(dist, gt, beta=loss_cfg.beta)
+    def criterion(self, dist, gt):
+        if self.loss_cfg.name == "energy_score":
+            return self.energy_score_loss(dist, gt, m_samples=self.loss_cfg.m_samples, normalize_l2=self.loss_cfg.normalize_l2)
+        elif self.loss_cfg.name == "nll":
+            if self.loss_cfg.beta is not None:
+                return self.beta_nll_loss(dist, gt, beta=self.loss_cfg.beta)
             return -dist.log_prob(gt).mean()
         else:
-            raise ValueError(f"Unknown loss function: {loss_cfg.name}")
+            raise ValueError(f"Unknown loss function: {self.loss_cfg.name}")
 
-    # Training loop
-    best_val = float("inf")
+    def training_step(self, batch, batch_idx):
+        opt = self.optimizers()
+        opt.zero_grad()
 
-    for epoch in range(opt_cfg.max_epochs):
-        model.train()
-        train_loss = 0.0
+        ctx_obs, trg_obs, _ = batch
+        T = ctx_obs.xs.shape[1]
+        B_size = ctx_obs.xs.shape[0]
+        h_ctx = self.t_cfg.model.h_ctx
+        h_pred = self.t_cfg.model.h_pred
+        seq_len = self.t_cfg.data.sequence_length
 
-        pbar = tqdm(train_loader, desc=f"Epoch {epoch}")
-        for batch in pbar:
-            ctx_obs, trg_obs, _ = batch
-            ctx_obs = ctx_obs.to(device)
-            trg_obs = trg_obs.to(device)
+        frames = ctx_obs.values[:, :, :, 0].view(B_size, T, self.H, self.W)
+        targets = trg_obs.values.view(B_size, T, self.H, self.W, h_pred)
 
-            T = ctx_obs.xs.shape[1]
-            B_size = ctx_obs.xs.shape[0]
+        n_win = T - h_ctx - h_pred + 1
+        if n_win <= 0:
+            return
 
-            # (B, T, P, 1) → (B, T, H, W)
-            frames = ctx_obs.values[:, :, :, 0].view(B_size, T, H, W)
-            # (B, T, P, h_pred) → (B, T, H, W, h_pred)
-            targets = trg_obs.values.view(B_size, T, H, W, h_pred)
+        batch_loss = 0.0
+        for t in range(h_ctx - 1, T - h_pred):
+            ctx_w = frames[:, t - h_ctx + 1 : t + 1]  # (B, h_ctx, H, W)
+            times = make_times(t - h_ctx + 1, h_ctx, seq_len, self.device, B_size)
 
-            n_win = T - h_ctx - h_pred + 1
-            if n_win <= 0:
-                continue
+            dists = self(ctx_w, times)  # List[Normal] of h_pred, (B,H,W,1)
 
-            batch_loss = 0.0
-            optimizer.zero_grad()
+            step_loss = sum(
+                self.criterion(dists[h], targets[:, t, :, :, h].unsqueeze(-1)) for h in range(h_pred)
+            ) / (h_pred * n_win)
 
-            for t in range(h_ctx - 1, T - h_pred):
-                ctx_w = frames[:, t - h_ctx + 1 : t + 1]  # (B, h_ctx, H, W)
-                times = make_times(t - h_ctx + 1, h_ctx, seq_len, device, B_size)
+            self.manual_backward(step_loss)
+            batch_loss += step_loss.item() * n_win
 
-                dists = model(ctx_w, times)  # List[Normal] of h_pred, (B,H,W,1)
+        # Clip gradients using custom complex-supporting clipping
+        clip_grad_norm_(self.parameters(), self.opt_cfg.grad_clip)
+        opt.step()
 
-                step_loss = sum(
-                    criterion(dists[h], targets[:, t, :, :, h].unsqueeze(-1)) for h in range(h_pred)
-                ) / (h_pred * n_win)
+        self.log("Train/Loss", batch_loss, on_step=False, on_epoch=True, prog_bar=True)
 
-                step_loss.backward()
-                batch_loss += step_loss.item() * n_win
+    def validation_step(self, batch, batch_idx):
+        ctx_obs, trg_obs, _ = batch
+        T = ctx_obs.xs.shape[1]
+        B_size = ctx_obs.xs.shape[0]
+        h_ctx = self.t_cfg.model.h_ctx
+        h_pred = self.t_cfg.model.h_pred
+        seq_len = self.t_cfg.data.sequence_length
 
-            clip_grad_norm_(model.parameters(), opt_cfg.grad_clip)
-            optimizer.step()
+        frames = ctx_obs.values[:, :, :, 0].view(B_size, T, self.H, self.W)
+        targets = trg_obs.values.view(B_size, T, self.H, self.W, h_pred)
 
-            avg = batch_loss / n_win
-            train_loss += avg
-            pbar.set_postfix({loss_cfg.name: f"{avg:.4f}"})
+        n_win = T - h_ctx - h_pred + 1
+        if n_win <= 0:
+            return
 
-        avg_train = train_loss / len(train_loader)
-        scheduler.step()
+        batch_loss = 0.0
+        batch_nll = 0.0
+        batch_es = 0.0
+        for t in range(h_ctx - 1, T - h_pred):
+            ctx_w = frames[:, t - h_ctx + 1 : t + 1]
+            times = make_times(t - h_ctx + 1, h_ctx, seq_len, self.device, B_size)
+            dists = self(ctx_w, times)
+            for h in range(h_pred):
+                gt_h = targets[:, t, :, :, h].unsqueeze(-1)
+                batch_loss += self.criterion(dists[h], gt_h).item()
+                batch_nll += -dists[h].log_prob(gt_h).mean().item()
+                batch_es += self.energy_score_loss(dists[h], gt_h, m_samples=self.loss_cfg.m_samples, normalize_l2=self.loss_cfg.normalize_l2).item()
 
-        writer.add_scalar("Train/Loss", avg_train, epoch)
-        writer.add_scalar("Train/LR", optimizer.param_groups[0]["lr"], epoch)
+        avg_loss = batch_loss / (h_pred * n_win)
+        avg_nll = batch_nll / (h_pred * n_win)
+        avg_es = batch_es / (h_pred * n_win)
 
-        # Validation
-        model.eval()
-        val_loss = 0.0
-        val_nll = 0.0
-        val_es = 0.0
-        with torch.no_grad():
-            for batch in val_loader:
-                ctx_obs, trg_obs, _ = batch
-                ctx_obs = ctx_obs.to(device)
-                trg_obs = trg_obs.to(device)
+        self.log("Val/Loss", avg_loss, on_step=False, on_epoch=True, prog_bar=True)
+        self.log("Val/NLL", avg_nll, on_step=False, on_epoch=True)
+        self.log("Val/EnergyScore", avg_es, on_step=False, on_epoch=True)
 
-                T = ctx_obs.xs.shape[1]
-                B_size = ctx_obs.xs.shape[0]
-                frames = ctx_obs.values[:, :, :, 0].view(B_size, T, H, W)
-                targets = trg_obs.values.view(B_size, T, H, W, h_pred)
+        return avg_loss
 
-                n_win = T - h_ctx - h_pred + 1
-                if n_win <= 0:
-                    continue
+    def on_train_epoch_end(self):
+        # Step the scheduler at the end of each epoch in manual optimization mode
+        sch = self.lr_schedulers()
+        if sch is not None:
+            sch.step()
+        opt = self.optimizers()
+        self.log("Train/LR", opt.param_groups[0]["lr"], on_epoch=True)
 
-                batch_loss = 0.0
-                batch_nll = 0.0
-                batch_es = 0.0
-                for t in range(h_ctx - 1, T - h_pred):
-                    ctx_w = frames[:, t - h_ctx + 1 : t + 1]
-                    times = make_times(t - h_ctx + 1, h_ctx, seq_len, device, B_size)
-                    dists = model(ctx_w, times)
-                    for h in range(h_pred):
-                        gt_h = targets[:, t, :, :, h].unsqueeze(-1)
-                        batch_loss += criterion(dists[h], gt_h).item()
-                        batch_nll += -dists[h].log_prob(gt_h).mean().item()
-                        batch_es += energy_score_loss(dists[h], gt_h, m_samples=loss_cfg.m_samples, normalize_l2=loss_cfg.normalize_l2).item()
-                val_loss += batch_loss / (h_pred * n_win)
-                val_nll += batch_nll / (h_pred * n_win)
-                val_es += batch_es / (h_pred * n_win)
+    def on_validation_epoch_end(self):
+        # Replicates manual log reporting at the end of validation
+        metrics = self.trainer.callback_metrics
+        val_loss = metrics.get("Val/Loss")
+        val_nll = metrics.get("Val/NLL")
+        val_es = metrics.get("Val/EnergyScore")
+        train_loss = metrics.get("Train/Loss")
 
-        avg_val = val_loss / len(val_loader)
-        avg_val_nll = val_nll / len(val_loader)
-        avg_val_es = val_es / len(val_loader)
+        if val_loss is not None:
+            epoch = self.trainer.current_epoch
+            train_str = f"{train_loss:.4f}" if train_loss is not None else "N/A"
+            log.info(f"Epoch {epoch}: Train={train_str}  Val={val_loss:.4f}  Val_NLL={val_nll:.4f}  Val_ES={val_es:.4f}")
 
-        writer.add_scalar("Val/Loss", avg_val, epoch)
-        writer.add_scalar("Val/NLL", avg_val_nll, epoch)
-        writer.add_scalar("Val/EnergyScore", avg_val_es, epoch)
-        log.info(f"Epoch {epoch}: Train={avg_train:.4f}  Val={avg_val:.4f}  Val_NLL={avg_val_nll:.4f}  Val_ES={avg_val_es:.4f}")
-
-        if epoch % t_cfg.visualizer.visualize_every == 0:
-            log_vis(model, val_loader, t_cfg, H, W, train_ds.x_size, train_ds.y_size, device, writer, epoch)
-
-        cfg_dict = t_cfg.model_dump()
-        save_checkpoint(
-            model, optimizer, epoch, avg_val, cfg_dict, os.path.join(ckpt_dir, "last_model.pt")
+    def configure_optimizers(self):
+        optimizer = optim.Adam(self.model.parameters(), lr=self.opt_cfg.lr)
+        scheduler = optim.lr_scheduler.CosineAnnealingLR(
+            optimizer, T_max=self.opt_cfg.max_epochs, eta_min=self.opt_cfg.min_lr
         )
-        if avg_val < best_val:
-            best_val = avg_val
-            save_checkpoint(
-                model, optimizer, epoch, avg_val, cfg_dict, os.path.join(ckpt_dir, "best_model.pt")
+        return {
+            "optimizer": optimizer,
+            "lr_scheduler": {
+                "scheduler": scheduler,
+                "interval": "epoch",
+                "frequency": 1,
+            }
+        }
+
+
+class FNOVisualizerCallback(L.Callback):
+    def __init__(self, visualize_every: int):
+        super().__init__()
+        self.visualize_every = visualize_every
+
+    def on_validation_epoch_end(self, trainer, pl_module):
+        epoch = trainer.current_epoch
+        if epoch % self.visualize_every != 0:
+            return
+
+        val_loader = trainer.val_dataloaders
+        if not val_loader:
+            return
+        if isinstance(val_loader, list):
+            val_loader = val_loader[0]
+
+        logger = trainer.logger
+        if logger is not None:
+            writer = logger.experiment
+            log_vis(
+                model=pl_module.model,
+                loader=val_loader,
+                t_cfg=pl_module.t_cfg,
+                H=pl_module.H,
+                W=pl_module.W,
+                x_size=pl_module.x_size,
+                y_size=pl_module.y_size,
+                device=pl_module.device,
+                writer=writer,
+                epoch=epoch
             )
 
-    writer.close()
+
+@hydra.main(version_base=None, config_path="../../configs/training", config_name="fno")
+def train(cfg: DictConfig):
+    # Pydantic configuration validation
+    cfg_container = OmegaConf.to_container(cfg, resolve=True)
+    if "training" in cfg_container and "model" in cfg_container["training"]:
+        # Map sequence length to seq_len_ref
+        cfg_container["training"]["model"]["seq_len_ref"] = cfg_container["training"]["data"]["sequence_length"]
+
+    global_cfg = FNOTrainingGlobalSchema.model_validate(cfg_container)
+    t_cfg = global_cfg.training
+
+    print(f"Training FNO — {t_cfg.experiment_name}")
+    L.seed_everything(t_cfg.seed)
+
+    from hydra.core.hydra_config import HydraConfig
+
+    output_dir = HydraConfig.get().runtime.output_dir
+    log_dir = os.path.join(output_dir, "logs")
+    ckpt_dir = os.path.join(output_dir, "checkpoints")
+    os.makedirs(log_dir, exist_ok=True)
+    os.makedirs(ckpt_dir, exist_ok=True)
+
+    with open(os.path.join(output_dir, "config_used.yaml"), "w") as f:
+        f.write(OmegaConf.to_yaml(cfg))
+
+    # Data Setup for getting Grid HxW
+    try:
+        root_dir = Path(hydra.utils.get_original_cwd())
+    except Exception:
+        root_dir = Path(os.getcwd())
+
+    data_path = root_dir / t_cfg.data.data_path
+    if not data_path.exists():
+        log.error(f"Data not found: {data_path}")
+        return
+
+    # Create temporary dataset just to inspect sizes (grid H, W, spatial size)
+    temp_ds = SequentialDataset(
+        data_path=str(data_path),
+        sequence_length=t_cfg.data.sequence_length,
+        forecast_horizon=t_cfg.model.h_pred,
+        mode="val",
+        train_split=t_cfg.data.train_split,
+        max_episodes=1,
+        dense=True,
+        downsample_factor=t_cfg.data.downsample_factor,
+    )
+    H, W = temp_ds.H, temp_ds.W
+    x_size, y_size = temp_ds.x_size, temp_ds.y_size
+
+    # DataModule
+    datamodule = FNODataModule(t_cfg, data_path)
+
+    # Model
+    model = FNOLightningModule(t_cfg, H, W, x_size, y_size)
+    print(f"FNO params: {sum(p.numel() for p in model.model.parameters()):,}")
+
+    # Checkpoint and Loggers
+    from lightning.pytorch.callbacks import ModelCheckpoint
+    from lightning.pytorch.loggers import TensorBoardLogger
+
+    checkpoint_callback = ModelCheckpoint(
+        dirpath=ckpt_dir,
+        monitor=t_cfg.checkpoint.monitor.replace("val_", "Val/").replace("nll", "NLL").replace("loss", "Loss"), # Map val_nll to Val/NLL
+        mode=t_cfg.checkpoint.mode,
+        save_top_k=t_cfg.checkpoint.save_top_k,
+        save_last=True,
+    )
+
+    tb_logger = TensorBoardLogger(save_dir=output_dir, name="", sub_dir="logs")
+
+    # Trainer
+    trainer = L.Trainer(
+        max_epochs=t_cfg.optimizer.max_epochs,
+        accelerator="auto",
+        devices=1,
+        callbacks=[checkpoint_callback, FNOVisualizerCallback(t_cfg.visualizer.visualize_every)],
+        logger=tb_logger,
+        enable_progress_bar=True,
+    )
+
+    trainer.fit(model, datamodule=datamodule)
 
 
 if __name__ == "__main__":

@@ -122,10 +122,9 @@ class FNO(nn.Module):
         self.cfg = cfg
 
         # Input channel count
-        # 1 channel (greyscale) + time (1, if use_time) → C_in
-        self.c_in = 1 + (1 if cfg.use_time else 0)
-        self.grid_ch = 2 if cfg.use_grid else 0
-        self.c_post = cfg.width + self.grid_ch
+        # 1 channel (greyscale) + time (1, if use_time) + spatial grid (2, if use_grid) → C_in
+        self.c_in = 1 + (1 if cfg.use_time else 0) + (2 if cfg.use_grid else 0)
+        self.c_post = cfg.width
 
         self.lift = nn.Conv3d(self.c_in, cfg.width, kernel_size=1)
 
@@ -154,18 +153,24 @@ class FNO(nn.Module):
         times  : (B, h_ctx) normalised to [0, 1], or None
         returns: (B, C_in, h_ctx, H, W)
         """
+        B, T, H, W = frames.shape
         # smoke: (B, 1, h_ctx, H, W)
         feat = frames.unsqueeze(1)
 
         if self.cfg.use_time:
             if times is None:
-                B, T = frames.shape[:2]
                 times = torch.linspace(0, 1, T, device=frames.device).unsqueeze(0).expand(B, -1)
 
-            B, T, H, W = frames.shape
             # t: (B, 1, h_ctx, 1, 1) → expand to (B, 1, h_ctx, H, W)
             t_feat = times.view(B, 1, T, 1, 1).expand(-1, -1, -1, H, W)
             feat = torch.cat([feat, t_feat.float()], dim=1)  # (B, 2, h_ctx, H, W)
+
+        if self.cfg.use_grid:
+            # grid2d: (1, 2, H, W)
+            grid2d = self._build_grid(H, W, frames.device)
+            # grid3d: (B, 2, T, H, W)
+            grid3d = grid2d.unsqueeze(2).expand(B, -1, T, -1, -1)
+            feat = torch.cat([feat, grid3d.float()], dim=1)
 
         return feat
 
@@ -196,11 +201,6 @@ class FNO(nn.Module):
         # Temporal aggregation -> (B, width, H, W)
         x = self.temporal_agg(x)  # (B, width, 1, H, W)
         x = x.squeeze(2)  # (B, width, H, W)
-
-        # Append spatial grid
-        if self.cfg.use_grid:
-            grid = self._build_grid(H, W, frames.device).expand(B, -1, -1, -1)
-            x = torch.cat([x, grid], dim=1)  # (B, width+2, H, W)
 
         # MLP decode
         x = x.permute(0, 2, 3, 1)  # (B, H, W, C_post)
