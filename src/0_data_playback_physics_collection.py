@@ -2,13 +2,32 @@ import os
 import sys
 import time
 
-import hydra
-import numpy as np
-from omegaconf import DictConfig
-from tqdm import tqdm
-
 # Add project root to path
 sys.path.append(os.getcwd())
+
+from omegaconf import DictConfig, OmegaConf
+
+# Early config parsing to configure matplotlib backend before any other imports
+cli_args = [arg for arg in sys.argv[1:] if not arg.startswith("-")]
+cli_cfg = OmegaConf.from_cli(cli_args)
+
+# Load base config
+config_name = "playback_physics"
+config_path = os.path.join(
+    os.path.dirname(__file__), "../configs/data_collection", f"{config_name}.yaml"
+)
+base_cfg = OmegaConf.load(config_path)
+merged_cfg = OmegaConf.merge(base_cfg, cli_cfg)
+test_mode = merged_cfg.get("test", False)
+
+import matplotlib
+
+if not test_mode:
+    matplotlib.use("Agg")
+import hydra
+import matplotlib.pyplot as plt
+import numpy as np
+from tqdm import tqdm
 
 from env.simulator.playback_schema import SmokeDataSchema
 from env.simulator.smoke import BlobParams, Smoke, SmokeParams
@@ -19,6 +38,7 @@ from env.simulator.smoke import BlobParams, Smoke, SmokeParams
 )
 def main(cfg: DictConfig):
     # Parameters from config
+    test_mode = cfg.get("test", False)
     num_episodes = cfg.num_episodes
     episode_steps = cfg.episode_steps
     output_path = cfg.output_path
@@ -28,6 +48,62 @@ def main(cfg: DictConfig):
     y_size = cfg.y_size
     resolution = cfg.resolution
     dt = cfg.dt
+
+    if test_mode:
+        fig, ax = plt.subplots(figsize=(8, 6))
+        print("Running in TEST mode: Visualizing episode...")
+
+        num_blobs = np.random.randint(cfg.num_blobs_range[0], cfg.num_blobs_range[1] + 1)
+        episode_blobs = []
+
+        for _ in range(num_blobs):
+            for _ in range(100):  # Attempts to find valid non-overlapping position
+                x_c = np.random.uniform(2.0, x_size - 2.0)
+                y_c = np.random.uniform(2.0, y_size - 2.0)
+
+                # Enforce min distance between centers if requested
+                min_dist = cfg.blob_min_dist
+                valid_pos = True
+                for blob in episode_blobs:
+                    dist = np.sqrt((x_c - blob.x_pos) ** 2 + (y_c - blob.y_pos) ** 2)
+                    if dist < min_dist:
+                        valid_pos = False
+                        break
+
+                if valid_pos:
+                    episode_blobs.append(
+                        BlobParams(
+                            x_pos=x_c,
+                            y_pos=y_c,
+                            intensity=float(cfg.blob_intensity),
+                            spread_rate=np.random.uniform(
+                                cfg.blob_spread_range[0], cfg.blob_spread_range[1]
+                            ),
+                        )
+                    )
+                    break
+
+        params = SmokeParams(
+            x_size=x_size,
+            y_size=y_size,
+            smoke_blob_params=episode_blobs,
+            resolution=resolution,
+            average_wind_speed=float(cfg.wind_speed),
+            smoke_emission_rate=float(cfg.emission_rate),
+            smoke_diffusion_rate=float(cfg.diffusion_rate),
+            smoke_decay_rate=float(cfg.decay_rate),
+            buoyancy_factor=float(cfg.buoyancy),
+        )
+        sim = Smoke(params)
+
+        for step in range(episode_steps):
+            sim.plot_smoke_map(fig=fig, ax=ax)
+            plt.pause(0.01)
+            sim.step(dt=dt)
+
+        print("Test mode complete. No data saved.")
+        plt.show()
+        return
 
     # Ensure data directory exists
     os.makedirs(os.path.dirname(output_path), exist_ok=True)
@@ -101,19 +177,23 @@ def main(cfg: DictConfig):
                 "episode_id": ep,
             }
 
-    print(f"Generating data using streaming generator (Hugging Face Dataset format)...")
+    print("Generating data using streaming generator (Hugging Face Dataset format)...")
 
     import datasets
     from datasets import Dataset
 
-    features = datasets.Features({
-        SmokeDataSchema.SMOKE_DATA: datasets.Array3D(shape=(episode_steps, H, W), dtype="float32"),
-        SmokeDataSchema.X_SIZE: datasets.Value("float32"),
-        SmokeDataSchema.Y_SIZE: datasets.Value("float32"),
-        SmokeDataSchema.RESOLUTION: datasets.Value("float32"),
-        SmokeDataSchema.DT: datasets.Value("float32"),
-        "episode_id": datasets.Value("int32"),
-    })
+    features = datasets.Features(
+        {
+            SmokeDataSchema.SMOKE_DATA: datasets.Array3D(
+                shape=(episode_steps, H, W), dtype="float32"
+            ),
+            SmokeDataSchema.X_SIZE: datasets.Value("float32"),
+            SmokeDataSchema.Y_SIZE: datasets.Value("float32"),
+            SmokeDataSchema.RESOLUTION: datasets.Value("float32"),
+            SmokeDataSchema.DT: datasets.Value("float32"),
+            "episode_id": datasets.Value("int32"),
+        }
+    )
 
     ds = Dataset.from_generator(episode_generator, features=features, writer_batch_size=50)
 

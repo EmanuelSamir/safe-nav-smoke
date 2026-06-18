@@ -1,23 +1,40 @@
 import os
 import sys
+
+# Add project root to path
+sys.path.append(os.getcwd())
+
+from omegaconf import DictConfig, OmegaConf
+
+# Early config parsing to configure matplotlib backend before any other imports
+cli_args = [arg for arg in sys.argv[1:] if not arg.startswith("-")]
+cli_cfg = OmegaConf.from_cli(cli_args)
+
+# Load base config
+config_name = "playback_env"
+config_path = os.path.join(
+    os.path.dirname(__file__), "../configs/data_collection", f"{config_name}.yaml"
+)
+base_cfg = OmegaConf.load(config_path)
+merged_cfg = OmegaConf.merge(base_cfg, cli_cfg)
+test_mode = merged_cfg.get("test", False)
+
+import matplotlib
+
+if not test_mode:
+    matplotlib.use("Agg")
 import time
 
 import hydra
 import matplotlib.pyplot as plt
 import numpy as np
-from omegaconf import DictConfig
 from tqdm import tqdm
-
-# Add project root to path
-sys.path.append(os.getcwd())
 
 from env.simulator.playback_schema import SmokeDataSchema
 from env.simulator.smoke import BlobParams, Smoke, SmokeParams
 
 
-@hydra.main(
-    version_base=None, config_path="../configs/data_collection", config_name="playback_env"
-)
+@hydra.main(version_base=None, config_path="../configs/data_collection", config_name="playback_env")
 def main(cfg: DictConfig):
     # Parameters from config
     test_mode = cfg.test
@@ -54,28 +71,28 @@ def main(cfg: DictConfig):
 
     tailored_blobs = {
         "case_1": {
-            "x_pos": [10.0, 10.0, 10.0, 20.0, 20.0],
-            "y_pos": [3.0, 10.0, 17.0, 6.0, 14.0],
+            "x_pos": [11.5, 11.5, 11.5, 23.5, 23.5],
+            "y_pos": [7.5, 15.0, 22.5, 11.25, 18.75],
         },
         "case_2": {
-            "x_pos": [20.0, 20.0, 20.0, 10.0, 10.0],
-            "y_pos": [3.0, 10.0, 17.0, 6.0, 14.0],
+            "x_pos": [23.5, 23.5, 23.5, 11.5, 11.5],
+            "y_pos": [7.5, 15.0, 22.5, 11.25, 18.75],
         },
         "case_3": {
-            "x_pos": [10.0, 10.0, 10.0, 20.0, 20.0, 20.0],
-            "y_pos": [3.0, 8.0, 13.0, 7.0, 12.0, 17.0],
+            "x_pos": [11.5, 11.5, 11.5, 23.5, 23.5, 23.5],
+            "y_pos": [7.5, 15.0, 22.5, 7.5, 15.0, 22.5],
         },
         "case_4": {
-            "x_pos": [20.0, 20.0, 20.0, 10.0, 10.0, 10.0],
-            "y_pos": [3.0, 8.0, 13.0, 7.0, 12.0, 17.0],
+            "x_pos": [23.5, 23.5, 23.5, 11.5, 11.5, 11.5],
+            "y_pos": [7.5, 15.0, 22.5, 7.5, 15.0, 22.5],
         },
         "case_5": {
-            "x_pos": [8.0, 8.0, 15.0, 22.0, 22.0],
-            "y_pos": [4.0, 16.0, 10.0, 4.0, 16.0],
+            "x_pos": [10.5, 10.5, 17.5, 24.5, 24.5],
+            "y_pos": [7.5, 22.5, 15.0, 7.5, 22.5],
         },
         "case_6": {
-            "x_pos": [8.0, 15.0, 15.0, 15.0, 22.0],
-            "y_pos": [10.0, 4.0, 10.0, 16.0, 10.0],
+            "x_pos": [10.5, 17.5, 17.5, 17.5, 24.5],
+            "y_pos": [15.0, 7.5, 15.0, 22.5, 15.0],
         },
     }
 
@@ -86,7 +103,7 @@ def main(cfg: DictConfig):
         num_blobs = len(case_blobs["x_pos"])
         episode_blobs = []
         for i in range(num_blobs):
-            spread_rate = np.random.uniform(1.0, 3.0)
+            spread_rate = np.random.uniform(1.5, 3.0)
             episode_blobs.append(
                 BlobParams(
                     x_pos=case_blobs["x_pos"][i],
