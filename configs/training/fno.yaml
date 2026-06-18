@@ -12,7 +12,7 @@ training:
 
   data:
     data_path: "data/physics_smoke"
-    batch_size: 8
+    batch_size: 16
     train_split: 0.9
     max_samples: null
     sequence_length: 30    # > h_ctx + h_pred  (10 + 5 = 15 → 30 works)
@@ -53,7 +53,7 @@ training:
     mode: "min"
 
   visualizer:
-    visualize_every: 2
+    visualize_every: 5
 
 # Hydra settings for output directory organization
 hydra:

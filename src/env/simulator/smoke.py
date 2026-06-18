@@ -197,15 +197,14 @@ class Smoke:
 
         assert pos.shape[1] == 2 and pos.ndim == 2, "Position must be a nx2 array"
 
-        # Vectorized sampling using phi.flow
-        # Create a single tensor with all query points in a 'points' batch dimension
-        pos_tensor = flow.tensor(pos, flow.batch("points"), flow.channel(vector="x,y"))
+        # Map (x, y) to grid indices
+        x_coords = (pos[:, 0] / self.params.resolution) - 0.5
+        y_coords = (pos[:, 1] / self.params.resolution) - 0.5
+        coords = np.stack([y_coords, x_coords])
 
-        # Sample the smoke map at these coordinates (interpolated)
-        sampled_values = self.smoke_map.sample(pos_tensor)
-
-        # Use single string for dimension order as suggested by phiml error message
-        values = sampled_values.numpy("inflow_loc,points")
+        grid = self.get_smoke_map()
+        from scipy.ndimage import map_coordinates
+        values = map_coordinates(grid, coords, order=1, mode="constant", cval=0.0)
 
         return values.reshape(-1, 1)
 

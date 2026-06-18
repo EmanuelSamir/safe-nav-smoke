@@ -133,7 +133,7 @@ class DubinsRobot(Robot):
         p_i_center = state[:, [STATE_X, STATE_Y]]
         theta = state[:, STATE_THETA]
         cos_t, sin_t = torch.cos(theta), torch.sin(theta)
-        v_nominal = self.action_max[0] / 2.0
+        v_nominal = float(self.action_max[0] / 2.0)
 
         # Ego safety point: p_i_safe = p_i_center + L * [cos(theta), sin(theta)]
         p_i_safe = p_i_center + self.L * torch.stack([cos_t, sin_t], dim=1)

@@ -219,21 +219,34 @@ class FNODataModule(L.LightningDataModule):
         )
 
     def train_dataloader(self):
+        # Detectar CPUs disponibles en Slurm de forma automática
+        import os
+        workers = self.t_cfg.data.num_workers
+        if workers == 0:
+            slurm_cpus = os.environ.get("SLURM_CPUS_PER_TASK")
+            workers = max(1, int(slurm_cpus) - 1) if slurm_cpus else max(1, (os.cpu_count() or 2) - 1)
+        
         return DataLoader(
             self.train_ds,
             batch_size=self.t_cfg.data.batch_size,
             shuffle=True,
             collate_fn=dense_sequential_collate_fn,
-            num_workers=self.t_cfg.data.num_workers,
+            num_workers=workers,
         )
 
     def val_dataloader(self):
+        import os
+        workers = self.t_cfg.data.num_workers
+        if workers == 0:
+            slurm_cpus = os.environ.get("SLURM_CPUS_PER_TASK")
+            workers = max(1, int(slurm_cpus) - 1) if slurm_cpus else max(1, (os.cpu_count() or 2) - 1)
+
         return DataLoader(
             self.val_ds,
             batch_size=self.t_cfg.data.batch_size,
             shuffle=False,
             collate_fn=dense_sequential_collate_fn,
-            num_workers=self.t_cfg.data.num_workers,
+            num_workers=workers,
         )
 
 
@@ -324,7 +337,7 @@ class FNOLightningModule(L.LightningModule):
             ) / (h_pred * n_win)
 
             self.manual_backward(step_loss)
-            batch_loss += step_loss.item() * n_win
+            batch_loss += step_loss.item()
 
         # Clip gradients using custom complex-supporting clipping
         clip_grad_norm_(self.parameters(), self.opt_cfg.grad_clip)
@@ -518,6 +531,7 @@ def train(cfg: DictConfig):
         callbacks=[checkpoint_callback, FNOVisualizerCallback(t_cfg.visualizer.visualize_every)],
         logger=tb_logger,
         enable_progress_bar=True,
+        log_every_n_steps=10,
     )
 
     trainer.fit(model, datamodule=datamodule)
