@@ -96,7 +96,7 @@ class Smoke:
         # 2. --- ADVECCIÓN DE VELOCIDAD ---
         self.velocity = flow.advect.semi_lagrangian(self.velocity, self.velocity, dt=dt)
         self.velocity, _ = flow.fluid.make_incompressible(
-            self.velocity, (), flow.Solve(rank_deficiency=0, max_iterations=2000, suppress=(flow.math.NotConverged,))
+            self.velocity, (), flow.Solve(rank_deficiency=0, rel_tol=1e-4, abs_tol=1e-4, max_iterations=2000, suppress=(flow.math.NotConverged,))
         )
 
         # --- Parámetros ---
@@ -171,7 +171,7 @@ class Smoke:
             bounds=self.bounds,
         )
         velocity, _ = flow.fluid.make_incompressible(
-            velocity, (), flow.Solve(rank_deficiency=0, max_iterations=2000, suppress=(flow.math.NotConverged,))
+            velocity, (), flow.Solve(rank_deficiency=0, rel_tol=1e-4, abs_tol=1e-4, max_iterations=2000, suppress=(flow.math.NotConverged,))
         )
         return velocity
 
