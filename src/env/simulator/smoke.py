@@ -96,7 +96,7 @@ class Smoke:
         # 2. --- ADVECCIÓN DE VELOCIDAD ---
         self.velocity = flow.advect.semi_lagrangian(self.velocity, self.velocity, dt=dt)
         self.velocity, _ = flow.fluid.make_incompressible(
-            self.velocity, (), flow.Solve(rank_deficiency=0)
+            self.velocity, (), flow.Solve(rank_deficiency=0, max_iterations=2000, suppress=(flow.math.NotConverged,))
         )
 
         # --- Parámetros ---
@@ -170,7 +170,9 @@ class Smoke:
             resolution=self.spatial_resolution,
             bounds=self.bounds,
         )
-        velocity, _ = flow.fluid.make_incompressible(velocity, (), flow.Solve(rank_deficiency=0))
+        velocity, _ = flow.fluid.make_incompressible(
+            velocity, (), flow.Solve(rank_deficiency=0, max_iterations=2000, suppress=(flow.math.NotConverged,))
+        )
         return velocity
 
     def get_smoke_density_at_point(self, x, y) -> float:
