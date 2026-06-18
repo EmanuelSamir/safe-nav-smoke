@@ -13,6 +13,7 @@ import torch
 
 # Add project root to path
 sys.path.append(os.getcwd())
+sys.path.append(os.path.join(os.getcwd(), "src"))
 
 from agents.basic_robot import RobotParams
 from controllers.hj import HJSolverConfig
@@ -21,8 +22,36 @@ from controllers.multi_cbf_filtering_ctrl import MultiCBFFilteringCtrl
 from controllers.multi_cbf_penalize_ctrl import MultiCBFPenalizeCtrl
 from controllers.multi_dual_guard_cbf_ctrl import MultiDualGuardCBFCtrl
 from controllers.multi_dual_guard_hj_ctrl import MultiDualGuardHJCtrl
+from controllers.multi_dual_guard_hj_online_ctrl import MultiDualGuardHJOnlineCtrl
 from controllers.multi_lrf_filtering_ctrl import MultiLRFFilteringCtrl
-from envs.smoke_env import SmokeEnv
+from controllers.multi_lrf_filtering_online_ctrl import MultiLRFFilteringOnlineCtrl
+from env.smoke_env import SmokeEnv
+from controllers.mppi_ctrl import MPPICtrl
+
+# ==========================================================
+#  BASELINE: PURE MPPI WITHOUT ANY SAFETY FILTER
+# ==========================================================
+class _NominalMPPICtrl(MPPICtrl):
+    def get_command(self) -> torch.Tensor:
+        # Returns raw MPPI command, bypassing any safety filter
+        return super().get_command()
+
+class MultiNominalMPPICtrl(MultiCBFFilteringCtrl):
+    def __init__(self, *args, **kwargs):
+        # Initialize normally, then override agents_controllers with pure MPPI controllers
+        super().__init__(*args, **kwargs)
+        self.agents_controllers = {
+            f"agent_{i}": _NominalMPPICtrl(
+                robot_params=kwargs["robot_params"],
+                robot_type=kwargs["robot_type"],
+                goal_thresh=kwargs["goal_thresh"],
+                device=kwargs["device"],
+                mppi_params=kwargs["mppi_params"],
+                dt=kwargs["dt"],
+            )
+            for i in range(self.num_agents)
+        }
+
 
 
 def main():
@@ -45,11 +74,30 @@ def main():
         action="store_true",
         help="Run in test mode (visualize one episode in 'human' mode, no saving)",
     )
+    parser.add_argument(
+        "--controllers",
+        type=str,
+        nargs="+",
+        default=None,
+        help="List of controllers to evaluate. If omitted, all will run.",
+    )
+    parser.add_argument(
+        "--output_dir",
+        type=str,
+        default=None,
+        help="Output directory to save metrics and videos (default: outputs/YYYY-MM-DD/HH-MM-SS)",
+    )
     args = parser.parse_args()
+
+    # Generate timestamped directory inside outputs if not explicitly set
+    if args.output_dir is None:
+        import datetime
+        timestamp = datetime.datetime.now().strftime("%Y-%m-%d/%H-%M-%S")
+        args.output_dir = os.path.join("outputs", timestamp)
 
     # Create output directories
     if not args.test:
-        os.makedirs("data/videos", exist_ok=True)
+        os.makedirs(f"{args.output_dir}/videos", exist_ok=True)
 
     # 1. Verification of Safe Starting Positions vs Smoke Sources
     print("=" * 70)
@@ -142,7 +190,7 @@ def main():
         action_min=[0.5, -4.0],
         state_max=[x_size, y_size, 6.28],
         state_min=[0.0, 0.0, 0.0],
-        robot_type="dubins2d",
+        type="dubins2d",
         dt=dt,
     )
 
@@ -167,6 +215,7 @@ def main():
 
     # Dictionary containing all controllers to evaluate
     controllers_meta = {
+        "nominal-mppi": {"class": MultiNominalMPPICtrl, "args": {}},
         "cbf-filtering": {"class": MultiCBFFilteringCtrl, "args": {"k1": 1.5, "k2": 1.5}},
         "cbf-penalize": {
             "class": MultiCBFPenalizeCtrl,
@@ -183,7 +232,25 @@ def main():
             "args": {"hj_config": hj_config},
             "precompute_hj": True,
         },
+        "dual-guard-hj-online": {
+            "class": MultiDualGuardHJOnlineCtrl,
+            "args": {"hj_config": hj_config},
+        },
+        "lrf-filtering-online": {
+            "class": MultiLRFFilteringOnlineCtrl,
+            "args": {"hj_config": hj_config},
+        },
     }
+
+    # Filter controllers if specified
+    if args.controllers is not None:
+        filtered_meta = {}
+        for c in args.controllers:
+            if c in controllers_meta:
+                filtered_meta[c] = controllers_meta[c]
+            else:
+                print(f"Warning: Controller '{c}' is not defined and will be skipped.")
+        controllers_meta = filtered_meta
 
     # Store benchmark statistics
     benchmark_results = {}
@@ -347,19 +414,11 @@ def main():
 
                 # 5. Rendering for visual comparison (rgb_array or human)
                 if render_mode == "human" and t % 2 == 0:
-                    env._render_frame(controller=controller)
-                    if env.window.get("fig") is not None:
-                        fig = env.window["fig"]
-                        fig.canvas.draw()
-                        fig.canvas.flush_events()
-                        plt.pause(0.01)
+                    env.render(controller=controller)
                 elif render_mode == "rgb_array" and t % 2 == 0:
-                    frame_fig = env._render_frame(controller=controller)
-                    if env.window.get("fig") is not None:
-                        buf = io.BytesIO()
-                        env.window["fig"].savefig(buf, format="png", bbox_inches="tight")
-                        buf.seek(0)
-                        gif_frames.append(imageio.imread(buf))
+                    frame = env.render(controller=controller)
+                    if frame is not None:
+                        gif_frames.append(frame)
 
                 # Check episode completion
                 all_term = all(terminated.values()) if isinstance(terminated, dict) else terminated
@@ -423,8 +482,8 @@ def main():
 
             # Save detailed trajectory data
             if not args.test:
-                os.makedirs("data/trajectories", exist_ok=True)
-                traj_path = f"data/trajectories/{name}_ep_{ep_idx + 1}_trajectory.json"
+                os.makedirs(f"{args.output_dir}/trajectories", exist_ok=True)
+                traj_path = f"{args.output_dir}/trajectories/{name}_ep_{ep_idx + 1}_trajectory.json"
                 import json
 
                 with open(traj_path, "w") as f:
@@ -432,7 +491,7 @@ def main():
 
             # Save comparative GIF for this episode
             if not args.test and render_mode == "rgb_array" and gif_frames:
-                gif_path = f"data/videos/{name}_ep_{ep_idx + 1}_crossing.gif"
+                gif_path = f"{args.output_dir}/videos/{name}_ep_{ep_idx + 1}_crossing.gif"
                 print(f"Saving playback GIF to {gif_path}...")
                 imageio.mimsave(gif_path, gif_frames, fps=10, loop=0)
 
@@ -513,8 +572,9 @@ def main():
     if not args.test:
         df = pd.DataFrame(benchmark_results).T
         df.index.name = "Controller"
-        df.to_csv("data/multi_agent_benchmark_results.csv")
-        print("Saved detailed comparative CSV table to 'data/multi_agent_benchmark_results.csv'.")
+        csv_path = f"{args.output_dir}/multi_agent_benchmark_results.csv"
+        df.to_csv(csv_path)
+        print(f"Saved detailed comparative CSV table to '{csv_path}'.")
 
     # 5. Generate high-fidelity comparison plot
     if not args.test:
@@ -568,8 +628,9 @@ def main():
         axes[1, 1].grid(axis="y", alpha=0.3)
 
         plt.tight_layout(rect=[0, 0.03, 1, 0.95])
-        plt.savefig("data/multi_agent_benchmark_comparison.png", dpi=300)
-        print("Saved comparative study chart to 'data/multi_agent_benchmark_comparison.png'.")
+        plot_path = f"{args.output_dir}/multi_agent_benchmark_comparison.png"
+        plt.savefig(plot_path, dpi=300)
+        print(f"Saved comparative study chart to '{plot_path}'.")
 
 
 if __name__ == "__main__":

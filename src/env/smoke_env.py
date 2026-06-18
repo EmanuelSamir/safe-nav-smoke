@@ -666,11 +666,15 @@ class SmokeEnv(gym.Env):
         info = self._get_info()
         return obs, reward, terminated, truncated, info
 
-    def render(self):
+    def render(self, controller=None):
         """Standard Gym/Gymnasium render method."""
         if self.renderer is not None:
-            return self.renderer.render({"env": self})
+            return self.renderer.render({"env": self, "controller": controller})
         return None
+
+    def _render_frame(self, controller=None):
+        """Compatibility wrapper for standard/simple renderer integration."""
+        return self.render(controller=controller)
 
     def close(self):
         if self.renderer is not None:
