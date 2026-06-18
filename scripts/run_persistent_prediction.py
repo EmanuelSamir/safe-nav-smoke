@@ -376,9 +376,9 @@ def main():
             
         obs, _ = env.reset(initial_state=initial_state_dict, seed=ep)
         
-        # 15 Context rollouts: shape (15, h_ctx, H_grid, W_grid)
+        # 15 Context rollouts: shape (15, h_ctx, H_grid, W_grid) initialized with high diversity
         h_ctx = fno_cfg.h_ctx
-        rollout_contexts = torch.rand(15, h_ctx, H_grid, W_grid, device=device) * 0.1
+        rollout_contexts = torch.rand(15, h_ctx, H_grid, W_grid, device=device) * 0.8
         
         # Collage patch initial observations at t=0 for all h_ctx frames using square dense patch
         agent_locs = np.array([obs[f"agent_{i}"]["location"] for i in range(num_agents)])
@@ -386,12 +386,13 @@ def main():
         dy = np.abs(coords_global[:, np.newaxis, 1] - agent_locs[np.newaxis, :, 1])
         in_fov_flat = np.any((dx <= half_width) & (dy <= half_width), axis=1)
         in_fov_grid = in_fov_flat.reshape(H_grid, W_grid)
+        in_fov_torch = torch.tensor(in_fov_grid, device=device, dtype=torch.bool)
 
         gt_smoke_flat = obs["agent_0"]["smoke_density"].squeeze(-1)
         gt_smoke_grid = gt_smoke_flat.reshape(H_grid, W_grid)
 
         for h in range(h_ctx):
-            rollout_contexts[:, h, in_fov_grid] = torch.tensor(gt_smoke_grid[in_fov_grid], dtype=torch.float32, device=device)
+            rollout_contexts[:, h, in_fov_torch] = torch.tensor(gt_smoke_grid[in_fov_grid], dtype=torch.float32, device=device)
 
         # Plot setup (headless)
         fig, axes = plt.subplots(2, 2, figsize=(14, 10))
@@ -476,11 +477,18 @@ def main():
             dy = np.abs(coords_global[:, np.newaxis, 1] - agent_locs[np.newaxis, :, 1])
             in_fov_flat = np.any((dx <= half_width) & (dy <= half_width), axis=1)
             in_fov_grid = in_fov_flat.reshape(H_grid, W_grid)
+            in_fov_torch = torch.tensor(in_fov_grid, device=device, dtype=torch.bool)
 
             gt_smoke_flat = next_obs["agent_0"]["smoke_density"].squeeze(-1)
             gt_smoke_grid = gt_smoke_flat.reshape(H_grid, W_grid)
 
-            rollout_contexts[:, -1, in_fov_grid] = torch.tensor(gt_smoke_grid[in_fov_grid], dtype=torch.float32, device=device)
+            # Hard-patch observed region
+            rollout_contexts[:, -1, in_fov_torch] = torch.tensor(gt_smoke_grid[in_fov_grid], dtype=torch.float32, device=device)
+            
+            # Inject independent process noise to unobserved regions to represent uncertainty drift over time
+            noise = torch.randn(15, H_grid, W_grid, device=device) * 0.05
+            rollout_contexts[:, -1, ~in_fov_torch] += noise[:, ~in_fov_torch]
+            
             rollout_contexts = torch.clamp(rollout_contexts, 0.0, 1.0)
             
             # Track positions
