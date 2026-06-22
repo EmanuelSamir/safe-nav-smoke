@@ -1,32 +1,27 @@
+from dataclasses import dataclass
 from enum import Enum
-from typing import Any, Optional, Union
+from typing import Optional, Union
 
 import gymnasium as gym
 import hydra
 import numpy as np
+import torch
 from gymnasium import spaces
-from omegaconf import DictConfig, OmegaConf
-from pydantic import BaseModel, ConfigDict, Field
+from omegaconf import OmegaConf
 
-from agents.basic_robot import RobotParams
-from agents.dubins_robot import DubinsRobot
-
-# from agents.dubins_robot_fixed_velocity import DubinsRobotFixedVelocity
-# from agents.unicycle_robot import UnicycleRobot
-from env.simulator.playback import Playback, PlaybackParams
-from env.simulator.sensor import (
+from src.agents.basic_robot import RobotParams
+from src.agents.dubins_robot import DubinsRobot
+from src.env.simulator.playback import Playback, PlaybackParams
+from src.env.simulator.playback_schema import SmokeDataSchema
+from src.env.simulator.sensor import (
     Camera1DSensor,
-    Camera1DSensorParams,
     DownwardsSensor,
-    DownwardsSensorParams,
     GlobalSensor,
-    GlobalSensorParams,
-    PointSensor,
-    PointSensorParams,
     SensorOutput,
 )
-from env.simulator.smoke import BlobParams, Smoke, SmokeParams
-from visualization import BaseRenderer, SimpleRenderer
+from src.env.simulator.smoke import BlobParams, Smoke, SmokeParams
+from src.utils.config_utils import get_device
+from src.visualization import BaseRenderer, SimpleRenderer
 
 
 class RenderMode(str, Enum):
@@ -35,69 +30,35 @@ class RenderMode(str, Enum):
     NONE = "none"
 
 
-class SensorConfig(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    type: str = "global"
-    num_rays: Optional[int] = None
-    fov_size_degrees: Optional[float] = None
-    step_size: Optional[float] = None
-    opacity_threshold: Optional[float] = None
-    max_range: Optional[float] = None
+@dataclass
+class EnvConfig:
+    world_x_size: float
+    world_y_size: float
+    max_steps: int
+    clock: float
+    render: Union[RenderMode, str]
+    render_save_every: int
+    goal_radius: float
+    num_agents: int
+    collision_radius: float
+    terminate_on_collision: bool
+    collision_penalty: float
+    smoke_density_threshold: Optional[float]
 
-
-class BlobConfig(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    x: float
-    y: float
-    intensity: float
-    spread: float
-
-
-class SmokeConfig(BaseModel):
-    model_config = ConfigDict(extra="forbid")
-    resolution: float = 1.0
-    blobs: list[BlobConfig] = Field(default_factory=list)
-
-
-class BaseEnvConfig(BaseModel):
-    model_config = ConfigDict(arbitrary_types_allowed=True)
-
-    world_x_size: float = 100.0
-    world_y_size: float = 100.0
-    max_steps: int = 200
-    clock: float = 0.1
-    render: RenderMode = RenderMode.HUMAN
-    render_save_every: int = 2
-    playback_path: Optional[str] = None
-    goal_radius: float = 1.0
-    num_agents: int = 1
-    collision_radius: float = 0.8
-    terminate_on_collision: bool = True
-    collision_penalty: float = -10.0
-    smoke_density_threshold: Optional[float] = None
-
-
-class FullEnvConfig(BaseEnvConfig):
-    model_config = ConfigDict(extra="forbid", arbitrary_types_allowed=True)
-
-    name: str = "DynamicSmokeEnv"
-    test: bool = False
-    num_episodes: int = 200
-
-    goal_location: Optional[list[float]] = None
     goal_locations: Optional[list[list[float]]] = None
     initial_locations: Optional[list[list[float]]] = None
 
-    sensor: SensorConfig = Field(default_factory=SensorConfig)
-    robot: RobotParams = Field(default_factory=RobotParams)
-    smoke: Optional[SmokeConfig] = None
-    hydra: Optional[dict] = None
+    # Extra parameters in smoke_env.yaml configuration
+    test: Optional[bool] = None
+    num_episodes: Optional[int] = None
+    save_transitions: bool = False
 
-
-class EnvParams(BaseEnvConfig):
-    goal_location: Optional[tuple[float, float]] = None
-    goal_locations: Optional[list[tuple[float, float]]] = None
-    sensor_params: Any = None
+    def __post_init__(self):
+        try:
+            self.render = RenderMode(self.render)
+        except ValueError:
+            valid_values = [e.value for e in RenderMode]
+            raise ValueError(f"render must be one of {valid_values}, got {self.render}")
 
 
 class SmokeAgent:
@@ -107,7 +68,7 @@ class SmokeAgent:
         self,
         agent_id: int,
         robot_params: RobotParams,
-        env_params: EnvParams,
+        env_params: EnvConfig,
         goal_location: tuple[float, float] | None,
     ):
         self.agent_id = agent_id
@@ -116,18 +77,10 @@ class SmokeAgent:
         self.goal_location = goal_location
         self.goal_radius = env_params.goal_radius
 
-        # Robot Object creation
-        rtype = robot_params.robot_type
-        if rtype == "unicycle":
-            raise NotImplementedError("UnicycleRobot is deprecated. Use dubins2d instead.")
-        elif rtype == "dubins2d":
+        if robot_params.name == "dubins2d":
             self.robot = DubinsRobot(robot_params)
-        elif rtype == "dubins2d_fixed_velocity":
-            raise NotImplementedError(
-                "DubinsRobotFixedVelocity is deprecated. Use dubins2d instead."
-            )
         else:
-            raise NotImplementedError(f"Robot type {rtype} not implemented")
+            raise NotImplementedError(f"Robot type {robot_params.name} not implemented")
 
         self._init_spaces()
 
@@ -156,11 +109,6 @@ class SmokeAgent:
             }
         )
 
-        if self.robot_params.robot_type == "unicycle":
-            self.observation_space["velocity"] = spaces.Box(
-                low=self.robot_params.state_min[3], high=self.robot_params.state_max[3], shape=(1,)
-            )
-
     def reset(self, initial_state=None):
         """Resets the individual agent's robot state."""
         if initial_state is None:
@@ -168,255 +116,84 @@ class SmokeAgent:
         else:
             obs = initial_state
 
-        if self.robot_params.robot_type == "unicycle":
-            loc_x = np.ravel(obs["location"])[0]
-            loc_y = np.ravel(obs["location"])[1]
-            angle = np.ravel(obs["angle"])[0]
-            v = np.ravel(obs["velocity"])[0] if "velocity" in obs else 0.0
-            self.robot.reset(np.array([loc_x, loc_y, angle, v]))
-        elif self.robot_params.robot_type in ["dubins2d", "dubins2d_fixed_velocity"]:
-            loc_x = np.ravel(obs["location"])[0]
-            loc_y = np.ravel(obs["location"])[1]
-            angle = np.ravel(obs["angle"])[0]
-            self.robot.reset(np.array([loc_x, loc_y, angle]))
-        else:
-            raise NotImplementedError(f"Robot type {self.robot_params.robot_type} not implemented")
+        loc_x = np.ravel(obs["location"])[0]
+        loc_y = np.ravel(obs["location"])[1]
+        angle = np.ravel(obs["angle"])[0]
+
+        state_t = torch.tensor(
+            [loc_x, loc_y, angle], dtype=torch.float32, device=self.robot_params.device
+        )
+        self.robot.reset(state_t)
 
     def get_robot_odom(self):
         """Retrieves robot odometry/state."""
-        if self.robot_params.robot_type == "unicycle":
-            return {
-                "location": self.robot.get_state()[:2],
-                "angle": self.robot.get_state()[2],
-                "velocity": self.robot.get_state()[3],
-            }
-        elif self.robot_params.robot_type in ["dubins2d", "dubins2d_fixed_velocity"]:
-            return {"location": self.robot.get_state()[:2], "angle": self.robot.get_state()[2]}
-        else:
-            raise NotImplementedError(f"Robot type {self.robot_params.robot_type} not implemented")
+        state = self.robot.get_state()
+        if isinstance(state, torch.Tensor):
+            state = state.cpu().numpy()
+        return {"location": state[:2], "angle": float(state[2])}
 
 
 class SmokeEnv(gym.Env):
     def __init__(
         self,
-        cfg: Union[str, DictConfig, dict] = "configs/env/smoke_env.yaml",
-        robot_params: RobotParams | None = None,
+        env_params: EnvConfig,
+        robot_params: RobotParams,
+        sensor_params: object,
+        simulator_params: object,
         renderer: BaseRenderer | None = None,
     ) -> None:
         """Initializes the Smoke Environment supporting single or multiple agents."""
         super().__init__()
 
-        # 1. Load/Parse/Validate the configuration
-        if isinstance(cfg, str):
-            cfg_loaded = OmegaConf.load(cfg)
-        elif isinstance(cfg, dict):
-            cfg_loaded = OmegaConf.create(cfg)
-        elif isinstance(cfg, DictConfig):
-            cfg_loaded = cfg
-        else:
-            raise TypeError(f"Invalid type for cfg: {type(cfg)}")
+        self.env_params = env_params
+        self.robot_params = robot_params
 
-        # Convert to container without resolving to avoid immediate interpolation errors
-        cfg_dict = OmegaConf.to_container(cfg_loaded, resolve=False)
-
-        # Handle cases where cfg_dict is nested under a namespace (e.g., {"env": {...}})
-        if "env" in cfg_dict and len(cfg_dict) == 1:
-            cfg_dict = cfg_dict["env"]
-
-        # Recursively remove the 'hydra' key from the raw python dictionary
-        def remove_key_recursive(d, key_to_remove):
-            if isinstance(d, dict):
-                d.pop(key_to_remove, None)
-                for k, v in list(d.items()):
-                    remove_key_recursive(v, key_to_remove)
-            elif isinstance(d, list):
-                for item in d:
-                    remove_key_recursive(item, key_to_remove)
-
-        remove_key_recursive(cfg_dict, "hydra")
-
-        # Re-resolve any interpolations now that hydra settings are stripped
-        resolved_cfg = OmegaConf.create(cfg_dict)
-        cfg_dict = OmegaConf.to_container(resolved_cfg, resolve=True)
-
-        validated_cfg = FullEnvConfig(**cfg_dict)
-
-        # 2. Setup core environment parameters (including num_agents and goals assertions)
-        self._setup_env_params(validated_cfg)
-
-        # 3. Setup sensor parameters
-        self._setup_sensor_params(validated_cfg.sensor)
-
-        # 4. Setup smoke and robot parameters
-        self._setup_smoke_and_robot(validated_cfg, robot_params)
-
-        # 5. Initialize the simulator and the agents
-        self._setup_simulator()
-
-        # 6. Initialize spaces
-        self._init_spaces()
-
-        # Setup renderer (Alternative B)
-        if renderer is not None:
-            self.renderer = renderer
-        elif self.env_params.render and self.env_params.render != RenderMode.NONE:
-            self.renderer = SimpleRenderer(validated_cfg)
-        else:
-            self.renderer = None
-
-        self.current_step = 0
-
-    def _setup_env_params(self, validated_cfg: FullEnvConfig):
-        """Initializes self.env_params from the validated configuration."""
-        self.env_params = EnvParams(
-            world_x_size=validated_cfg.world_x_size,
-            world_y_size=validated_cfg.world_y_size,
-            max_steps=validated_cfg.max_steps,
-            render=validated_cfg.render,
-            render_save_every=validated_cfg.render_save_every,
-            clock=validated_cfg.clock,
-            goal_radius=validated_cfg.goal_radius,
-            smoke_density_threshold=validated_cfg.smoke_density_threshold,
-            playback_path=validated_cfg.playback_path,
-            num_agents=validated_cfg.num_agents,
-            collision_radius=validated_cfg.collision_radius,
-            terminate_on_collision=validated_cfg.terminate_on_collision,
-            collision_penalty=validated_cfg.collision_penalty,
-        )
-
-        # Setup goal locations (supporting both singular and plural formats)
-        if validated_cfg.goal_locations:
-            self.env_params.goal_locations = [tuple(loc) for loc in validated_cfg.goal_locations]
-        elif validated_cfg.goal_location:
-            self.env_params.goal_locations = [tuple(validated_cfg.goal_location)]
-            self.env_params.goal_location = tuple(validated_cfg.goal_location)
-        else:
-            self.env_params.goal_locations = None
-
-        # Replicate a single goal if multiple agents but only one goal is specified
-        if self.env_params.goal_locations is None:
-            if self.env_params.goal_location is not None:
-                self.env_params.goal_locations = [
-                    self.env_params.goal_location
-                ] * self.env_params.num_agents
-
-        # Separation Assertion: assert goal numbers must equal agent numbers
         if self.env_params.goal_locations is not None:
+            self.env_params.goal_locations = [tuple(loc) for loc in self.env_params.goal_locations]
             assert len(self.env_params.goal_locations) == self.env_params.num_agents, (
                 f"Number of goal locations ({len(self.env_params.goal_locations)}) must match "
                 f"the number of agents ({self.env_params.num_agents})."
             )
 
-    def _setup_sensor_params(self, sensor_cfg: SensorConfig):
-        """Decodes the 'sensor' block from validated configuration."""
-        sensor_type = sensor_cfg.type
-
-        common_args = {
-            "world_x_size": self.env_params.world_x_size,
-            "world_y_size": self.env_params.world_y_size,
-        }
-
-        if sensor_type == "camera_1d":
-            d = Camera1DSensorParams(**common_args)
-            self.env_params.sensor_params = Camera1DSensorParams(
-                fov_size_degrees=float(
-                    sensor_cfg.fov_size_degrees
-                    if sensor_cfg.fov_size_degrees is not None
-                    else d.fov_size_degrees
-                ),
-                num_rays=int(
-                    sensor_cfg.num_rays if sensor_cfg.num_rays is not None else d.num_rays
-                ),
-                step_size=float(
-                    sensor_cfg.step_size if sensor_cfg.step_size is not None else d.step_size
-                ),
-                opacity_threshold=float(
-                    sensor_cfg.opacity_threshold
-                    if sensor_cfg.opacity_threshold is not None
-                    else d.opacity_threshold
-                ),
-                max_range=float(
-                    sensor_cfg.max_range if sensor_cfg.max_range is not None else d.max_range
-                ),
-                **common_args,
+        if self.env_params.initial_locations is not None:
+            self.env_params.initial_locations = [
+                tuple(loc) for loc in self.env_params.initial_locations
+            ]
+            assert len(self.env_params.initial_locations) == self.env_params.num_agents, (
+                f"Number of initial locations ({len(self.env_params.initial_locations)}) must match "
+                f"the number of agents ({self.env_params.num_agents})."
             )
+
+        # 2. Setup sensor
+        assert sensor_params is not None, "sensor_params must be provided to SmokeEnv"
+        self.env_params_sensor_params = sensor_params
+
+        sensor_type = getattr(self.env_params_sensor_params, "sensor_type", "global")
+        if sensor_type in ["camera_1d", "camera1d"]:
+            self.sensor = Camera1DSensor(self.env_params_sensor_params)
         elif sensor_type == "downwards":
-            self.env_params.sensor_params = DownwardsSensorParams(**common_args)
-        elif sensor_type == "point":
-            self.env_params.sensor_params = PointSensorParams(**common_args)
+            self.sensor = DownwardsSensor(self.env_params_sensor_params)
         else:
-            self.env_params.sensor_params = GlobalSensorParams(**common_args)
+            self.sensor = GlobalSensor(self.env_params_sensor_params)
 
-    def _setup_smoke_and_robot(
-        self, validated_cfg: FullEnvConfig, robot_params_override: RobotParams | None
-    ):
-        """Logic to prepare SmokeParams and Robot objects."""
-        # --- Smoke setup ---
-        smoke_cfg = validated_cfg.smoke
-        smoke_blobs = []
-        if smoke_cfg is not None and smoke_cfg.blobs:
-            for b in smoke_cfg.blobs:
-                smoke_blobs.append(
-                    BlobParams(
-                        x_pos=float(b.x),
-                        y_pos=float(b.y),
-                        intensity=float(b.intensity),
-                        spread_rate=float(b.spread),
-                    )
-                )
+        # 3. Setup simulator
+        assert simulator_params is not None, "simulator_params must be provided to SmokeEnv"
+        if isinstance(simulator_params, PlaybackParams):
+            self.smoke_simulator = Playback(params=simulator_params)
+            self._apply_playback_overrides()
+        elif isinstance(simulator_params, SmokeParams):
+            self.smoke_params = simulator_params
+            blobs_list = [BlobParams(x_pos=10, y_pos=40, intensity=1.0, spread_rate=1.0)]
+            self.smoke_simulator = Smoke(params=self.smoke_params, blob_params_list=blobs_list)
         else:
-            smoke_blobs = [BlobParams(x_pos=10, y_pos=40, intensity=1.0, spread_rate=1.0)]
+            raise TypeError(f"Unsupported simulator params type: {type(simulator_params)}")
 
-        d_smoke = SmokeParams(x_size=10, y_size=10, smoke_blob_params=[])
-        self.smoke_params = SmokeParams(
-            x_size=self.env_params.world_x_size,
-            y_size=self.env_params.world_y_size,
-            smoke_blob_params=smoke_blobs,
-            resolution=float(
-                smoke_cfg.resolution
-                if (smoke_cfg is not None and smoke_cfg.resolution is not None)
-                else d_smoke.resolution
-            ),
-        )
+        self.env_params_sensor_params.world_x_size = self.env_params.world_x_size
+        self.env_params_sensor_params.world_y_size = self.env_params.world_y_size
 
-        # --- Robot setup ---
-        if robot_params_override is not None:
-            self.robot_params = robot_params_override
-        else:
-            self.robot_params = validated_cfg.robot
-
-        self.robot_params.state_max[0] = self.env_params.world_x_size
-        self.robot_params.state_max[1] = self.env_params.world_y_size
-
-    def _setup_simulator(self):
-        """Choose between Playback or Dynamic simulation and create the agents."""
-        if self.env_params.playback_path:
-            p_params = PlaybackParams(data_path=self.env_params.playback_path)
-            self.smoke_simulator = Playback(params=p_params)
-
-            # Playback data overrides world sizes if provided
-            if self.smoke_simulator.x_size:
-                self.env_params.world_x_size = self.smoke_simulator.x_size
-            if self.smoke_simulator.y_size:
-                self.env_params.world_y_size = self.smoke_simulator.y_size
-            if self.smoke_simulator.max_steps:
-                self.env_params.max_steps = self.smoke_simulator.max_steps
-        else:
-            self.smoke_simulator = Smoke(params=self.smoke_params)
-
-        # Re-sync sensor world sizes
-        self.env_params.sensor_params.world_x_size = self.env_params.world_x_size
-        self.env_params.sensor_params.world_y_size = self.env_params.world_y_size
-
-        stype = self.env_params.sensor_params.sensor_type
-        if stype == "camera_1d":
-            self.sensor = Camera1DSensor(self.env_params.sensor_params)
-        elif stype == "downwards":
-            self.sensor = DownwardsSensor(self.env_params.sensor_params)
-        elif stype == "point":
-            self.sensor = PointSensor(self.env_params.sensor_params)
-        else:
-            self.sensor = GlobalSensor(self.env_params.sensor_params)
+        # Setup transition buffer if saving is enabled
+        self._transition_buffer = [] if self.env_params.save_transitions else None
+        self._last_obs = None
 
         # Create multi-agents
         self.agents = []
@@ -434,23 +211,44 @@ class SmokeEnv(gym.Env):
             )
             self.agents.append(agent)
 
-        # Maintain direct reference to the first agent's robot for full single-agent backward compatibility
-        self.robot = self.agents[0].robot
+        # Initialize spaces
+        self._init_spaces()
 
-    def _init_spaces(self):
-        """Defines Gym action and observation spaces conforming to composite gymnasium.spaces standards."""
-        if self.env_params.num_agents == 1:
-            self.action_space = self.agents[0].action_space
-            self.observation_space = self.agents[0].observation_space
+        # Setup renderer
+        if renderer is not None:
+            self.renderer = renderer
+        elif self.env_params.render and self.env_params.render != RenderMode.NONE:
+            self.renderer = SimpleRenderer(self.env_params)
         else:
-            self.action_space = spaces.Dict(
-                {f"agent_{i}": agent.action_space for i, agent in enumerate(self.agents)}
-            )
-            self.observation_space = spaces.Dict(
-                {f"agent_{i}": agent.observation_space for i, agent in enumerate(self.agents)}
-            )
+            self.renderer = None
 
-    def reset(self, initial_state=None, seed=None, options=None):
+        self.current_step = 0
+
+    def _apply_playback_overrides(self) -> None:
+        """Applies configuration overrides from the loaded playback data."""
+        if isinstance(self.smoke_simulator, Playback):
+            if self.smoke_simulator.x_size:
+                self.env_params.world_x_size = self.smoke_simulator.x_size
+            if self.smoke_simulator.y_size:
+                self.env_params.world_y_size = self.smoke_simulator.y_size
+            if self.smoke_simulator.max_steps:
+                self.env_params.max_steps = self.smoke_simulator.max_steps
+
+    def _init_spaces(self) -> None:
+        """Defines Gym action and observation spaces conforming to composite gymnasium.spaces standards."""
+        self.action_space = spaces.Dict(
+            {f"agent_{i}": agent.action_space for i, agent in enumerate(self.agents)}
+        )
+        self.observation_space = spaces.Dict(
+            {f"agent_{i}": agent.observation_space for i, agent in enumerate(self.agents)}
+        )
+
+    def reset(
+        self,
+        initial_state: list[dict] | None = None,
+        seed: int | None = None,
+        options: dict | None = None,
+    ) -> tuple[dict[str, dict], dict]:
         super().reset(seed=seed)
 
         self.window = {"fig": None, "ax": None, "cax": None}
@@ -466,34 +264,32 @@ class SmokeEnv(gym.Env):
         else:
             self.smoke_simulator.reset()
 
-        # Handle initial states for each agent (supports lists or single dictionaries)
-        for i, agent in enumerate(self.agents):
-            if initial_state is None:
-                agent_init = None
-            elif isinstance(initial_state, dict):
-                agent_init = initial_state.get(
-                    f"agent_{i}",
-                    initial_state.get(
-                        i, initial_state if self.env_params.num_agents == 1 else None
-                    ),
-                )
-            elif isinstance(initial_state, list):
-                agent_init = initial_state[i] if i < len(initial_state) else None
-            else:
-                agent_init = None
+        if initial_state is not None:
+            assert isinstance(initial_state, list), "initial_state must be a list"
+            assert len(initial_state) == self.env_params.num_agents, (
+                f"initial_state length ({len(initial_state)}) must match num_agents ({self.env_params.num_agents})"
+            )
 
+        for i, agent in enumerate(self.agents):
+            agent_init = initial_state[i] if initial_state is not None else None
             agent.reset(initial_state=agent_init)
 
-        return self._get_obs(), {}
+        obs = self._get_obs()
+        if self.env_params.save_transitions:
+            self._last_obs = obs
+        return obs, {}
 
     def get_robot_odom(self, agent_idx: int = 0):
         """Retrieves robot odometry for a specific agent index."""
         return self.agents[agent_idx].get_robot_odom()
 
-    def get_smoke_density_sensor(self, pos: np.ndarray, return_location: bool = True):
+    def get_smoke_density_sensor(
+        self, pos: Union[np.ndarray, torch.Tensor], return_location: bool = True
+    ):
         assert self.sensor is not None, "Sensor must have been initialized"
-
-        sensor_output = self.sensor.read(self.smoke_simulator.get_smoke_density, curr_pos=pos)
+        if not isinstance(pos, torch.Tensor):
+            pos = torch.as_tensor(pos, dtype=torch.float32, device=get_device())
+        sensor_output = self.sensor.read(self.smoke_simulator, curr_pos=pos)
         if return_location:
             return sensor_output.readings, sensor_output.positions
         return sensor_output.readings
@@ -502,7 +298,7 @@ class SmokeEnv(gym.Env):
         odom = self.get_robot_odom(agent_idx)
         pos_x, pos_y = odom["location"]
         smoke_density_in_robot = self.smoke_simulator.get_smoke_density(np.array([pos_x, pos_y]))
-        return smoke_density_in_robot
+        return float(smoke_density_in_robot)
 
     def _get_obs_for_agent(
         self, agent: SmokeAgent, global_sensor_output: SensorOutput | None = None
@@ -513,11 +309,9 @@ class SmokeEnv(gym.Env):
         angle = odom["angle"]
 
         if global_sensor_output is not None:
-            # High efficiency: all agents point to the same global pre-computed arrays
             smoke_density = global_sensor_output.readings
             smoke_density_location = global_sensor_output.positions
         else:
-            # Local FOV: each agent performs its own reading based on its specific position
             smoke_density, smoke_density_location = self.get_smoke_density_sensor(
                 np.array([pos_x, pos_y, angle])
             )
@@ -529,34 +323,21 @@ class SmokeEnv(gym.Env):
             "smoke_density": smoke_density,
             "smoke_density_location": smoke_density_location,
         }
-
-        if agent.robot_params.robot_type == "unicycle":
-            obs["velocity"] = odom["velocity"]
         return obs
 
-    def _get_obs(self):
+    def _get_obs(self) -> dict[str, dict]:
         """Constructs the centralized observation space."""
         global_sensor_output = None
-        if self.env_params.sensor_params.sensor_type == "global":
-            # High efficiency optimization: compute global readings only once per step for all agents
-            dummy_pos = np.array([0.0, 0.0])
-            global_sensor_output = self.sensor.read(
-                self.smoke_simulator.get_smoke_density, curr_pos=dummy_pos
-            )
-
-        if self.env_params.num_agents == 1:
-            return self._get_obs_for_agent(
-                self.agents[0], global_sensor_output=global_sensor_output
-            )
+        if self.env_params_sensor_params.sensor_type == "global":
+            dummy_pos = torch.tensor([0.0, 0.0], dtype=torch.float32, device=get_device())
+            global_sensor_output = self.sensor.read(self.smoke_simulator, curr_pos=dummy_pos)
 
         return {
             f"agent_{i}": self._get_obs_for_agent(agent, global_sensor_output=global_sensor_output)
             for i, agent in enumerate(self.agents)
         }
 
-    def _get_info(self):
-        if self.env_params.num_agents == 1:
-            return {}
+    def _get_info(self) -> dict[str, dict]:
         return {f"agent_{i}": {} for i in range(self.env_params.num_agents)}
 
     def _check_collision_for_agent(self, agent: SmokeAgent, pos: np.ndarray) -> bool:
@@ -570,28 +351,18 @@ class SmokeEnv(gym.Env):
                         return True
         return False
 
-    def _get_reward_for_agent(self, agent: SmokeAgent, obs_agent):
+    def _get_reward_for_agent(self, agent: SmokeAgent, obs_agent: dict) -> float:
         pos_x, pos_y = obs_agent["location"]
         reward = 0.0
         if agent.goal_location is not None:
             if np.linalg.norm(np.array([pos_x, pos_y]) - agent.goal_location) < agent.goal_radius:
                 reward = 1.0
 
-        # Check collision with other agents
         if self._check_collision_for_agent(agent, np.array([pos_x, pos_y])):
             reward += self.env_params.collision_penalty
         return reward
 
-    def _get_reward(self, obs, action):
-        if self.env_params.num_agents == 1:
-            return self._get_reward_for_agent(self.agents[0], obs)
-        else:
-            return {
-                f"agent_{i}": self._get_reward_for_agent(agent, obs[f"agent_{i}"])
-                for i, agent in enumerate(self.agents)
-            }
-
-    def _get_terminated_for_agent(self, agent: SmokeAgent, obs_agent):
+    def _get_terminated_for_agent(self, agent: SmokeAgent, obs_agent: dict) -> bool:
         pos_x, pos_y = obs_agent["location"]
         smoke_density_in_robot = self.smoke_simulator.get_smoke_density(np.array([pos_x, pos_y]))
 
@@ -605,57 +376,47 @@ class SmokeEnv(gym.Env):
             if np.linalg.norm(np.array([pos_x, pos_y]) - agent.goal_location) < agent.goal_radius:
                 return True
 
-        # Optional collision termination
         if self.env_params.terminate_on_collision:
             if self._check_collision_for_agent(agent, np.array([pos_x, pos_y])):
                 return True
         return False
 
-    def _get_terminated(self, obs):
-        if self.env_params.num_agents == 1:
-            return self._get_terminated_for_agent(self.agents[0], obs)
-        else:
-            return {
-                f"agent_{i}": self._get_terminated_for_agent(agent, obs[f"agent_{i}"])
-                for i, agent in enumerate(self.agents)
-            }
+    def _get_reward(self, obs: dict[str, dict], action: dict) -> dict[str, float]:
+        return {
+            f"agent_{i}": self._get_reward_for_agent(agent, obs[f"agent_{i}"])
+            for i, agent in enumerate(self.agents)
+        }
 
-    def _get_truncated(self, obs):
-        if self.current_step >= self.env_params.max_steps:
-            if self.env_params.num_agents == 1:
-                return True
-            else:
-                return {f"agent_{i}": True for i in range(self.env_params.num_agents)}
-        if self.env_params.num_agents == 1:
-            return False
-        else:
-            return {f"agent_{i}": False for i in range(self.env_params.num_agents)}
+    def _get_terminated(self, obs: dict[str, dict]) -> dict[str, bool]:
+        return {
+            f"agent_{i}": self._get_terminated_for_agent(agent, obs[f"agent_{i}"])
+            for i, agent in enumerate(self.agents)
+        }
 
-    def step(self, action):
+    def _get_truncated(self, obs: dict[str, dict]) -> dict[str, bool]:
+        is_truncated = self.current_step >= self.env_params.max_steps
+        return {f"agent_{i}": is_truncated for i in range(self.env_params.num_agents)}
+
+    def step(
+        self, action: dict
+    ) -> tuple[
+        dict[str, dict], dict[str, float], dict[str, bool], dict[str, bool], dict[str, dict]
+    ]:
         self.current_step += 1
 
-        if self.env_params.num_agents == 1:
-            # Support actions formatted as single action, list/tuple of size 1, or dictionaries
-            if isinstance(action, (list, tuple, np.ndarray)) and len(action) == 1:
-                act = action[0]
-            elif isinstance(action, dict) and 0 in action:
-                act = action[0]
-            elif isinstance(action, dict) and "agent_0" in action:
-                act = action["agent_0"]
+        assert isinstance(action, dict), "Action must be a dictionary mapping agent keys to actions"
+
+        for i, agent in enumerate(self.agents):
+            agent_key = f"agent_{i}"
+            act = action.get(agent_key, action.get(i))
+            assert act is not None, f"Action for agent {agent_key} not provided"
+
+            robot = agent.robot
+            if not isinstance(act, torch.Tensor):
+                act = torch.as_tensor(act, dtype=torch.float32, device=robot.params.device)
             else:
-                act = action
-            self.agents[0].robot.dynamic_step(act)
-        else:
-            for i, agent in enumerate(self.agents):
-                if isinstance(action, dict):
-                    act = action.get(f"agent_{i}", action.get(i))
-                elif isinstance(action, (list, tuple, np.ndarray)):
-                    act = action[i]
-                else:
-                    raise ValueError(
-                        f"Action format not recognized for multi-agent stepping: {type(action)}"
-                    )
-                agent.robot.dynamic_step(act)
+                act = act.to(robot.params.device)
+            robot.dynamic_step(act)
 
         self.smoke_simulator.step()
 
@@ -664,82 +425,207 @@ class SmokeEnv(gym.Env):
         terminated = self._get_terminated(obs)
         truncated = self._get_truncated(obs)
         info = self._get_info()
+
+        self._record_transition(action, obs, reward, terminated, truncated)
+
         return obs, reward, terminated, truncated, info
 
     def render(self, controller=None):
-        """Standard Gym/Gymnasium render method."""
         if self.renderer is not None:
             return self.renderer.render({"env": self, "controller": controller})
         return None
 
     def _render_frame(self, controller=None):
-        """Compatibility wrapper for standard/simple renderer integration."""
         return self.render(controller=controller)
 
-    def close(self):
+    def close(self) -> None:
         if self.renderer is not None:
             self.renderer.close()
+        self._save_transitions()
+
+    def _record_transition(
+        self,
+        action: dict,
+        obs: dict[str, dict],
+        reward: dict[str, float],
+        terminated: dict[str, bool],
+        truncated: dict[str, bool],
+    ) -> None:
+        if not self.env_params.save_transitions or self._last_obs is None:
+            return
+
+        assert isinstance(action, dict), "Action must be a dictionary"
+
+        for i in range(self.env_params.num_agents):
+            agent_key = f"agent_{i}"
+            obs_agent = self._last_obs[agent_key]
+            next_obs_agent = obs[agent_key]
+
+            act_val = action.get(agent_key, action.get(i))
+            assert act_val is not None, f"Action for agent {agent_key} not provided"
+
+            if isinstance(act_val, torch.Tensor):
+                act_val = act_val.detach().cpu().numpy()
+            elif isinstance(act_val, (list, tuple)):
+                act_val = np.array(act_val)
+
+            rew_val = reward[agent_key]
+            term_val = terminated[agent_key]
+            trunc_val = truncated[agent_key]
+
+            def to_numpy(val):
+                if isinstance(val, torch.Tensor):
+                    return val.detach().cpu().numpy()
+                return val
+
+            obs_loc = to_numpy(obs_agent["location"])
+            obs_angle = to_numpy(obs_agent["angle"])
+            obs_readings = to_numpy(obs_agent["smoke_density"])
+            next_obs_loc = to_numpy(next_obs_agent["location"])
+            next_obs_readings = to_numpy(next_obs_agent["smoke_density"])
+
+            transition = {
+                SmokeDataSchema.OBS_LOCATION: [float(x) for x in np.ravel(obs_loc)],
+                SmokeDataSchema.OBS_ANGLE: [float(obs_angle)]
+                if isinstance(obs_angle, (int, float, np.number))
+                else [float(x) for x in np.ravel(obs_angle)],
+                SmokeDataSchema.OBS_READINGS: [float(x) for x in np.ravel(obs_readings)],
+                SmokeDataSchema.ACTION: [float(x) for x in np.ravel(act_val)],
+                SmokeDataSchema.REWARD: float(rew_val),
+                SmokeDataSchema.NEXT_OBS_LOCATION: [float(x) for x in np.ravel(next_obs_loc)],
+                SmokeDataSchema.NEXT_OBS_READINGS: [float(x) for x in np.ravel(next_obs_readings)],
+                SmokeDataSchema.TERMINATED: bool(term_val),
+                SmokeDataSchema.TRUNCATED: bool(trunc_val),
+            }
+            self._transition_buffer.append(transition)
+
+        self._last_obs = obs
+
+    def _save_transitions(self) -> None:
+        if (
+            getattr(self, "env_params", None) is not None
+            and getattr(self.env_params, "save_transitions", False)
+            and getattr(self, "_transition_buffer", None)
+        ):
+            import os
+
+            try:
+                from hydra.core.hydra_config import HydraConfig
+
+                output_dir = HydraConfig.get().runtime.output_dir
+            except (ValueError, ImportError, KeyError):
+                output_dir = "outputs"
+
+            import datasets
+            from datasets import Dataset
+
+            features = datasets.Features(
+                {
+                    SmokeDataSchema.OBS_LOCATION: datasets.Sequence(
+                        datasets.Value("float32"), length=2
+                    ),
+                    SmokeDataSchema.OBS_ANGLE: datasets.Sequence(
+                        datasets.Value("float32"), length=1
+                    ),
+                    SmokeDataSchema.OBS_READINGS: datasets.Sequence(datasets.Value("float32")),
+                    SmokeDataSchema.ACTION: datasets.Sequence(datasets.Value("float32")),
+                    SmokeDataSchema.REWARD: datasets.Value("float32"),
+                    SmokeDataSchema.NEXT_OBS_LOCATION: datasets.Sequence(
+                        datasets.Value("float32"), length=2
+                    ),
+                    SmokeDataSchema.NEXT_OBS_READINGS: datasets.Sequence(datasets.Value("float32")),
+                    SmokeDataSchema.TERMINATED: datasets.Value("bool"),
+                    SmokeDataSchema.TRUNCATED: datasets.Value("bool"),
+                }
+            )
+
+            ds = Dataset.from_list(self._transition_buffer, features=features)
+            save_dir = os.path.join(output_dir, "env_transitions")
+            ds.save_to_disk(save_dir)
+            print(f"[SmokeEnv] Successfully saved {len(ds)} transitions to {save_dir}")
 
 
 def main(cfg) -> None:
+    # 1. Resolve configuration in-place
+    OmegaConf.resolve(cfg)
+
+    env_params = OmegaConf.to_object(cfg.env)
+    robot_params = OmegaConf.to_object(cfg.agent)
+    smoke_params = OmegaConf.to_object(cfg.simulator)
+    sensor_params = OmegaConf.to_object(cfg.sensor)
+
+    # Force save_transitions to True for testing the dataset serialization code
+    env_params.save_transitions = True
+
     # Test single agent initialization
     print("Testing Single Agent Environment Initialization...")
-    env = SmokeEnv(cfg=cfg)
-    env.env_params.render = RenderMode.HUMAN
+    env = SmokeEnv(
+        env_params=env_params,
+        robot_params=robot_params,
+        sensor_params=sensor_params,
+        simulator_params=smoke_params,
+    )
 
-    initial_state = {
-        "location": np.array([5, 5]),
-        "angle": 1.0,
-        "smoke_density": 0.0,
-        "velocity": 1.0,
-    }
+    # Use config initial locations if specified, otherwise None
+    initial_loc = env_params.initial_locations
+    if initial_loc is not None and len(initial_loc) > 0:
+        initial_state = [
+            {
+                "location": np.array(initial_loc[0]),
+                "angle": 1.0,
+            }
+        ]
+    else:
+        initial_state = None
+
     obs, _ = env.reset(initial_state=initial_state)
-    print(f"Single-agent Reset Obs ID: {obs['id']}")
-    print(f"Single-agent Reset Obs Location: {obs['location']}")
+    print(f"Single-agent Reset Obs ID: {obs['agent_0']['id']}")
+    print(f"Single-agent Reset Obs Location: {obs['agent_0']['location']}")
 
     action = env.action_space.sample()
     obs, reward, terminated, truncated, info = env.step(action)
-    print(f"Single-agent Step Reward: {reward}")
+    print(f"Single-agent Step Reward: {reward['agent_0']}")
     env.close()
 
-    # Test multi-agent initialization with Dict composite spaces
+    # Test multi-agent initialization
+    num_agents = env_params.num_agents
     print(
-        "\nTesting Multi-Agent Environment (num_agents = 3) Initialization with Composite Spaces..."
+        f"\nTesting Multi-Agent Environment (num_agents = {num_agents}) Initialization with Composite Spaces..."
     )
-    cfg_raw = OmegaConf.to_container(cfg, resolve=False)
+    env_multi = SmokeEnv(
+        env_params=env_params,
+        robot_params=robot_params,
+        sensor_params=sensor_params,
+        simulator_params=smoke_params,
+    )
 
-    def remove_key_recursive(d, key_to_remove):
-        if isinstance(d, dict):
-            d.pop(key_to_remove, None)
-            for k, v in list(d.items()):
-                remove_key_recursive(v, key_to_remove)
-        elif isinstance(d, list):
-            for item in d:
-                remove_key_recursive(item, key_to_remove)
+    # Use config initial locations if specified, otherwise None
+    if env_params.initial_locations is not None and len(env_params.initial_locations) > 0:
+        initial_state_multi = [
+            {"location": np.array(loc), "angle": 1.0} for loc in env_params.initial_locations
+        ]
+    else:
+        initial_state_multi = None
 
-    remove_key_recursive(cfg_raw, "hydra")
-
-    multi_cfg = OmegaConf.to_container(OmegaConf.create(cfg_raw), resolve=True)
-    if "env" in multi_cfg and len(multi_cfg) == 1:
-        multi_cfg = multi_cfg["env"]
-
-    multi_cfg["num_agents"] = 3
-    multi_cfg["goal_locations"] = [[5.0, 5.0], [10.0, 10.0], [15.0, 15.0]]
-
-    env_multi = SmokeEnv(cfg=multi_cfg)
-    env_multi.env_params.render = RenderMode.HUMAN
-
-    obs_multi, _ = env_multi.reset()
-    print(f"Multi-agent Reset Obs Keys: {list(obs_multi.keys())}")
-    for k, o in obs_multi.items():
-        print(f"Agent {k} ID: {o['id']} | Location: {o['location']}")
+    obs_multi, _ = env_multi.reset(initial_state=initial_state_multi)
+    if "id" in obs_multi:
+        print(f"Agent 0 ID: {obs_multi['id']} | Location: {obs_multi['location']}")
+    else:
+        print(f"Multi-agent Reset Obs Keys: {list(obs_multi.keys())}")
+        for k, o in obs_multi.items():
+            print(f"Agent {k} ID: {o['id']} | Location: {o['location']}")
 
     actions = env_multi.action_space.sample()
     obs_multi, rewards, terminateds, truncateds, infos = env_multi.step(actions)
-    print(f"Multi-agent Step Rewards Keys: {list(rewards.keys())}")
-    print(f"Multi-agent Step Rewards: {rewards}")
+    if isinstance(rewards, dict):
+        print(f"Multi-agent Step Rewards Keys: {list(rewards.keys())}")
+        print(f"Multi-agent Step Rewards: {rewards}")
+    else:
+        print(f"Single-agent Step Reward: {rewards}")
 
-    for _ in range(100):
+    max_steps = env_params.max_steps
+    steps_to_run = min(5, max_steps) if max_steps is not None else 5
+    for _ in range(steps_to_run):
         actions = env_multi.action_space.sample()
         obs_multi, rewards, terminateds, truncateds, infos = env_multi.step(actions)
         env_multi.render()
@@ -748,9 +634,10 @@ def main(cfg) -> None:
     print("\nAll tests executed successfully!")
 
 
-if __name__ == "__main__":
-    from hydra import compose, initialize
-    print("🧪 Running SmokeEnv tests with programmatic hydra.compose...")
-    with initialize(version_base=None, config_path="../../configs"):
-        cfg = compose(config_name="env/smoke_env")
+@hydra.main(version_base=None, config_path="../../configs", config_name="config")
+def run_tests(cfg) -> None:
     main(cfg)
+
+
+if __name__ == "__main__":
+    run_tests()

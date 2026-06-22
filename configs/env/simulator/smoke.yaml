@@ -1,0 +1,11 @@
+x_size: ${world_size.0}
+y_size: ${world_size.1}
+resolution: 0.2
+
+# Parameters for the smoke simulation
+average_wind_speed: 5.0
+smoke_emission_rate: 1.8
+smoke_diffusion_rate: 0.0
+smoke_decay_rate: 1.5
+buoyancy_factor: 1.2
+inflow_bank_count: 5

@@ -1,9 +1,9 @@
 import numpy as np
-import warnings
+
 
 def clip_world(x: float, y: float, x_max: float, y_max: float):
-    """
-    Clips the world coordinates (x, y) to keep them within the map.
+    """Clips the world coordinates (x, y) to keep them within the map.
+
     Note: Map starts at (0, 0) and ends at (x_max, y_max)
     """
     epsilon = 1e-6
@@ -15,9 +15,10 @@ def clip_world(x: float, y: float, x_max: float, y_max: float):
         pass
     return x_clipped, y_clipped
 
+
 def clip_index(row: int, col: int, x_max: int, y_max: int, resolution: float):
-    """
-    Clips the indices of a matrix to keep them within the valid bounds.
+    """Clips the indices of a matrix to keep them within the valid bounds.
+
     Note: Matrix starts at (0, 0) and ends at (num_rows - 1, num_cols - 1)
     """
     num_rows, num_cols = get_index_bounds(x_max, y_max, resolution)
@@ -31,9 +32,10 @@ def clip_index(row: int, col: int, x_max: int, y_max: int, resolution: float):
 
     return row_clipped, col_clipped
 
+
 def world_to_index(x: float, y: float, x_max: float, y_max: float, resolution: float):
-    """
-    Converts world coordinates (x, y) in meters to indices (row, col) of a matrix.
+    """Converts world coordinates (x, y) in meters to indices (row, col) of a matrix.
+
     Note: Matrix starts at (0, y_max) and ends at (x_max, 0)
     """
     x, y = clip_world(x, y, x_max, y_max)
@@ -45,9 +47,10 @@ def world_to_index(x: float, y: float, x_max: float, y_max: float, resolution: f
 
     return row, col
 
+
 def index_to_world(row: int, col: int, x_max: float, y_max: float, resolution: float):
-    """
-    Converts indices (row, col) of a matrix to world coordinates (x, y) of the center of the cell.
+    """Converts indices (row, col) of a matrix to world coordinates (x, y) of the center of the cell.
+
     Note: Matrix starts at (0, y_max) and ends at (x_max, 0)
     """
     row, col = clip_index(row, col, x_max, y_max, resolution)
@@ -59,16 +62,18 @@ def index_to_world(row: int, col: int, x_max: float, y_max: float, resolution: f
 
     return x, y
 
+
 def get_index_bounds(x_max: float, y_max: float, resolution: float):
-    """
-    Returns the bounds of the index space in the form of a tuple (num_rows, num_cols).
+    """Returns the bounds of the index space in the form of a tuple (num_rows, num_cols).
+
     Note: Matrix starts at (0, y_max) and ends at (x_max, 0)
     """
     return int(np.ceil(y_max / resolution)), int(np.ceil(x_max / resolution))
 
+
 def get_world_bounds(num_rows: int, num_cols: int, resolution: float):
-    """
-    Returns the bounds of the world space in the form of a tuple (x_max, y_max).
+    """Returns the bounds of the world space in the form of a tuple (x_max, y_max).
+
     Note: World starts at (0, 0) and ends at (x_max, y_max)
     """
     return num_cols * resolution, num_rows * resolution

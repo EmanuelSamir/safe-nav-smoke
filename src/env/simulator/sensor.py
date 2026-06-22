@@ -1,270 +1,366 @@
+import math
 from dataclasses import dataclass
-from typing import Callable
 
-import numpy as np
+import hydra
+import torch
 
 
 @dataclass
 class SensorOutput:
-    readings: np.ndarray
-    positions: np.ndarray
+    readings: torch.Tensor
+    positions: torch.Tensor
 
 
 @dataclass
 class BaseSensorParams:
-    world_x_size: float = 20.0
-    world_y_size: float = 20.0
-    sensor_type: str = "base"
-
-
-@dataclass
-class DownwardsSensorParams(BaseSensorParams):
-    fov_size_degrees: float = 15
-    points_in_range: int = 8
-    height: float = 12.0
-    sensor_type: str = "downwards"
-
-
-@dataclass
-class PointSensorParams(BaseSensorParams):
-    sensor_type: str = "point"
+    world_x_size: float
+    world_y_size: float
+    sensor_type: str
 
 
 @dataclass
 class GlobalSensorParams(BaseSensorParams):
-    density_reading_per_unit_length: float = (
-        5.0  # density reading per unit length in the range of the sensor
-    )
-    sensor_type: str = "global"
+    density_reading_per_unit_length: float
+
+
+@dataclass
+class DownwardsSensorParams(BaseSensorParams):
+    density_reading_per_unit_length: float
+
+    x_fov_size: float
+    y_fov_size: float
 
 
 @dataclass
 class Camera1DSensorParams(BaseSensorParams):
-    fov_size_degrees: float = 90.0
-    num_rays: int = 64
-    step_size: float = 0.5
-    opacity_threshold: float = 2.0
-    max_range: float = 8.0
-    sensor_type: str = "camera_1d"
+    fov_size_degrees: float
+    num_rays: int
+    step_size: float
+    opacity_threshold: float
+    max_range: float
 
 
 class BaseSensor:
     def __init__(self, params: BaseSensorParams):
+        """Initialize the base sensor.
+
+        Args:
+            params: Parameters for the sensor.
+        """
         self.params = params
 
-    def projection_bounds(self, pos_x: float, pos_y: float) -> np.ndarray:
+    def projection_bounds(self, pos_x: float, pos_y: float) -> torch.Tensor:
         raise NotImplementedError("Projection bounds must be implemented in the subclass")
 
-    def read(self, function_to_get_values: Callable, curr_pos: np.ndarray) -> SensorOutput:
+    def read(self, simulator, curr_pos: torch.Tensor) -> SensorOutput:
         raise NotImplementedError("Read must be implemented in the subclass")
-
-
-class PointSensor(BaseSensor):
-    def __init__(self, params: PointSensorParams):
-        self.params = params
-
-    def projection_bounds(self, pos_x: float, pos_y: float) -> np.ndarray:
-        arr = np.array([(pos_x, pos_y)])
-        return np.repeat(arr, 4, axis=0)
-
-    def read(self, function_to_get_values: Callable, curr_pos: np.ndarray) -> SensorOutput:
-        assert curr_pos.shape[0] >= 2 and curr_pos.ndim == 1, (
-            "Current position must be at least a 2-element array"
-        )
-        sensor_position_readings = curr_pos[:2]
-        try:
-            sensor_readings = function_to_get_values(sensor_position_readings)
-        except Exception as e:
-            raise ValueError(
-                "function_to_get_values failed. It must take a 2D array and return a 1D array"
-            ) from e
-        return SensorOutput(readings=sensor_readings, positions=sensor_position_readings)
 
 
 class DownwardsSensor(BaseSensor):
     def __init__(self, params: DownwardsSensorParams):
         self.params = params
-        self.fov_size_rad = np.deg2rad(self.params.fov_size_degrees)
-        self.grid_pairs_positions = self.build_reading_grids()
 
-    def projection_bounds(self, pos_x: float, pos_y: float) -> np.ndarray:
-        half_fov_size = self.fov_size_rad / 2
-        projection_distance = np.tan(half_fov_size) * self.params.height
-        return np.array(
+        density = self.params.density_reading_per_unit_length
+        if density == 0:
+            density = 1.0
+
+        self.nx = max(1, round(density * self.params.x_fov_size))
+        self.ny = max(1, round(density * self.params.y_fov_size))
+
+    def projection_bounds(self, pos_x: float, pos_y: float) -> torch.Tensor:
+        half_x = self.params.x_fov_size / 2
+        half_y = self.params.y_fov_size / 2
+        return torch.tensor(
             [
-                (pos_x - projection_distance, pos_y - projection_distance),
-                (pos_x + projection_distance, pos_y - projection_distance),
-                (pos_x + projection_distance, pos_y + projection_distance),
-                (pos_x - projection_distance, pos_y + projection_distance),
-            ]
+                [pos_x - half_x, pos_y - half_y],
+                [pos_x + half_x, pos_y - half_y],
+                [pos_x + half_x, pos_y + half_y],
+                [pos_x - half_x, pos_y + half_y],
+            ],
+            dtype=torch.float32,
         )
 
-    def build_reading_grids(self) -> np.ndarray:
-        """Returns a grid of the reading of the sensor in the world from zero position.
+    def read(self, simulator, curr_pos: torch.Tensor) -> SensorOutput:
+        grid = simulator.get_smoke_map_tensor()  # shape: (H, W)
+        curr_pos = curr_pos.to(grid.device)
+        device = curr_pos.device
+        center_pos = curr_pos[:2]
 
-        Returns:
-            np.ndarray: A grid of the reading of the sensor in the world from zero position.
-        """
-        half_fov_size = self.fov_size_rad / 2
+        resolution = getattr(simulator, "resolution", getattr(simulator.params, "resolution", None))
+        H, W = grid.shape
 
-        angle_diff = np.linspace(-half_fov_size, half_fov_size, self.params.points_in_range)
+        density = self.params.density_reading_per_unit_length
+        if density == 0:
+            # Exact crop slicing without interpolation
+            nx = max(1, round(self.params.x_fov_size / resolution))
+            ny = max(1, round(self.params.y_fov_size / resolution))
 
-        angle_x_diff, angle_y_diff = np.meshgrid(angle_diff, angle_diff)
-        x_diff = np.tan(angle_x_diff) * self.params.height
-        y_diff = np.tan(angle_y_diff) * self.params.height
+            center_grid_x = center_pos[0] / resolution
+            center_grid_y = center_pos[1] / resolution
 
-        pairs_positions = np.column_stack([x_diff.ravel(), y_diff.ravel()])
+            start_x = round(center_grid_x.item() - nx / 2)
+            start_y = round(center_grid_y.item() - ny / 2)
 
-        return pairs_positions
+            x_indices = torch.arange(start_x, start_x + nx, device=device, dtype=torch.float32)
+            y_indices = torch.arange(start_y, start_y + ny, device=device, dtype=torch.float32)
 
-    def read(self, function_to_get_values: Callable, curr_pos: np.ndarray) -> SensorOutput:
-        assert curr_pos.shape[0] >= 2 and curr_pos.ndim == 1, (
-            "Current position must be at least a 2-element array"
-        )
-        sensor_position_readings = curr_pos[:2] + self.grid_pairs_positions
+            y_grid, x_grid = torch.meshgrid(y_indices, x_indices, indexing="ij")
+            positions = torch.stack(
+                [(x_grid + 0.5) * resolution, (y_grid + 0.5) * resolution], dim=-1
+            ).view(-1, 2)
 
-        # Filter readings out of bounds
-        sensor_position_readings = sensor_position_readings[
-            np.logical_and(
-                np.logical_and(
-                    sensor_position_readings[:, 0] >= 0,
-                    sensor_position_readings[:, 0] <= self.params.world_x_size,
-                ),
-                np.logical_and(
-                    sensor_position_readings[:, 1] >= 0,
-                    sensor_position_readings[:, 1] <= self.params.world_y_size,
-                ),
+            # Filter valid physical bounds
+            in_bounds_phys = (
+                (positions[:, 0] >= 0)
+                & (positions[:, 0] <= self.params.world_x_size)
+                & (positions[:, 1] >= 0)
+                & (positions[:, 1] <= self.params.world_y_size)
             )
-        ]
+            valid_positions = positions[in_bounds_phys]
 
-        try:
-            sensor_readings = function_to_get_values(sensor_position_readings)
-        except Exception as e:
-            raise ValueError(
-                "function_to_get_values failed. It must take a 2D array and return a 1D array"
-            ) from e
+            if valid_positions.shape[0] == 0:
+                return SensorOutput(
+                    readings=torch.zeros((0, 1), device=device),
+                    positions=torch.zeros((0, 2), device=device),
+                )
 
-        return SensorOutput(readings=sensor_readings, positions=sensor_position_readings)
+            # Map coordinates to grid indices
+            grid_x = torch.round(valid_positions[:, 0] / resolution - 0.5).long()
+            grid_y = torch.round(valid_positions[:, 1] / resolution - 0.5).long()
+
+            # Clamp to prevent indexing errors (out of bounds values will get 0)
+            in_bounds_grid = (grid_x >= 0) & (grid_x < W) & (grid_y >= 0) & (grid_y < H)
+
+            readings = torch.zeros((valid_positions.shape[0], 1), device=device, dtype=grid.dtype)
+            readings[in_bounds_grid, 0] = grid[grid_y[in_bounds_grid], grid_x[in_bounds_grid]]
+
+            return SensorOutput(readings=readings, positions=valid_positions)
+        else:
+            # Resampling using grid_sample bilinear interpolation
+            dx = self.params.x_fov_size / self.nx
+            dy = self.params.y_fov_size / self.ny
+
+            x_range = (
+                torch.arange(self.nx, device=device, dtype=torch.float32) - self.nx / 2 + 0.5
+            ) * dx
+            y_range = (
+                torch.arange(self.ny, device=device, dtype=torch.float32) - self.ny / 2 + 0.5
+            ) * dy
+
+            y_grid, x_grid = torch.meshgrid(y_range, x_range, indexing="ij")
+            relative_grid = torch.stack([x_grid.ravel(), y_grid.ravel()], dim=-1)
+
+            positions = center_pos + relative_grid
+
+            in_bounds = (
+                (positions[:, 0] >= 0)
+                & (positions[:, 0] <= self.params.world_x_size)
+                & (positions[:, 1] >= 0)
+                & (positions[:, 1] <= self.params.world_y_size)
+            )
+            valid_positions = positions[in_bounds]
+
+            if valid_positions.shape[0] == 0:
+                return SensorOutput(
+                    readings=torch.zeros((0, 1), device=device),
+                    positions=torch.zeros((0, 2), device=device),
+                )
+
+            x_norm = 2.0 * (valid_positions[:, 0] / self.params.world_x_size) - 1.0
+            y_norm = 2.0 * (valid_positions[:, 1] / self.params.world_y_size) - 1.0
+            grid_coords = torch.stack([x_norm, y_norm], dim=-1).view(1, -1, 1, 2)
+
+            grid_unsqueezed = grid.unsqueeze(0).unsqueeze(0)
+            sampled = torch.nn.functional.grid_sample(
+                grid_unsqueezed,
+                grid_coords,
+                mode="bilinear",
+                padding_mode="zeros",
+                align_corners=False,
+            )
+
+            readings = sampled.view(-1, 1)
+            return SensorOutput(readings=readings, positions=valid_positions)
 
 
 class GlobalSensor(BaseSensor):
     def __init__(self, params: GlobalSensorParams):
         self.params = params
-        self.grid_pairs_positions = self.build_reading_grids()
 
-    def build_reading_grids(self) -> np.ndarray:
-        """Returns a grid of the reading of the sensor in the world from zero position, so
-        it is not calculated at each time step.
-        """
-        nx = max(1, round(self.params.density_reading_per_unit_length * self.params.world_x_size))
-        ny = max(1, round(self.params.density_reading_per_unit_length * self.params.world_y_size))
-
-        dx = self.params.world_x_size / nx
-        dy = self.params.world_y_size / ny
-
-        x_range = (np.arange(nx) + 0.5) * dx
-        y_range = (np.arange(ny) + 0.5) * dy
-
-        x_grid, y_grid = np.meshgrid(x_range, y_range)
-        return np.column_stack([x_grid.ravel(), y_grid.ravel()])
-
-    def projection_bounds(self, pos_x: float, pos_y: float) -> np.ndarray:
-        """Returns the bounds of the projection of the sensor in the world"""
-        return np.array(
+    def projection_bounds(self, pos_x: float, pos_y: float) -> torch.Tensor:
+        return torch.tensor(
             [
-                (0, 0),
-                (self.params.world_x_size, 0),
-                (self.params.world_x_size, self.params.world_y_size),
-                (0, self.params.world_y_size),
-            ]
+                [0.0, 0.0],
+                [self.params.world_x_size, 0.0],
+                [self.params.world_x_size, self.params.world_y_size],
+                [0.0, self.params.world_y_size],
+            ],
+            dtype=torch.float32,
         )
 
-    def read(self, function_to_get_values: Callable, curr_pos: np.ndarray) -> SensorOutput:
-        assert curr_pos.shape[0] >= 2 and curr_pos.ndim == 1, (
-            "Current position must be at least a 2-element array"
-        )
+    def read(self, simulator, curr_pos: torch.Tensor) -> SensorOutput:
+        grid = simulator.get_smoke_map_tensor()  # shape: (H, W)
+        device = grid.device
 
-        try:
-            sensor_readings = function_to_get_values(self.grid_pairs_positions)
-        except Exception as e:
-            raise ValueError(
-                "function_to_get_values failed. It must take a 2D array and return a 1D array"
-            ) from e
+        # If density_reading_per_unit_length is 0, we do not resample
+        if self.params.density_reading_per_unit_length == 0:
+            readings = grid.ravel().unsqueeze(-1)
+            ny, nx = grid.shape
+            dx = self.params.world_x_size / nx
+            dy = self.params.world_y_size / ny
+        else:
+            nx = max(
+                1, round(self.params.density_reading_per_unit_length * self.params.world_x_size)
+            )
+            ny = max(
+                1, round(self.params.density_reading_per_unit_length * self.params.world_y_size)
+            )
 
-        return SensorOutput(readings=sensor_readings, positions=self.grid_pairs_positions)
+            dx = self.params.world_x_size / nx
+            dy = self.params.world_y_size / ny
+
+            # Resample using torch.nn.functional.interpolate
+            grid_unsqueezed = grid.unsqueeze(0).unsqueeze(0)
+            resampled = torch.nn.functional.interpolate(
+                grid_unsqueezed, size=(ny, nx), mode="bilinear", align_corners=False
+            )
+            readings = resampled.squeeze().ravel().unsqueeze(-1)
+
+        # Build positions grid
+        x_range = (torch.arange(nx, device=device, dtype=torch.float32) + 0.5) * dx
+        y_range = (torch.arange(ny, device=device, dtype=torch.float32) + 0.5) * dy
+        y_grid, x_grid = torch.meshgrid(y_range, x_range, indexing="ij")
+        positions = torch.stack([x_grid.ravel(), y_grid.ravel()], dim=-1)
+
+        return SensorOutput(readings=readings, positions=positions)
 
 
 class Camera1DSensor(BaseSensor):
     def __init__(self, params: Camera1DSensorParams):
         self.params = params
-        self.fov_size_rad = np.deg2rad(self.params.fov_size_degrees)
+        self.fov_size_rad = math.radians(self.params.fov_size_degrees)
 
-    def projection_bounds(self, pos_x: float, pos_y: float) -> np.ndarray:
-        return np.array(
+    def projection_bounds(self, pos_x: float, pos_y: float) -> torch.Tensor:
+        return torch.tensor(
             [
-                (pos_x - self.params.max_range, pos_y - self.params.max_range),
-                (pos_x + self.params.max_range, pos_y - self.params.max_range),
-                (pos_x + self.params.max_range, pos_y + self.params.max_range),
-                (pos_x - self.params.max_range, pos_y + self.params.max_range),
-            ]
+                [pos_x - self.params.max_range, pos_y - self.params.max_range],
+                [pos_x + self.params.max_range, pos_y - self.params.max_range],
+                [pos_x + self.params.max_range, pos_y + self.params.max_range],
+                [pos_x - self.params.max_range, pos_y + self.params.max_range],
+            ],
+            dtype=torch.float32,
         )
 
-    def read(self, function_to_get_values: Callable, curr_pos: np.ndarray) -> SensorOutput:
-        """Emulates a 1D camera by raymarching efficiently across the map."""
-        assert curr_pos.shape[0] >= 3 and curr_pos.ndim == 1, (
-            "Current position must include [x, y, theta]"
-        )
+    def read(self, simulator, curr_pos: torch.Tensor) -> SensorOutput:
+        # curr_pos: [x, y, theta]
+        grid = simulator.get_smoke_map_tensor()
+        curr_pos = curr_pos.to(grid.device)
+        device = curr_pos.device
         pos_x, pos_y, theta = curr_pos[0], curr_pos[1], curr_pos[2]
 
         # Calculate the angle of each ray within the field of view
-        angles = np.linspace(
-            theta - self.fov_size_rad / 2, theta + self.fov_size_rad / 2, self.params.num_rays
+        angles = torch.linspace(
+            theta - self.fov_size_rad / 2,
+            theta + self.fov_size_rad / 2,
+            self.params.num_rays,
+            device=device,
         )
-        ray_dirs = np.column_stack((np.cos(angles), np.sin(angles)))
+        ray_dirs = torch.stack([torch.cos(angles), torch.sin(angles)], dim=-1)
 
         # Pre-compute all distances to sample along each ray
         max_steps = int(self.params.max_range / self.params.step_size)
-        ray_distances = np.arange(1, max_steps + 1) * self.params.step_size
+        ray_distances = (
+            torch.arange(1, max_steps + 1, device=device, dtype=torch.float32)
+            * self.params.step_size
+        )
 
-        # Expand arrays to generate a shape of (num_rays, max_steps, 2) covering all points
-        ray_offsets = ray_dirs[:, np.newaxis, :] * ray_distances[np.newaxis, :, np.newaxis]
+        # Generate sampling points: (num_rays, max_steps, 2)
+        ray_offsets = ray_dirs.unsqueeze(1) * ray_distances.unsqueeze(0).unsqueeze(2)
         ray_points = curr_pos[:2] + ray_offsets
 
-        # Batch query all generated point densities from the active simulation
-        flat_ray_points = ray_points.reshape(-1, 2)
-        try:
-            densities = function_to_get_values(flat_ray_points)
-        except Exception as e:
-            raise ValueError("function_to_get_values failed. Check inputs.") from e
+        # Batch query all generated point densities directly from the full grid
+        flat_ray_points = ray_points.view(-1, 2)
+        x_norm = 2.0 * (flat_ray_points[:, 0] / self.params.world_x_size) - 1.0
+        y_norm = 2.0 * (flat_ray_points[:, 1] / self.params.world_y_size) - 1.0
+        grid_coords = torch.stack([x_norm, y_norm], dim=-1).view(1, -1, 1, 2)
 
-        densities = densities.reshape(self.params.num_rays, max_steps)
+        grid_unsqueezed = grid.unsqueeze(0).unsqueeze(0)
+        sampled = torch.nn.functional.grid_sample(
+            grid_unsqueezed, grid_coords, mode="bilinear", padding_mode="zeros", align_corners=False
+        )
+        densities = sampled.view(self.params.num_rays, max_steps)
 
-        # Ignore densities if the ray travels outside the simulator map limits
+        # Mask out-of-bounds densities
         in_bounds = (
             (ray_points[:, :, 0] >= 0)
             & (ray_points[:, :, 0] <= self.params.world_x_size)
             & (ray_points[:, :, 1] >= 0)
             & (ray_points[:, :, 1] <= self.params.world_y_size)
         )
-        densities[~in_bounds] = 0.0
+        densities = torch.where(in_bounds, densities, torch.zeros_like(densities))
 
-        # Numerically integrate the densities over the distance of the ray
-        accumulated_density = np.cumsum(densities * self.params.step_size, axis=1)
+        # Integrate densities over the distance of the ray
+        accumulated_density = torch.cumsum(densities * self.params.step_size, dim=1)
 
         # For each ray, find where the density exceeds the visibility (opacity threshold)
-        ray_images = np.zeros(self.params.num_rays)
         is_opaque = accumulated_density >= self.params.opacity_threshold
+        any_opaque = torch.any(is_opaque, dim=1)
+        first_opaque_step = torch.argmax(is_opaque.to(torch.int8), dim=1)
 
-        for i in range(self.params.num_rays):
-            limit_reached = np.where(is_opaque[i])[0]
-            if len(limit_reached) > 0:
-                first_opaque_step = limit_reached[0]
-                ray_images[i] = accumulated_density[i, first_opaque_step]
-            else:
-                ray_images[i] = accumulated_density[i, -1]
+        # Retrieve the accumulated density at the limit
+        idx = torch.where(any_opaque, first_opaque_step, torch.tensor(max_steps - 1, device=device))
+        ray_images = accumulated_density[torch.arange(self.params.num_rays, device=device), idx]
 
         # The returned positions represent the origin of the sensor readings
-        sensor_position_readings = np.repeat(
-            np.array([[pos_x, pos_y]]), self.params.num_rays, axis=0
-        )
+        sensor_position_readings = curr_pos[:2].unsqueeze(0).repeat(self.params.num_rays, 1)
+
         return SensorOutput(readings=ray_images, positions=sensor_position_readings)
+
+
+@hydra.main(version_base=None, config_path="../../../configs", config_name="config")
+def run_tests(cfg) -> None:
+    from hydra import compose
+
+    from src.env.simulator.smoke import BlobParams, Smoke
+
+    smoke_params = cfg.simulator
+
+    # Initialize Smoke
+    blob_params_list = [
+        BlobParams(x_pos=10, y_pos=20, intensity=1.0, spread_rate=4.0),
+    ]
+    smoke = Smoke(params=smoke_params, blob_params_list=blob_params_list)
+    smoke.step(dt=0.1)
+
+    # Define the sensor configurations to test
+    sensor_configs = ["global", "downwards", "camera1d"]
+    curr_pos = torch.tensor([10.0, 10.0, 0.0])
+
+    for stype in sensor_configs:
+        print(f"\n--- Testing Sensor Config File: {stype}.yaml ---")
+
+        # Programmatically compose the config overriding the active sensor config
+        composed_cfg = compose(config_name="config", overrides=[f"env/sensors@sensor={stype}"])
+        sensor_params = composed_cfg.sensor
+
+        if stype == "global":
+            sensor_class = GlobalSensor
+        elif stype == "downwards":
+            sensor_class = DownwardsSensor
+        elif stype == "camera1d":
+            sensor_class = Camera1DSensor
+        else:
+            raise ValueError(f"Unknown sensor type: {stype}")
+
+        # Instantiate and run the sensor
+        sensor = sensor_class(sensor_params)
+        res = sensor.read(smoke, curr_pos)
+
+        print(f"{sensor_class.__name__} readings shape:", res.readings.shape)
+        print(f"{sensor_class.__name__} positions shape:", res.positions.shape)
+        if stype == "camera1d":
+            print("Camera1D readings:", res.readings)
+
+
+if __name__ == "__main__":
+    run_tests()

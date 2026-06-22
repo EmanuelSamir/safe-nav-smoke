@@ -5,7 +5,7 @@ import numpy as np
 from datasets import load_from_disk
 from scipy.ndimage import map_coordinates
 
-from env.simulator.playback_schema import SmokeDataSchema
+from src.env.simulator.playback_schema import SmokeDataSchema
 
 
 @dataclass
@@ -99,6 +99,14 @@ class Playback:
     def get_smoke_extent(self):
         """Returns the [xmin, xmax, ymin, ymax] extent of the world."""
         return [0, self.x_size, 0, self.y_size]
+
+    def get_smoke_map_tensor(self):
+        """Returns the current 2D smoke density map as a native PyTorch tensor."""
+        import torch
+
+        from src.utils.config_utils import get_device
+
+        return torch.tensor(self.get_smoke_map(), dtype=torch.float32, device=get_device())
 
 
 if __name__ == "__main__":

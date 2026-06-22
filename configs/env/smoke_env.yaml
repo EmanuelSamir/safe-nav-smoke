@@ -1,6 +1,6 @@
-name: "DynamicSmokeEnv"
-world_x_size: 30.0   # overridden by playback data if playback_path is set
-world_y_size: 30.0
+world_x_size: ${world_size.0}   # overridden by playback data if playback_path is set
+world_y_size: ${world_size.1}
+
 max_steps: 200        # overridden by playback data if playback_path is set
 clock: 0.1
 test: false
@@ -11,53 +11,17 @@ num_episodes: 200
 render: "human"
 render_save_every: 2
 
-# Set to null to use DynamicSmoke (blob-based). Set to a folder path to use
-# PlaybackSmoke (Hugging Face Dataset), which overrides world_x_size, world_y_size and max_steps.
-playback_path: "data/smoke_playback_hf"
+# Set to true to save environment transitions as a Hugging Face dataset.
+save_transitions: false
 
 # Goal settings (used when playback_path is not set or as fallback)
-goal_location: [5.0, 5.0]
 goal_radius: 0.5
 num_agents: 1
-goal_locations: null
+goal_locations: [[5.0, 5.0]]
 initial_locations: null
 
 # Collision settings
 collision_radius: 0.8
 terminate_on_collision: false
 collision_penalty: -10.0
-
-# Sensor settings (only used when NOT using PlaybackSmoke)
-# Experiments always override to GlobalSensor internally.
-sensor:
-  type: "global"
-  num_rays: 64
-  fov_size_degrees: 90
-
-# Robot settings
-robot:
-  type: "dubins2d"
-  dt: 0.1
-  action_dim: 2
-  state_dim: 3
-  action_max: [5.0, 4.0]   # [linear velocity, angular velocity]
-  action_min: [0.5, -4.0]
-  state_max: [30.0, 30.0, 6.28]  # [x, y, theta]
-  state_min: [0.0, 0.0, 0.0]
-
-# Smoke blobs (only used when playback_path is null)
-smoke:
-  resolution: 1.0
-  blobs:
-    - {x: 10.0, y: 10.0, intensity: 1.0, spread: 2.0}
-    - {x: 10.0, y: 20.0, intensity: 1.0, spread: 3.0}
-    - {x: 10.0, y: 15.0, intensity: 1.0, spread: 2.0}
-
-# Hydra settings for output directory organization
-hydra:
-  run:
-    dir: outputs/data_generation/${now:%Y-%m-%d}/${now:%H-%M-%S}
-  sweep:
-    dir: outputs/data_generation/multirun/${now:%Y-%m-%d}/${now:%H-%M-%S}
-    subdir: ${hydra.job.num}
-
+smoke_density_threshold: null

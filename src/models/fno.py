@@ -1,43 +1,40 @@
-from typing import List
+from dataclasses import dataclass
+from typing import List, Optional
 
 import hydra
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from omegaconf import DictConfig
-from pydantic import BaseModel, ConfigDict, model_validator
 from torch.distributions import Normal
 
 
-class FNOConfig(BaseModel):
-    model_config = ConfigDict(extra="forbid", arbitrary_types_allowed=True)
-
+@dataclass
+class FNOConfig:
     # Context / prediction
-    h_ctx: int = 10  # Context frames (T dimension of the 3D volume)
-    h_pred: int = 5  # Future frames per forward pass
+    h_ctx: int  # Context frames (T dimension of the 3D volume)
+    h_pred: int  # Future frames per forward pass
 
     # 3D spectral modes
-    modes_t: int = 4  # Temporal Fourier modes  (≤ h_ctx // 2)
-    modes_h: int = 8  # Spatial H Fourier modes (≤ H // 2)
-    modes_w: int = 8  # Spatial W Fourier modes (≤ W // 2)
+    modes_t: int  # Temporal Fourier modes  (≤ h_ctx // 2)
+    modes_h: int  # Spatial H Fourier modes (≤ H // 2)
+    modes_w: int  # Spatial W Fourier modes (≤ W // 2)
 
     # Network width and depth
-    width: int = 32  # Latent channel width
-    n_layers: int = 4  # Number of SpectralConv3d + skip blocks
+    width: int  # Latent channel width
+    n_layers: int  # Number of SpectralConv3d + skip blocks
 
     # Features
-    use_grid: bool = True  # Append (x,y) grid after temporal aggregation
-    use_time: bool = True  # Append normalised t as extra input channel per frame
+    use_grid: bool  # Append (x,y) grid after temporal aggregation
+    use_time: bool  # Append normalised t as extra input channel per frame
 
     # Normalisation
-    seq_len_ref: int = 25  # Used to map absolute step → t_rel ∈ [0,1]
-    min_std: float = 1e-4
+    min_std: float
+    sequence_length: Optional[int] = None
 
-    @model_validator(mode="after")
-    def validate_modes(self) -> "FNOConfig":
+    def __post_init__(self):
         if self.modes_t > self.h_ctx // 2:
             raise ValueError(f"modes_t ({self.modes_t}) must be <= h_ctx // 2 ({self.h_ctx // 2})")
-        return self
 
 
 class SpectralConv3d(nn.Module):
@@ -182,7 +179,8 @@ class FNO(nn.Module):
         return torch.stack([gx, gy], dim=0).unsqueeze(0)
 
     def forward(self, frames: torch.Tensor, times: torch.Tensor | None = None) -> List[Normal]:
-        """Frames : (B, h_ctx, H, W)  — context smoke values in [0, 1]
+        """Frames : (B, h_ctx, H, W)  — context smoke values in [0, 1].
+
         times  : (B, h_ctx)        — relative times in [0, 1], or None (auto)
         returns: List[Normal] of length h_pred
                  Each Normal: .mean, .stddev shape (B, H, W, 1)
@@ -231,7 +229,7 @@ class FNO(nn.Module):
 
         h_ctx = self.cfg.h_ctx
         h_pred = self.cfg.h_pred
-        ref = max(self.cfg.seq_len_ref - 1, 1)
+        ref = max(self.cfg.sequence_length - 1, 1)
         device = seed_frames.device
 
         # Expand to S sample trajectories
@@ -283,11 +281,10 @@ class FNO(nn.Module):
 @hydra.main(version_base=None, config_path="../../configs/models", config_name="fno")
 def main(cfg: DictConfig):
     from omegaconf import OmegaConf
-    from pydantic import ValidationError
 
-    print("🧪 Starting FNO Hydra sanity check...")
-    # 1. Validate Hydra Config using Pydantic FNOConfig
-    cfg_dict = OmegaConf.to_container(cfg.model, resolve=True)
+    print("Starting FNO Hydra sanity check...")
+    # 1. Validate Hydra Config using FNOConfig
+    cfg_dict = OmegaConf.to_container(cfg, resolve=True)
     fno_cfg = FNOConfig(**cfg_dict)
 
     # 2. Instantiate FNO model
@@ -311,13 +308,25 @@ def main(cfg: DictConfig):
     assert preds[0]["sample"].shape == (5, H, W)
     print(f"Rollout OK  horizon=15  sample={preds[0]['sample'].shape}")
 
-    # 3. Test Pydantic validation error raising
-    print("Testing FNOConfig Pydantic validation constraints...")
+    # 3. Test validation error raising
+    print("Testing FNOConfig validation constraints...")
     try:
-        FNOConfig(h_ctx=10, modes_t=6)
+        FNOConfig(
+            h_ctx=10,
+            h_pred=5,
+            modes_t=6,
+            modes_h=8,
+            modes_w=8,
+            width=32,
+            n_layers=4,
+            use_grid=True,
+            use_time=True,
+            sequence_length=25,
+            min_std=1e-4,
+        )
         raise RuntimeError("Validation failed to raise error for modes_t > h_ctx // 2")
-    except ValidationError:
-        print("✅ Validation error raised correctly for invalid modes_t")
+    except ValueError:
+        print("Validation error raised correctly for invalid modes_t")
 
     print("ALL OK")
 

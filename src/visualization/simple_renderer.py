@@ -1,28 +1,29 @@
+from enum import Enum
+from typing import Any, Dict, Optional
+
 import matplotlib.pyplot as plt
 import numpy as np
 from matplotlib.patches import Arrow, Circle, FancyArrow, Polygon, Wedge
-from typing import Dict, Any, Union, Optional
-from enum import Enum
-from utils import clip_world
-from visualization.base_renderer import BaseRenderer
+
+from src.utils import clip_world
+from src.visualization.base_renderer import BaseRenderer
 
 
 class SimpleRenderer(BaseRenderer):
-    """
-    Simple single-plot renderer for Gymnasium environment visualization.
+    """Simple single-plot renderer for Gymnasium environment visualization.
     Extracts figure/window management and plotting commands from SmokeEnv.
     """
 
     def __init__(self, cfg: Any):
         self.cfg = cfg
-        
+
         # Get render mode (resolving Enum if necessary)
         render_val = getattr(cfg, "render", "none")
         if isinstance(render_val, Enum):
             self.render_mode = render_val.value
         else:
             self.render_mode = str(render_val)
-            
+
         self.clock = float(getattr(cfg, "clock", 0.1))
         self.world_x_size = float(getattr(cfg, "world_x_size", 100.0))
         self.world_y_size = float(getattr(cfg, "world_y_size", 100.0))
@@ -35,7 +36,9 @@ class SimpleRenderer(BaseRenderer):
         if self.render_mode == "rgb_array":
             plt.switch_backend("Agg")
 
-    def _init_render_window(self, fig: Optional[plt.Figure] = None, ax: Optional[plt.Axes] = None, env: Any = None):
+    def _init_render_window(
+        self, fig: Optional[plt.Figure] = None, ax: Optional[plt.Axes] = None, env: Any = None
+    ):
         """Initializes the plotting window/axes and draws static components."""
         if fig is not None and ax is not None:
             self.window["fig"] = fig
@@ -55,9 +58,7 @@ class SimpleRenderer(BaseRenderer):
         self.window["ax"].set_yticks([])
 
         # Draw static goal circles and texts
-        goal_circles, goal_texts = self.plot_goals(
-            self.window["ax"], env.env_params, env.agents
-        )
+        goal_circles, goal_texts = self.plot_goals(self.window["ax"], env.env_params, env.agents)
         self.window["goal_circles"] = goal_circles
         self.window["goal_texts"] = goal_texts
 
@@ -73,9 +74,7 @@ class SimpleRenderer(BaseRenderer):
             self._init_render_window(env=env)
 
         # Update smoke background values
-        self.plot_smoke_background(
-            self.window["ax"], env.env_params, env.smoke_simulator
-        )
+        self.plot_smoke_background(self.window["ax"], env.env_params, env.smoke_simulator)
 
         # Draw planning rollouts
         self.plot_controller_rollouts(self.window["ax"], controller)
@@ -211,9 +210,7 @@ class SimpleRenderer(BaseRenderer):
                 square = sensor.projection_bounds(pos_x, pos_y)
                 bounded_square = np.array(
                     [
-                        clip_world(
-                            p[0], p[1], env_params.world_x_size, env_params.world_y_size
-                        )
+                        clip_world(p[0], p[1], env_params.world_x_size, env_params.world_y_size)
                         for p in square
                     ]
                 )
@@ -223,7 +220,9 @@ class SimpleRenderer(BaseRenderer):
                     )
                 )
 
-            elif sensor_params.sensor_type == "camera_1d" and get_smoke_density_sensor_fn is not None:
+            elif (
+                sensor_params.sensor_type == "camera_1d" and get_smoke_density_sensor_fn is not None
+            ):
                 fov_deg = sensor_params.fov_size_degrees
                 max_range = sensor_params.max_range
                 num_rays = sensor_params.num_rays

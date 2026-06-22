@@ -1,6 +1,7 @@
 import logging
 from collections import deque
-from typing import List, Tuple, Optional
+from dataclasses import dataclass
+from typing import List, Optional, Tuple
 
 import numpy as np
 import scipy.stats as stats
@@ -9,14 +10,26 @@ import torch
 log = logging.getLogger(__name__)
 
 
+@dataclass
+class SmokeForecastWrapperConfig:
+    model_type: str
+    x_size: float
+    y_size: float
+    checkpoint: Optional[str]
+    cvar_alpha: float
+    gamma: float
+    beta: float
+    device: str
+    h_ctx: int
+
+
 def _cvar(mean: np.ndarray, std: np.ndarray, alpha: float = 0.95) -> np.ndarray:
     """Gaussian CVaR: μ + σ · φ(Φ⁻¹(α)) / (1-α)"""
     return mean + std * stats.norm.pdf(stats.norm.ppf(alpha)) / (1 - alpha)
 
 
 class SmokeForecastWrapper:
-    """
-    Unified forecast wrapper:  model.update() + model.predict_risk_maps()
+    """Unified forecast wrapper:  model.update() + model.predict_risk_maps()
 
     Parameters
     ----------
@@ -43,18 +56,18 @@ class SmokeForecastWrapper:
         device: str = "cpu",
         h_ctx: int = 5,
     ):
-        self.model_type  = model_type.lower()
-        self.x_size      = x_size
-        self.y_size      = y_size
-        self.cvar_alpha  = cvar_alpha
-        self.gamma       = gamma
-        self.beta        = beta
-        self.device      = torch.device(device)
-        self.h_ctx       = h_ctx
+        self.model_type = model_type.lower()
+        self.x_size = x_size
+        self.y_size = y_size
+        self.cvar_alpha = cvar_alpha
+        self.gamma = gamma
+        self.beta = beta
+        self.device = torch.device(device)
+        self.h_ctx = h_ctx
 
         # Internal state
-        self._ctx_frames = deque(maxlen=h_ctx)   # rolling frame buffer
-        self._last_frame: Optional[np.ndarray] = None   # latest flat smoke map
+        self._ctx_frames = deque(maxlen=h_ctx)  # rolling frame buffer
+        self._last_frame: Optional[np.ndarray] = None  # latest flat smoke map
 
         # Load model
         self.model = self._load_model(checkpoint)
@@ -65,8 +78,9 @@ class SmokeForecastWrapper:
             raise ValueError(f"model_type='{self.model_type}' requires a checkpoint path.")
 
         import torch
+
         ckpt = torch.load(checkpoint, map_location=self.device, weights_only=False)
-        hp   = ckpt.get("hyper_parameters", {})
+        hp = ckpt.get("hyper_parameters", {})
 
         if isinstance(hp, dict) and "training" in hp:
             model_hp = hp["training"]["model"]
@@ -76,6 +90,7 @@ class SmokeForecastWrapper:
 
         if self.model_type in ("fno", "pfno"):
             from models.fno import FNO, FNOConfig
+
             valid = set(FNOConfig.model_fields.keys())
             cfg = FNOConfig(**{k: v for k, v in model_hp.items() if k in valid})
             # Override is_pfno if model_type is pfno
@@ -89,7 +104,8 @@ class SmokeForecastWrapper:
             return model
 
         if self.model_type == "conv_lstm":
-            from models.conv_lstm import ConvLSTMModel, ConvLSTMConfig
+            from models.conv_lstm import ConvLSTMConfig, ConvLSTMModel
+
             valid = set(ConvLSTMConfig.model_fields.keys())
             cfg = ConvLSTMConfig(**{k: v for k, v in model_hp.items() if k in valid})
             self.h_ctx = cfg.h_ctx  # override from checkpoint
@@ -99,12 +115,12 @@ class SmokeForecastWrapper:
             model.to(self.device).eval()
             return model
 
-        raise ValueError(f"Unknown model_type: '{self.model_type}'. "
-                         "Choose from: fno, pfno, conv_lstm")
+        raise ValueError(
+            f"Unknown model_type: '{self.model_type}'. Choose from: fno, pfno, conv_lstm"
+        )
 
     def update(self, smoke_frame: np.ndarray, coords: np.ndarray, t: float):
-        """
-        Ingest one observation.  Call this EVERY step before predict_risk_maps.
+        """Ingest one observation.  Call this EVERY step before predict_risk_maps.
 
         Parameters
         ----------
@@ -126,8 +142,7 @@ class SmokeForecastWrapper:
         t: float,
         horizon: int,
     ) -> List[Tuple[np.ndarray, np.ndarray]]:
-        """
-        Predict `horizon` future risk maps.
+        """Predict `horizon` future risk maps.
 
         Parameters
         ----------
@@ -136,22 +151,23 @@ class SmokeForecastWrapper:
         t           : float  — current time (seconds)
         horizon     : int  — planning horizon steps
 
-        Returns
+        Returns:
         -------
         List of (coords, cvar_flat) tuples, length == horizon.
         cvar_flat is (H*W,) float32 with CVaR risk values.
         """
         if self.model_type in ("fno", "conv_lstm", "pfno"):
             return self._predict_autoregressive(smoke_frame, coords, horizon)
-        
+
         raise ValueError(f"Unknown model_type: {self.model_type}")
 
     def _cvar_risk(self, mean: np.ndarray, std: np.ndarray) -> np.ndarray:
         risk = _cvar(mean, std, self.cvar_alpha)
         return np.clip(risk, 0.0, 1.0).astype(np.float32)
 
-    def _predict_autoregressive(self, smoke_frame: np.ndarray, coords: np.ndarray, horizon: int
-                        ) -> List[Tuple[np.ndarray, np.ndarray]]:
+    def _predict_autoregressive(
+        self, smoke_frame: np.ndarray, coords: np.ndarray, horizon: int
+    ) -> List[Tuple[np.ndarray, np.ndarray]]:
         P = smoke_frame.shape[0]
         H_grid, W_grid = self._infer_grid_shape(coords)
 
@@ -164,8 +180,8 @@ class SmokeForecastWrapper:
         # The caller may deliver coords/frames in any order, so we sort once  #
         # and invert after prediction to restore the caller's original order. #
         # ------------------------------------------------------------------ #
-        sort_idx = np.lexsort((coords[:, 0], coords[:, 1]))   # primary sort: y, secondary: x
-        inv_sort  = np.argsort(sort_idx)
+        sort_idx = np.lexsort((coords[:, 0], coords[:, 1]))  # primary sort: y, secondary: x
+        inv_sort = np.argsort(sort_idx)
 
         # Build context window: pad with zeros if not enough history
         frames_available = list(self._ctx_frames)
@@ -174,11 +190,13 @@ class SmokeForecastWrapper:
             frames_available = [smoke_frame]
         pad_len = max(0, h_ctx - len(frames_available))
         padding = [np.zeros_like(smoke_frame)] * pad_len
-        window  = padding + frames_available[-h_ctx:]
+        window = padding + frames_available[-h_ctx:]
 
         # Reorder each frame to row-major before reshape → (h_ctx, H, W)
         seed_frames = np.stack([f[sort_idx].reshape(H_grid, W_grid) for f in window], axis=0)
-        seed = torch.tensor(seed_frames, dtype=torch.float32, device=self.device).unsqueeze(0)  # (1, h_ctx, H, W)
+        seed = torch.tensor(seed_frames, dtype=torch.float32, device=self.device).unsqueeze(
+            0
+        )  # (1, h_ctx, H, W)
 
         with torch.no_grad():
             raw_preds = self.model.autoregressive_forecast(
@@ -186,21 +204,20 @@ class SmokeForecastWrapper:
                 seed_t_start=0,
                 horizon=horizon,
                 num_samples=1,
-                mode='mean',
+                mode="mean",
             )
 
         results = []
         for p in raw_preds:
             # p["mean"]: (1, H, W) — flatten row-major, then restore caller's coord order
             mean = p["mean"].reshape(P)[inv_sort].astype(np.float32)
-            std  = p["std"].reshape(P)[inv_sort].astype(np.float32)
+            std = p["std"].reshape(P)[inv_sort].astype(np.float32)
             results.append((coords, self._cvar_risk(mean, std)))
         return results
 
     @staticmethod
     def _infer_grid_shape(coords: np.ndarray) -> Tuple[int, int]:
-        """
-        Attempt to recover (H, W) from a flat coordinate array (H*W, 2).
+        """Attempt to recover (H, W) from a flat coordinate array (H*W, 2).
         Works when coords are laid out row-major (meshgrid indexing='ij').
         Falls back to a square approximation.
         """
@@ -213,5 +230,5 @@ class SmokeForecastWrapper:
         if H * W == P:
             return H, W
         # Fallback: square
-        sq = int(round(P ** 0.5))
+        sq = int(round(P**0.5))
         return sq, sq

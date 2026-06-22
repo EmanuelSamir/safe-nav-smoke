@@ -6,6 +6,10 @@ state_dim: 3
 action_min: [0.0, -4.0] # [v, w]
 action_max: [6.0, 4.0]
 
+# State space limits
+state_min: [0.0, 0.0, 0.0]
+state_max: ["${world_size.0}", "${world_size.1}", 6.28]
+
 # Dynamics
 dt: 0.1
 
