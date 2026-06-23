@@ -1,0 +1,10 @@
+# Default configuration for SmokeForecastWrapper (registered in ConfigStore)
+model_type: "fno"
+checkpoint: null
+ensemble_size: 15
+process_noise_std: 0.05
+cvar_alpha: 0.95
+device: "cpu"
+h_ctx: 5
+x_size: 30.0
+y_size: 30.0

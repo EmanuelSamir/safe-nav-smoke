@@ -1,0 +1,34 @@
+# @package controller
+# HJ — online_rollout mode (DualGuard con BRT re-resuelto en cada step)
+# Usar solo si los bounds de control cambian entre steps.
+# Para Dubins fijo, preferir "rollout" (precomputed).
+
+safety:
+  d_safe: 2.4
+  r_sense: 8.0
+  neighbor_mode: "nearest"
+
+mppi:
+  num_samples: 120
+  horizon: 14
+  lambda_: 1.2
+  device: "cpu"
+
+mode: "online_rollout"
+
+solver:
+  domain:
+    - [-10.0, -10.0, 0.0]
+    - [10.0, 10.0, 6.2832]
+  domain_cells: [60, 60, 36]
+  accuracy: "medium"
+  target_time: -5.0
+  dt: 0.05
+  epsilon: 0.01
+  dx: 0.333
+  safe_margin: 0.0
+
+dt: ${env.clock}
+action_min: ${agent.action_min}
+action_max: ${agent.action_max}
+

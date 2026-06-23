@@ -1,16 +1,17 @@
 from hydra.core.config_store import ConfigStore
 
 from src.agents.basic_robot import RobotParams
+from src.controllers.schemas import CBFSmokeConfig, MultiAgentCBFConfig, MultiAgentHJConfig
+from src.env.simulator.playback import PlaybackParams
+from src.env.simulator.sensor import (
+    Camera1DSensorParams,
+    DownwardsSensorParams,
+    GlobalSensorParams,
+)
+from src.env.simulator.smoke import SmokeParams
 
 # Import your configuration schemas (dataclasses) here:
 from src.env.smoke_env import EnvConfig
-from src.env.simulator.smoke import SmokeParams
-from src.env.simulator.playback import PlaybackParams
-from src.env.simulator.sensor import (
-    GlobalSensorParams,
-    DownwardsSensorParams,
-    Camera1DSensorParams,
-)
 from src.models.conv_lstm import ConvLSTMConfig
 from src.models.fno import FNOConfig
 from src.training.schemas import ConvLSTMTrainingConfigSchema, FNOTrainingConfigSchema
@@ -61,3 +62,13 @@ cs.store(group="training", name="fno", node=FNOTrainingConfigSchema)
 
 # Register Wrapper schemas
 cs.store(group="wrappers", name="smoke_forecast", node=SmokeForecastWrapperConfig)
+
+# Register Controller schemas
+cs.store(group="controller", name="cbf_smoke", node=CBFSmokeConfig)
+cs.store(group="controller", name="cbf_filter", node=MultiAgentCBFConfig)
+cs.store(group="controller", name="cbf_rollout", node=MultiAgentCBFConfig)
+cs.store(group="controller", name="cbf_penalty", node=MultiAgentCBFConfig)
+cs.store(group="controller", name="hj_filter", node=MultiAgentHJConfig)
+cs.store(group="controller", name="hj_rollout", node=MultiAgentHJConfig)
+cs.store(group="controller", name="hj_online_rollout", node=MultiAgentHJConfig)
+cs.store(group="controller", name="hj_penalty", node=MultiAgentHJConfig)

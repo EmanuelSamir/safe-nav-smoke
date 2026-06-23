@@ -540,7 +540,13 @@ class SmokeEnv(gym.Env):
             )
 
             ds = Dataset.from_list(self._transition_buffer, features=features)
-            save_dir = os.path.join(output_dir, "env_transitions")
+            
+            save_dir = getattr(self, "save_transitions_path", None)
+            if save_dir is None:
+                save_dir = getattr(self.env_params, "save_transitions_path", None)
+            if save_dir is None:
+                save_dir = os.path.join(output_dir, "env_transitions")
+                
             ds.save_to_disk(save_dir)
             print(f"[SmokeEnv] Successfully saved {len(ds)} transitions to {save_dir}")
 

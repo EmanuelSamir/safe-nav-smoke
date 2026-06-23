@@ -1,0 +1,22 @@
+# @package controller
+# CBF — filter mode (QP projection at output step only)
+
+safety:
+  d_safe: 2.4
+  r_sense: 8.0
+  neighbor_mode: "nearest"
+
+mppi:
+  num_samples: 120
+  horizon: 14
+  lambda_: 1.2
+  device: "cpu"
+
+mode: "filter"
+
+k1: 1.5
+k2: 1.5
+L: 0.4
+rho: 5.0
+dt: ${env.clock}
+

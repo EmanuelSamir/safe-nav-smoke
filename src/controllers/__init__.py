@@ -1,10 +1,13 @@
 # src/controllers/__init__.py
 """Initialize the controllers module."""
 
-from controllers.cbf_ctrl import CBFController
-from controllers.multi_cbf_filtering_ctrl import MultiCBFFilteringCtrl
+from controllers.base_multi_agent import BaseMultiAgentController, AgentMPPI
+from controllers.multi_agent_cbf import MultiAgentCBFController
+from controllers.multi_agent_hj import MultiAgentHJController
 
 __all__ = [
-    "CBFController",
-    "MultiCBFFilteringCtrl",
+    "BaseMultiAgentController",
+    "AgentMPPI",
+    "MultiAgentCBFController",
+    "MultiAgentHJController",
 ]
