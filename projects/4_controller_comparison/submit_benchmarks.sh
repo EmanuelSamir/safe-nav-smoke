@@ -10,10 +10,12 @@ mkdir -p "$OUTPUT_DIR"
 echo "Output directory created: $OUTPUT_DIR"
 
 # Parsear argumentos
+RENDER_ARG=""
 if [ "$1" == "--test" ]; then
     echo "Running in TEST MODE: Only evaluating 'nominal' controller for 1 episode."
     CONTROLLERS=("nominal")
     EPISODES=1
+    RENDER_ARG="--render rgb_array"
 else
     # Lista de controladores a evaluar completa
     CONTROLLERS=(
@@ -51,7 +53,7 @@ export PREFECT_HOME="/data/emunoz/prefect_home"
 
 cd ${PROJECT_ROOT}
 
-apptainer exec --nv --bind /data/emunoz:/data /data/emunoz/imgs/python_full.sif /data/emunoz/envs/dev_env/bin/python projects/4_controller_comparison/benchmark.py --controllers ${CTRL} --output_dir ${OUTPUT_DIR} --episodes ${EPISODES}
+apptainer exec --nv --bind /data/emunoz:/data /data/emunoz/imgs/python_full.sif /data/emunoz/envs/dev_env/bin/python projects/4_controller_comparison/benchmark.py --controllers ${CTRL} --output_dir ${OUTPUT_DIR} --episodes ${EPISODES} ${RENDER_ARG}
 EOF
 
 done
