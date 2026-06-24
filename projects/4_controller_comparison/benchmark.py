@@ -2,8 +2,8 @@ import argparse
 import json
 import logging
 import os
+import sys
 import time
-import yaml
 from collections import deque
 from types import SimpleNamespace
 from typing import List, Optional
@@ -12,17 +12,19 @@ import imageio.v2 as imageio
 import numpy as np
 import pandas as pd
 import torch
-import sys
+import yaml
 
 # Ensure project root is in path
 project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "../.."))
 if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
-from src.agents.basic_robot import RobotParams
-from src.env.smoke_env import EnvConfig as LegacyEnvConfig, SmokeEnv
-from schema import BenchmarkConfig
 from prefect import flow, task
+from schema import BenchmarkConfig
+
+from src.agents.basic_robot import RobotParams
+from src.env.smoke_env import EnvConfig as LegacyEnvConfig
+from src.env.smoke_env import SmokeEnv
 
 # Setup logging
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(name)s: %(message)s")
@@ -63,11 +65,20 @@ def _make_mppi_params(cfg_agent, cfg_mppi, device: str) -> "MPPIParams":
     )
 
 
-def instantiate_controller(name: str, num_agents: int, goal_radius: float, clock: float, cfg_agent, cfg_controller, robot_params):
+def instantiate_controller(
+    name: str,
+    num_agents: int,
+    goal_radius: float,
+    clock: float,
+    cfg_agent,
+    cfg_controller,
+    robot_params,
+):
     device = cfg_controller.mppi.device
-    
+
     if name == "nominal":
         from src.controllers.base_multi_agent import BaseMultiAgentController
+
         mppi_params = _make_mppi_params(cfg_agent, cfg_controller.mppi, device)
         return BaseMultiAgentController(
             num_agents=num_agents,
@@ -81,6 +92,7 @@ def instantiate_controller(name: str, num_agents: int, goal_radius: float, clock
     elif name.startswith("cbf"):
         from src.controllers.base.cbf_safety import CBFFilterParams
         from src.controllers.multi_agent_cbf import MultiAgentCBFController
+
         mppi_params = _make_mppi_params(cfg_agent, cfg_controller.mppi, device)
         cbf_params = CBFFilterParams(
             d_safe=cfg_controller.safety.d_safe,
@@ -106,6 +118,7 @@ def instantiate_controller(name: str, num_agents: int, goal_radius: float, clock
         from src.controllers.base.hj import HJSolverConfig
         from src.controllers.base.hj_safety import HJFilterParams
         from src.controllers.multi_agent_hj import MultiAgentHJController
+
         mppi_params = _make_mppi_params(cfg_agent, cfg_controller.mppi, device)
         hj_params = HJFilterParams(
             d_safe=cfg_controller.safety.d_safe,
@@ -165,11 +178,11 @@ def evaluate_controller_task(
     config_path = os.path.join(os.path.dirname(__file__), "benchmark_config.yaml")
     with open(config_path, "r") as f:
         yaml_data = yaml.safe_load(f)
-    
+
     benchmark_cfg = BenchmarkConfig(**yaml_data)
     if name not in benchmark_cfg.controllers:
         raise ValueError(f"Controller {name} not found in benchmark_config.yaml")
-        
+
     cfg_controller = benchmark_cfg.controllers[name]
     cfg_env = benchmark_cfg.env
     cfg_agent = benchmark_cfg.agent
@@ -206,7 +219,9 @@ def evaluate_controller_task(
         device=device,
     )
 
-    controller = instantiate_controller(name, num_agents, goal_radius, dt, cfg_agent, cfg_controller, robot_params)
+    controller = instantiate_controller(
+        name, num_agents, goal_radius, dt, cfg_agent, cfg_controller, robot_params
+    )
 
     goals_dict = {f"agent_{i}": np.array(goal_locations[i]) for i in range(num_agents)}
     controller.set_goals(goals_dict)
@@ -234,6 +249,7 @@ def evaluate_controller_task(
     )
 
     from src.env.simulator.playback import PlaybackParams
+
     simulator_params = PlaybackParams(data_path=cfg_playback.data_path)
     logger.info(f"Simulator mode: PLAYBACK (data_path={cfg_playback.data_path})")
 
@@ -241,7 +257,7 @@ def evaluate_controller_task(
         sensor_type=benchmark_cfg.sensor.sensor_type,
         density_reading_per_unit_length=benchmark_cfg.sensor.density_reading_per_unit_length,
         world_x_size=x_size,
-        world_y_size=y_size
+        world_y_size=y_size,
     )
 
     logger.info(f"Warming up controller '{name}' to compile JIT/JAX trace...")
@@ -481,7 +497,7 @@ def benchmark_flow(
     benchmark_cfg = BenchmarkConfig(**yaml_data)
 
     all_controllers = list(benchmark_cfg.controllers.keys())
-    
+
     if selected_controllers:
         controllers_to_run = [c for c in selected_controllers if c in all_controllers]
     else:

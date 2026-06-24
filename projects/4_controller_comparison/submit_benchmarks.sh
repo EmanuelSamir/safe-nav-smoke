@@ -9,20 +9,26 @@ OUTPUT_DIR="${PROJECT_ROOT}/outputs/benchmark/${TIMESTAMP}"
 mkdir -p "$OUTPUT_DIR"
 echo "Output directory created: $OUTPUT_DIR"
 
-# Lista de controladores a evaluar
-CONTROLLERS=(
-    "nominal"
-    "cbf_filter"
-    "cbf_rollout"
-    "cbf_penalty"
-    "hj_filter"
-    "hj_rollout"
-    "hj_online_rollout"
-    "hj_penalty"
-)
-
-# Opcionalmente se pueden agregar --episodes u otros parámetros al benchmark
-EPISODES=10
+# Parsear argumentos
+if [ "$1" == "--test" ]; then
+    echo "Running in TEST MODE: Only evaluating 'nominal' controller for 1 episode."
+    CONTROLLERS=("nominal")
+    EPISODES=1
+else
+    # Lista de controladores a evaluar completa
+    CONTROLLERS=(
+        "nominal"
+        "cbf_filter"
+        "cbf_rollout"
+        "cbf_penalty"
+        "hj_filter"
+        "hj_rollout"
+        "hj_online_rollout"
+        "hj_penalty"
+    )
+    # Número de episodios por defecto
+    EPISODES=10
+fi
 
 # Enviar un job a SLURM por cada controlador
 for CTRL in "${CONTROLLERS[@]}"; do

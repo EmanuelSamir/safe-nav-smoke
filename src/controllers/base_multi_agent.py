@@ -227,6 +227,11 @@ class BaseMultiAgentController:
             # synthetic_states: (K, T, nx) - en device
             trajs = ctrl.synthetic_states.detach().cpu().numpy()  # (K, T, nx)
             omega = ctrl.omega.detach().cpu().numpy()  # (K,)
+            
+            # Prepend current state (t=0) to close the visual gap
+            current_state = ctrl.state.detach().cpu().numpy() # (nx,)
+            current_state_repeated = np.tile(current_state, (trajs.shape[0], 1, 1)) # (K, 1, nx)
+            trajs = np.concatenate([current_state_repeated, trajs], axis=1) # (K, T+1, nx)
 
             color = self._AGENT_COLORS[agent_idx % len(self._AGENT_COLORS)]
 

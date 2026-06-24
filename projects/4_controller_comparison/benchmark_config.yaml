@@ -1,6 +1,6 @@
 agent:
-  action_min: [-6.0, -0.6]
-  action_max: [6.0, 0.6]
+  action_min: [0.0, -4.0]
+  action_max: [6.0, 4.0]
   action_dim: 2
   state_dim: 3
 
@@ -10,8 +10,8 @@ env:
   world_y_size: 35.0
   clock: 0.1
   max_steps: 1000
-  collision_radius: 0.4
-  goal_radius: 1.0
+  collision_radius: 0.8
+  goal_radius: 1.2
   render: "none"
   render_save_every: 1
   terminate_on_collision: false
@@ -40,7 +40,7 @@ sensor:
 
 playback:
   # Ruta a los datos de la simulación base a reproducir
-  data_path: "/data/emunoz/hf_datasets/physics_base"
+  data_path: "data/smoke_env_100ep" # "/data/emunoz/hf_datasets/physics_base"
 
 # Diccionario de controladores. Eliminamos cualquier ambiguedad y listamos todos los parámetros.
 controllers:
