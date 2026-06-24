@@ -13,13 +13,14 @@ State layout (per agent): [x, y, theta] — position in metres, heading in radia
 Neighbour tensors share the same layout.
 """
 
-from dataclasses import dataclass
 from typing import Optional, Union
 
 import jax
 import jax.numpy as jnp
 import numpy as np
 import torch
+
+from src.utils.config_utils import StrictBaseModel
 
 # ---------------------------------------------------------------------------
 # Type aliases
@@ -37,8 +38,7 @@ ValuesGrad = list  # list[jax.Array], one array per spatial dimension
 # ---------------------------------------------------------------------------
 
 
-@dataclass
-class HJFilterParams:
+class HJFilterParams(StrictBaseModel):
     """Parameters for HJ Reachability / LRF projection.
 
     Attributes:
@@ -55,8 +55,9 @@ class HJFilterParams:
     safe_margin: float
     r_sense: float
     dt: float
-    action_min: torch.Tensor
-    action_max: torch.Tensor
+    # Use list[float] since tensors are not Pydantic friendly
+    action_min: list[float]
+    action_max: list[float]
     control_type: str = "smooth"  # "smooth" (QP projection) or "bang_bang" (optimal avoidance)
 
 

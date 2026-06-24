@@ -1,0 +1,12 @@
+experiment_name: "fno"
+seed: 42
+
+data:
+  data_path: "data/physics_smoke"
+
+model:
+  # Sobreescrituras para el modelo FNO si son necesarias
+  # modes_t: 2
+  pass
+
+# Los demás valores usarán los defaults definidos en FNOTrainingConfig

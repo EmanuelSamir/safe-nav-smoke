@@ -1,22 +1,17 @@
 import os
-from dataclasses import dataclass
 
 import numpy as np
 from datasets import load_from_disk
 from scipy.ndimage import map_coordinates
 
+from src.env.schemas import PlaybackConfig
 from src.env.simulator.playback_schema import SmokeDataSchema
-
-
-@dataclass
-class PlaybackParams:
-    data_path: str
 
 
 class Playback:
     """Simulator that plays back pre-calculated smoke simulation data from an HF Dataset."""
 
-    def __init__(self, params: PlaybackParams):
+    def __init__(self, params: PlaybackConfig):
         """Initializes the playback simulator.
 
         :param params: Configuration containing data_path (HF Dataset directory).

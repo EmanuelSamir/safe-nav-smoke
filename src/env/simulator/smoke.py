@@ -1,6 +1,3 @@
-from dataclasses import dataclass
-
-import hydra
 import matplotlib.pyplot as plt
 import numpy as np
 import phi.field
@@ -13,30 +10,6 @@ else:
     device = "CPU"
 
 flow.TORCH.set_default_device(device)
-
-
-@dataclass
-class BlobParams:
-    x_pos: int
-    y_pos: int
-    intensity: float
-    spread_rate: float
-
-
-@dataclass
-class SmokeParams:
-    x_size: float
-    y_size: float
-    resolution: float
-
-    # Parameters for the smoke simulation
-    average_wind_speed: float
-    smoke_emission_rate: float
-    smoke_diffusion_rate: float
-    smoke_decay_rate: float
-    buoyancy_factor: float
-
-    inflow_bank_count: int  # Number of random smoke maps to precompute
 
 
 class Smoke:
@@ -281,14 +254,25 @@ class Smoke:
         fig.canvas.draw()
 
 
-@hydra.main(version_base=None, config_path="../../../configs", config_name="config")
-def run_smoke_test(cfg) -> None:
-    """Run a smoke simulation test.
-
-    Args:
-        cfg: Configuration
-    """
-    smoke_params = cfg.simulator
+def run_smoke_test() -> None:
+    """Run a smoke simulation test."""
+    smoke_params = SmokeParams(
+        resolution=1.0,
+        average_wind_speed=2.0,
+        smoke_decay_rate=0.99,
+        smoke_emission_rate=5.0,
+        smoke_diffusion_rate=0.01,
+        inflow_bank_count=5,
+        buoyancy_factor=0.1,
+        dt=0.1,
+        x_size=50.0,
+        y_size=50.0,
+        velocity_iterations=4,
+        pressure_iterations=20,
+        mac_cormack=True,
+        buoyancy_alpha=0.05,
+        buoyancy_beta=0.5
+    )
 
     blob_params_list = [
         BlobParams(x_pos=10, y_pos=40, intensity=1.0, spread_rate=4.0),

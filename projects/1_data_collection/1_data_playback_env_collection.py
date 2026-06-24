@@ -1,31 +1,27 @@
 import os
 import sys
+import yaml
 
 # Add project root to path
 sys.path.append(os.getcwd())
 
-from omegaconf import DictConfig, OmegaConf
-
-# Early config parsing to configure matplotlib backend before any other imports
-cli_args = [arg for arg in sys.argv[1:] if not arg.startswith("-")]
-cli_cfg = OmegaConf.from_cli(cli_args)
+from projects.1_data_collection.schema import DataCollectionConfig
 
 # Load base config
-config_name = "playback_env"
 config_path = os.path.join(
-    os.path.dirname(__file__), "../configs/data_collection", f"{config_name}.yaml"
+    os.path.dirname(__file__), "../../configs/data_collection/playback_env.yaml"
 )
-base_cfg = OmegaConf.load(config_path)
-merged_cfg = OmegaConf.merge(base_cfg, cli_cfg)
-test_mode = merged_cfg.get("test", False)
+with open(config_path, "r") as f:
+    yaml_data = yaml.safe_load(f)
+
+cfg = DataCollectionConfig(**yaml_data)
+test_mode = cfg.test
 
 import matplotlib
 
 if not test_mode:
     matplotlib.use("Agg")
 import time
-
-import hydra
 import matplotlib.pyplot as plt
 import numpy as np
 from tqdm import tqdm
@@ -34,8 +30,7 @@ from src.env.simulator.playback_schema import SmokeDataSchema
 from src.env.simulator.smoke import BlobParams, Smoke, SmokeParams
 
 
-@hydra.main(version_base=None, config_path="../configs/data_collection", config_name="playback_env")
-def main(cfg: DictConfig):
+def main():
     # Parameters from config
     test_mode = cfg.test
     num_episodes = 1 if test_mode else cfg.num_episodes

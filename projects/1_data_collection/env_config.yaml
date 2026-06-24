@@ -1,0 +1,8 @@
+# Configuración para la generación de datos de entorno
+# Todos los parámetros que no se especifiquen aquí usarán los valores por defecto de DataCollectionConfig.
+
+num_episodes: 100
+output_path: "data/env_smoke_slow"
+
+# Ejemplo de anulación:
+# emission_rate: 2.0

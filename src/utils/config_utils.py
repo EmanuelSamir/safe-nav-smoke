@@ -1,4 +1,9 @@
 import torch
+from pydantic import BaseModel, ConfigDict
+
+
+class StrictBaseModel(BaseModel):
+    model_config = ConfigDict(extra="forbid")
 
 
 def get_device() -> str:

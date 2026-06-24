@@ -6,46 +6,42 @@ sys.path.append(os.getcwd())
 import logging
 from pathlib import Path
 
-import hydra
+import datetime
+import yaml
 import lightning as L
-from omegaconf import DictConfig, OmegaConf
 
 from src.models.lightning_conv_lstm import (
     ConvLSTMDataModule,
     ConvLSTMLightningModule,
     ConvLSTMVisualizerCallback,
 )
-from src.training.schemas import ConvLSTMTrainingConfigSchema
+from projects.2_training.schema import ConvLSTMTrainingConfig
 
 log = logging.getLogger(__name__)
 
 
-@hydra.main(version_base=None, config_path="../../configs/training", config_name="conv_lstm")
-def train(cfg: DictConfig):
-    # Merge with structured schema to validate and convert to dataclass
-    schema = OmegaConf.structured(ConvLSTMTrainingConfigSchema)
-    merged = OmegaConf.merge(schema, cfg)
-    t_cfg = OmegaConf.to_object(merged)
+def train():
+    config_path = os.path.join(os.path.dirname(__file__), "../../configs/training/conv_lstm.yaml")
+    with open(config_path, "r") as f:
+        yaml_data = yaml.safe_load(f)
+
+    t_cfg = ConvLSTMTrainingConfig(**yaml_data)
 
     print(f"Training ConvLSTM — {t_cfg.experiment_name}")
     L.seed_everything(t_cfg.seed)
 
-    from hydra.core.hydra_config import HydraConfig
+    timestamp = datetime.datetime.now().strftime("%Y-%m-%d/%H-%M-%S")
+    output_dir = os.path.join(os.getcwd(), "outputs", "training", t_cfg.experiment_name, timestamp)
 
-    output_dir = HydraConfig.get().runtime.output_dir
     log_dir = os.path.join(output_dir, "logs")
     ckpt_dir = os.path.join(output_dir, "checkpoints")
     os.makedirs(log_dir, exist_ok=True)
     os.makedirs(ckpt_dir, exist_ok=True)
 
     with open(os.path.join(output_dir, "config_used.yaml"), "w") as f:
-        f.write(OmegaConf.to_yaml(cfg))
+        yaml.dump(t_cfg.model_dump(), f)
 
-    # Data Setup
-    try:
-        root_dir = Path(hydra.utils.get_original_cwd())
-    except Exception:
-        root_dir = Path(os.getcwd())
+    root_dir = Path(os.getcwd())
 
     data_path = root_dir / t_cfg.data.data_path
     if not data_path.exists():

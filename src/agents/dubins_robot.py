@@ -1,6 +1,4 @@
 import logging
-
-import hydra
 import torch
 
 from src.agents.basic_robot import Robot, RobotParams
@@ -108,9 +106,16 @@ class DubinsRobot(Robot):
         return out_states
 
 
-@hydra.main(version_base=None, config_path="../../configs", config_name="config")
-def run_tests(cfg) -> None:
-    robot_params = cfg.agent
+def run_tests() -> None:
+    robot_params = RobotParams(
+        action_min=[0.0, -1.0],
+        action_max=[1.0, 1.0],
+        action_dim=2,
+        state_dim=3,
+        state_min=[0.0, 0.0, 0.0],
+        state_max=[35.0, 35.0, 6.28],
+        dt=0.1
+    )
     robot = DubinsRobot(robot_params)
 
     # 1. Test bound_state & filter_action

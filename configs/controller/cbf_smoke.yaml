@@ -1,7 +1,0 @@
-# @package controller
-smoke_threshold: 0.75
-k1: 5.0
-k2: 5.0
-rho: 5.0
-margin: 1.0
-R_diag: [1.0, 1.0]

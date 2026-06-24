@@ -13,15 +13,16 @@ Design rules:
   of truth across experiments.
 """
 
-from dataclasses import dataclass
+from typing import List, Literal
+
+from src.utils.config_utils import StrictBaseModel
 
 # ---------------------------------------------------------------------------
 # Shared safety parameters
 # ---------------------------------------------------------------------------
 
 
-@dataclass
-class SharedSafetyConfig:
+class SharedSafetyConfig(StrictBaseModel):
     """Safety contract shared across all controllers in an experiment.
 
     Making this a separate node ensures d_safe, r_sense, and neighbor_mode
@@ -37,9 +38,9 @@ class SharedSafetyConfig:
                                        HJ raises ValueError if set to "all").
     """
 
-    d_safe: float
-    r_sense: float
-    neighbor_mode: str  # "nearest" | "all"
+    d_safe: float = 2.4
+    r_sense: float = 8.0
+    neighbor_mode: Literal["nearest", "all"] = "nearest"
 
 
 # ---------------------------------------------------------------------------
@@ -47,8 +48,7 @@ class SharedSafetyConfig:
 # ---------------------------------------------------------------------------
 
 
-@dataclass
-class MPPIConfig:
+class MPPIConfig(StrictBaseModel):
     """MPPI planner parameters.
 
     Attributes:
@@ -58,10 +58,12 @@ class MPPIConfig:
         device:      PyTorch device string (``"cpu"`` or ``"cuda"``).
     """
 
-    num_samples: int
-    horizon: int
-    lambda_: float
-    device: str
+    num_samples: int = 120
+    horizon: int = 14
+    lambda_: float = 3.0
+    alpha_noise_sigma: float = 10.0
+    noise_abs_cost: bool = False
+    device: str = "mps"
 
 
 # ---------------------------------------------------------------------------
@@ -69,8 +71,7 @@ class MPPIConfig:
 # ---------------------------------------------------------------------------
 
 
-@dataclass
-class HJSolverConfig:
+class HJSolverConfig(StrictBaseModel):
     """Configuration for the Hamilton-Jacobi BRT solver.
 
     Attributes:
@@ -84,18 +85,17 @@ class HJSolverConfig:
         safe_margin:  V < safe_margin ⟹ unsafe. Typically ``0.0`` (exact zero-level set).
     """
 
-    domain: list
-    domain_cells: list
-    accuracy: str
-    target_time: float
-    dt: float
-    epsilon: float
-    dx: float
-    safe_margin: float
+    domain: list = [[-10.0, -10.0, 0.0], [10.0, 10.0, 6.2832]]
+    domain_cells: list = [60, 60, 36]
+    accuracy: str = "medium"
+    target_time: float = -5.0
+    dt: float = 0.05
+    epsilon: float = 0.01
+    dx: float = 0.333
+    safe_margin: float = 0.0
 
 
-@dataclass
-class CBFSmokeConfig:
+class CBFSmokeConfig(StrictBaseModel):
     """Full configuration for the single-agent CBF smoke controller (CBFSmokeController).
 
     Attributes:
@@ -107,12 +107,12 @@ class CBFSmokeConfig:
         R_diag:          Diagonal coefficients of the nominal control penalty matrix.
     """
 
-    smoke_threshold: float
-    k1: float
-    k2: float
-    rho: float
-    margin: float
-    R_diag: list[float]
+    smoke_threshold: float = 0.75
+    k1: float = 5.0
+    k2: float = 5.0
+    rho: float = 5.0
+    margin: float = 1.0
+    R_diag: list[float] = [1.0, 1.0]
 
 
 # ---------------------------------------------------------------------------
@@ -120,8 +120,7 @@ class CBFSmokeConfig:
 # ---------------------------------------------------------------------------
 
 
-@dataclass
-class MultiAgentCBFConfig:
+class MultiAgentCBFConfig(StrictBaseModel):
     """Full configuration for ``MultiAgentCBFController``.
 
     Attributes:
@@ -138,17 +137,17 @@ class MultiAgentCBFConfig:
         dt:      Timestep (referenced via interpolation).
     """
 
-    safety: SharedSafetyConfig
-    mppi: MPPIConfig
+    safety: SharedSafetyConfig = SharedSafetyConfig()
+    mppi: MPPIConfig = MPPIConfig()
 
-    mode: str  # "filter" | "rollout" | "penalty"
+    mode: str = "filter"  # "filter" | "rollout" | "penalty"
 
     # CBF-specific
-    k1: float
-    k2: float
-    L: float
-    rho: float
-    dt: float
+    k1: float = 1.5
+    k2: float = 1.5
+    L: float = 0.4
+    rho: float = 5.0
+    dt: float = 0.1
 
 
 # ---------------------------------------------------------------------------
@@ -156,8 +155,7 @@ class MultiAgentCBFConfig:
 # ---------------------------------------------------------------------------
 
 
-@dataclass
-class MultiAgentHJConfig:
+class MultiAgentHJConfig(StrictBaseModel):
     """Full configuration for ``MultiAgentHJController``.
 
     Attributes:
@@ -176,11 +174,11 @@ class MultiAgentHJConfig:
         action_max: Maximum control bounds (referenced via interpolation).
     """
 
-    safety: SharedSafetyConfig
-    mppi: MPPIConfig
-    solver: HJSolverConfig
+    safety: SharedSafetyConfig = SharedSafetyConfig()
+    mppi: MPPIConfig = MPPIConfig()
+    solver: HJSolverConfig = HJSolverConfig()
 
-    mode: str  # "filter" | "rollout" | "online_rollout" | "penalty"
-    dt: float
-    action_min: list[float]
-    action_max: list[float]
+    mode: str = "filter"  # "filter" | "rollout" | "online_rollout" | "penalty"
+    dt: float = 0.1
+    action_min: list[float] = [0.0, -4.0]
+    action_max: list[float] = [6.0, 4.0]

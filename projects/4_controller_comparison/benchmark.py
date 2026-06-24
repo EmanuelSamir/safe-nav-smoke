@@ -1,4 +1,3 @@
-import argparse
 import json
 import logging
 import os
@@ -6,7 +5,7 @@ import sys
 import time
 from collections import deque
 from types import SimpleNamespace
-from typing import List, Optional
+from typing import Optional
 
 import imageio.v2 as imageio
 import numpy as np
@@ -221,7 +220,15 @@ def evaluate_controller_task(
     )
 
     controller = instantiate_controller(
-        name, num_agents, goal_radius, dt, cfg_agent, cfg_controller, robot_params, collision_radius, device
+        name,
+        num_agents,
+        goal_radius,
+        dt,
+        cfg_agent,
+        cfg_controller,
+        robot_params,
+        collision_radius,
+        device,
     )
 
     goals_dict = {f"agent_{i}": np.array(goal_locations[i]) for i in range(num_agents)}
@@ -475,15 +482,14 @@ def evaluate_controller_task(
     return aggregated
 
 
-def benchmark_flow(
-    episodes: int,
-    device: Optional[str],
-    output_dir: str,
-    selected_controllers: Optional[List[str]],
-    steps: Optional[int] = None,
-    render_mode: str = "none",
-    test_mode: bool = False,
-):
+def benchmark_flow(cfg: BenchmarkConfig):
+    episodes = cfg.run.episodes
+    device = cfg.run.device
+    output_dir = cfg.run.output_dir
+    selected_controllers = cfg.run.controllers
+    steps = cfg.run.steps
+    render_mode = cfg.run.render
+    test_mode = cfg.run.test
     logger.info(
         f"Running Controller Benchmark Flow over {episodes} episodes (steps limit: {steps})."
     )
@@ -491,10 +497,7 @@ def benchmark_flow(
 
     os.makedirs(output_dir, exist_ok=True)
 
-    config_path = os.path.join(os.path.dirname(__file__), "benchmark_config.yaml")
-    with open(config_path, "r") as f:
-        yaml_data = yaml.safe_load(f)
-    benchmark_cfg = BenchmarkConfig(**yaml_data)
+    benchmark_cfg = cfg
 
     all_controllers = list(benchmark_cfg.controllers.keys())
 
@@ -520,53 +523,25 @@ def benchmark_flow(
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Prefect decentralized controllers benchmark.")
-    parser.add_argument(
-        "--episodes", type=int, default=100, help="Number of episodes (default: 10)"
-    )
-    parser.add_argument(
-        "--steps", type=int, default=None, help="Limit maximum steps per episode for testing"
-    )
-    parser.add_argument("--device", type=str, default=None, help="Planning device (cpu, cuda, mps)")
-    parser.add_argument(
-        "--controllers", type=str, nargs="+", default=None, help="Specific controllers to benchmark"
-    )
-    parser.add_argument("--output_dir", type=str, default=None, help="Output directory")
-    parser.add_argument(
-        "--render",
-        type=str,
-        default="none",
-        choices=["none", "rgb_array", "human"],
-        help="Rendering mode: 'none' (no rendering), 'rgb_array' (save GIFs), 'human' (live window)",
-    )
-    parser.add_argument(
-        "--test",
-        action="store_true",
-        help="Run in test mode: visualize 1 episode per controller in 'human' mode, no saving",
-    )
-    args = parser.parse_args()
+    config_path = os.path.join(os.path.dirname(__file__), "benchmark_config.yaml")
+    with open(config_path, "r") as f:
+        yaml_data = yaml.safe_load(f)
 
-    if args.test:
-        args.episodes = 1
+    benchmark_cfg = BenchmarkConfig(**yaml_data)
 
-    if args.output_dir is None:
+    if benchmark_cfg.run.test:
+        benchmark_cfg.run.episodes = 1
+
+    if benchmark_cfg.run.output_dir is None:
         import datetime
 
         project_root = "/Users/emanuelsamir/Documents/dev/cmu/research/experiments/7_safe_nav_smoke"
         timestamp = datetime.datetime.now().strftime("%Y-%m-%d/%H-%M-%S")
-        args.output_dir = os.path.join(project_root, "outputs", "benchmark", timestamp)
+        benchmark_cfg.run.output_dir = os.path.join(project_root, "outputs", "benchmark", timestamp)
     else:
-        args.output_dir = os.path.abspath(args.output_dir)
+        benchmark_cfg.run.output_dir = os.path.abspath(benchmark_cfg.run.output_dir)
 
-    benchmark_flow(
-        episodes=args.episodes,
-        device=args.device,
-        output_dir=args.output_dir,
-        selected_controllers=args.controllers,
-        steps=args.steps,
-        render_mode=args.render,
-        test_mode=args.test,
-    )
+    benchmark_flow(benchmark_cfg)
 
 
 if __name__ == "__main__":

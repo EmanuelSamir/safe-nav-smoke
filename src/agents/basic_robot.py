@@ -1,30 +1,6 @@
-from dataclasses import dataclass
-
 import torch
 
-
-@dataclass
-class RobotParams:
-    name: str
-    action_dim: int
-    state_dim: int
-
-    action_max: list[float]
-    action_min: list[float]
-
-    state_max: list[float]
-    state_min: list[float]
-
-    dt: float = 0.1
-
-    device: str = "cpu"
-
-    def __post_init__(self):
-        """Post initialization for RobotParams. Validate dimensions."""
-        if self.action_dim != len(self.action_max) or self.action_dim != len(self.action_min):
-            raise ValueError("Action dimension must match the length of action_max and action_min")
-        if self.state_dim != len(self.state_max) or self.state_dim != len(self.state_min):
-            raise ValueError("State dimension must match the length of state_max and state_min")
+from src.agents.schemas import RobotParams
 
 
 class Robot:

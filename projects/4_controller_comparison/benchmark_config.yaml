@@ -1,3 +1,12 @@
+run:
+  episodes: 100
+  steps: null
+  device: null
+  controllers: null
+  output_dir: null
+  render: "none"
+  test: false
+
 agent:
   action_min: [0.0, -4.0]
   action_max: [6.0, 4.0]

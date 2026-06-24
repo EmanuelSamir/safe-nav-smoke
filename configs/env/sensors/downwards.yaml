@@ -1,6 +1,0 @@
-sensor_type: "downwards"
-density_reading_per_unit_length: 0.0
-x_fov_size: 6.0
-y_fov_size: 6.0
-world_x_size: ${world_size.0}
-world_y_size: ${world_size.1}

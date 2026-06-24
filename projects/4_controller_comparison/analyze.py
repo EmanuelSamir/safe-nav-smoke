@@ -1,4 +1,3 @@
-import argparse
 import os
 import sys
 import glob
@@ -49,19 +48,21 @@ def find_latest_results_dir():
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Analyze benchmark results.")
-    parser.add_argument(
-        "--output_dir", type=str, default=None, help="Benchmark directory to analyze"
-    )
-    args = parser.parse_args()
+    import yaml
+    from projects.4_controller_comparison.schema import BenchmarkConfig
+    
+    config_path = os.path.join(os.path.dirname(__file__), "benchmark_config.yaml")
+    with open(config_path, "r") as f:
+        yaml_data = yaml.safe_load(f)
+    benchmark_cfg = BenchmarkConfig(**yaml_data)
 
-    output_dir = args.output_dir
+    output_dir = benchmark_cfg.run.output_dir
     if output_dir is None:
         output_dir = find_latest_results_dir()
         if output_dir is None:
             print("Error: No benchmark results found. Run a benchmark first.")
             sys.exit(1)
-        print(f"No output directory specified. Analyzing latest run: {output_dir}")
+        print(f"No output directory specified in yaml. Analyzing latest run: {output_dir}")
     else:
         output_dir = os.path.abspath(output_dir)
 

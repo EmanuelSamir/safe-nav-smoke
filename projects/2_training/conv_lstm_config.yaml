@@ -1,0 +1,7 @@
+experiment_name: "conv_lstm"
+seed: 42
+
+data:
+  data_path: "data/physics_smoke"
+
+# Los demás valores usarán los defaults definidos en ConvLSTMTrainingConfig

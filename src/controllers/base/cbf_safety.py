@@ -4,18 +4,17 @@ State layout (per agent): [x, y, theta]  — position in meters, heading in radi
 Neighbor tensors share the same layout; shape is (N_neighbors, 3).
 """
 
-from dataclasses import dataclass
 from typing import Union
 
 import torch
 
+from src.utils.config_utils import StrictBaseModel
 
 # Column indices for the state/neighbor tensors
 _X, _Y, _THETA = 0, 1, 2
 
 
-@dataclass
-class CBFFilterParams:
+class CBFFilterParams(StrictBaseModel):
     """Parameters for the High-Order Control Barrier Function (HOCBF) filter.
 
     Attributes:
@@ -92,7 +91,7 @@ class CBFFilter:
 
         d_safe_barrier = p.d_safe + 2.0 * p.L
         p_rel = p_i_safe.unsqueeze(1) - p_j_pred.unsqueeze(0)  # (K, N, 2)
-        dist_sq = torch.sum(p_rel**2, dim=2)                    # (K, N)
+        dist_sq = torch.sum(p_rel**2, dim=2)  # (K, N)
         h0 = dist_sq - d_safe_barrier**2
 
         h_min, _ = torch.min(h0, dim=1)
@@ -133,16 +132,16 @@ class CBFFilter:
         # Mathematical constraint for unicycle lookahead points
         d_safe_barrier = p.d_safe + 2.0 * p.L
         p_rel = p_i_safe.unsqueeze(1) - p_j_pred.unsqueeze(0)  # (K, N, 2)
-        dist_sq = torch.sum(p_rel**2, dim=2)                    # (K, N)
-        h0_all = dist_sq - d_safe_barrier**2                    # (K, N)
+        dist_sq = torch.sum(p_rel**2, dim=2)  # (K, N)
+        h0_all = dist_sq - d_safe_barrier**2  # (K, N)
 
         # Find the critical (closest) neighbour for each batch item
         crit_idx = torch.argmin(h0_all, dim=1)
         batch_idx = torch.arange(K, device=device)
 
-        h0_crit = h0_all[batch_idx, crit_idx]          # (K,)
-        p_rel_crit = p_rel[batch_idx, crit_idx]         # (K, 2)
-        v_j_crit = v_j[crit_idx]                        # (K, 2)
+        h0_crit = h0_all[batch_idx, crit_idx]  # (K,)
+        p_rel_crit = p_rel[batch_idx, crit_idx]  # (K, 2)
+        v_j_crit = v_j[crit_idx]  # (K, 2)
 
         # CBF constraint: A @ u >= B
         # Jacobian of h0 w.r.t. u through the unicycle kinematics:
@@ -185,13 +184,13 @@ class CBFFilter:
 
         neighbors_tensor = self._to_tensor(neighbors, device)  # (N, 3)
 
-        theta = state[:, _THETA]                                # (K,)
+        theta = state[:, _THETA]  # (K,)
         cos_t, sin_t = torch.cos(theta), torch.sin(theta)
 
         p_i_center = state[:, [_X, _Y]]
         p_i_safe = p_i_center + p.L * torch.stack([cos_t, sin_t], dim=1)
 
-        theta_j = neighbors_tensor[:, _THETA]                   # (N,)
+        theta_j = neighbors_tensor[:, _THETA]  # (N,)
         cos_j, sin_j = torch.cos(theta_j), torch.sin(theta_j)
 
         p_j_center = neighbors_tensor[:, [_X, _Y]]
@@ -229,6 +228,7 @@ class CBFFilter:
 # ---------------------------------------------------------------------------
 # Module-level convenience wrappers (backwards-compatible)
 # ---------------------------------------------------------------------------
+
 
 def cbf_h_function(
     state: torch.Tensor,

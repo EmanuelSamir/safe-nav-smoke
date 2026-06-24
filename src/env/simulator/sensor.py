@@ -1,8 +1,14 @@
 import math
 from dataclasses import dataclass
 
-import hydra
 import torch
+
+from src.env.schemas import (
+    BaseSensorConfig,
+    Camera1DSensorConfig,
+    DownwardsSensorConfig,
+    GlobalSensorConfig,
+)
 
 
 @dataclass
@@ -11,37 +17,8 @@ class SensorOutput:
     positions: torch.Tensor
 
 
-@dataclass
-class BaseSensorParams:
-    world_x_size: float
-    world_y_size: float
-    sensor_type: str
-
-
-@dataclass
-class GlobalSensorParams(BaseSensorParams):
-    density_reading_per_unit_length: float
-
-
-@dataclass
-class DownwardsSensorParams(BaseSensorParams):
-    density_reading_per_unit_length: float
-
-    x_fov_size: float
-    y_fov_size: float
-
-
-@dataclass
-class Camera1DSensorParams(BaseSensorParams):
-    fov_size_degrees: float
-    num_rays: int
-    step_size: float
-    opacity_threshold: float
-    max_range: float
-
-
 class BaseSensor:
-    def __init__(self, params: BaseSensorParams):
+    def __init__(self, params: BaseSensorConfig):
         """Initialize the base sensor.
 
         Args:
@@ -57,7 +34,7 @@ class BaseSensor:
 
 
 class DownwardsSensor(BaseSensor):
-    def __init__(self, params: DownwardsSensorParams):
+    def __init__(self, params: DownwardsSensorConfig):
         self.params = params
 
         density = self.params.density_reading_per_unit_length
@@ -184,7 +161,7 @@ class DownwardsSensor(BaseSensor):
 
 
 class GlobalSensor(BaseSensor):
-    def __init__(self, params: GlobalSensorParams):
+    def __init__(self, params: GlobalSensorConfig):
         self.params = params
 
     def projection_bounds(self, pos_x: float, pos_y: float) -> torch.Tensor:
@@ -236,7 +213,7 @@ class GlobalSensor(BaseSensor):
 
 
 class Camera1DSensor(BaseSensor):
-    def __init__(self, params: Camera1DSensorParams):
+    def __init__(self, params: Camera1DSensorConfig):
         self.params = params
         self.fov_size_rad = math.radians(self.params.fov_size_degrees)
 
@@ -317,13 +294,27 @@ class Camera1DSensor(BaseSensor):
         return SensorOutput(readings=ray_images, positions=sensor_position_readings)
 
 
-@hydra.main(version_base=None, config_path="../../../configs", config_name="config")
-def run_tests(cfg) -> None:
-    from hydra import compose
-
+def run_tests() -> None:
     from src.env.simulator.smoke import BlobParams, Smoke
+    from src.env.schemas import SmokeParams
 
-    smoke_params = cfg.simulator
+    smoke_params = SmokeParams(
+        resolution=1.0,
+        average_wind_speed=2.0,
+        smoke_decay_rate=0.99,
+        smoke_emission_rate=5.0,
+        smoke_diffusion_rate=0.01,
+        inflow_bank_count=5,
+        buoyancy_factor=0.1,
+        dt=0.1,
+        x_size=50.0,
+        y_size=50.0,
+        velocity_iterations=4,
+        pressure_iterations=20,
+        mac_cormack=True,
+        buoyancy_alpha=0.05,
+        buoyancy_beta=0.5
+    )
 
     # Initialize Smoke
     blob_params_list = [
@@ -337,18 +328,38 @@ def run_tests(cfg) -> None:
     curr_pos = torch.tensor([10.0, 10.0, 0.0])
 
     for stype in sensor_configs:
-        print(f"\n--- Testing Sensor Config File: {stype}.yaml ---")
-
-        # Programmatically compose the config overriding the active sensor config
-        composed_cfg = compose(config_name="config", overrides=[f"env/sensors@sensor={stype}"])
-        sensor_params = composed_cfg.sensor
+        print(f"\n--- Testing Sensor Config File: {stype} ---")
 
         if stype == "global":
             sensor_class = GlobalSensor
+            sensor_params = GlobalSensorConfig(
+                sensor_type="global",
+                density_reading_per_unit_length=0.0,
+                world_x_size=50.0,
+                world_y_size=50.0,
+            )
         elif stype == "downwards":
             sensor_class = DownwardsSensor
+            sensor_params = DownwardsSensorConfig(
+                sensor_type="downwards",
+                density_reading_per_unit_length=0.0,
+                world_x_size=50.0,
+                world_y_size=50.0,
+                x_fov_size=10.0,
+                y_fov_size=10.0,
+            )
         elif stype == "camera1d":
             sensor_class = Camera1DSensor
+            sensor_params = Camera1DSensorConfig(
+                sensor_type="camera_1d",
+                world_x_size=50.0,
+                world_y_size=50.0,
+                fov_size_degrees=90.0,
+                num_rays=10,
+                step_size=1.0,
+                max_range=20.0,
+                opacity_threshold=0.5,
+            )
         else:
             raise ValueError(f"Unknown sensor type: {stype}")
 

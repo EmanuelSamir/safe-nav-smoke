@@ -1,40 +1,41 @@
-from dataclasses import dataclass
 from typing import List, Optional
 
-import hydra
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from omegaconf import DictConfig
+from pydantic import model_validator
 from torch.distributions import Normal
 
+from src.utils.config_utils import StrictBaseModel
 
-@dataclass
-class FNOConfig:
+
+class FNOConfig(StrictBaseModel):
     # Context / prediction
-    h_ctx: int  # Context frames (T dimension of the 3D volume)
-    h_pred: int  # Future frames per forward pass
+    h_ctx: int = 10  # Context frames (T dimension of the 3D volume)
+    h_pred: int = 5  # Future frames per forward pass
 
     # 3D spectral modes
-    modes_t: int  # Temporal Fourier modes  (≤ h_ctx // 2)
-    modes_h: int  # Spatial H Fourier modes (≤ H // 2)
-    modes_w: int  # Spatial W Fourier modes (≤ W // 2)
+    modes_t: int = 4  # Temporal Fourier modes  (≤ h_ctx // 2)
+    modes_h: int = 8  # Spatial H Fourier modes (≤ H // 2)
+    modes_w: int = 8  # Spatial W Fourier modes (≤ W // 2)
 
     # Network width and depth
-    width: int  # Latent channel width
-    n_layers: int  # Number of SpectralConv3d + skip blocks
+    width: int = 32  # Latent channel width
+    n_layers: int = 4  # Number of SpectralConv3d + skip blocks
 
     # Features
-    use_grid: bool  # Append (x,y) grid after temporal aggregation
-    use_time: bool  # Append normalised t as extra input channel per frame
+    use_grid: bool = True  # Append (x,y) grid after temporal aggregation
+    use_time: bool = True  # Append normalised t as extra input channel per frame
 
     # Normalisation
-    min_std: float
-    sequence_length: Optional[int] = None
+    min_std: float = 1e-4
+    sequence_length: Optional[int] = 25
 
-    def __post_init__(self):
+    @model_validator(mode="after")
+    def validate_modes(self):
         if self.modes_t > self.h_ctx // 2:
             raise ValueError(f"modes_t ({self.modes_t}) must be <= h_ctx // 2 ({self.h_ctx // 2})")
+        return self
 
 
 class SpectralConv3d(nn.Module):
@@ -278,14 +279,21 @@ class FNO(nn.Module):
         return preds
 
 
-@hydra.main(version_base=None, config_path="../../configs/models", config_name="fno")
-def main(cfg: DictConfig):
-    from omegaconf import OmegaConf
-
-    print("Starting FNO Hydra sanity check...")
-    # 1. Validate Hydra Config using FNOConfig
-    cfg_dict = OmegaConf.to_container(cfg, resolve=True)
-    fno_cfg = FNOConfig(**cfg_dict)
+def main():
+    print("Starting FNO sanity check...")
+    fno_cfg = FNOConfig(
+        h_ctx=10,
+        h_pred=5,
+        modes_t=4,
+        modes_h=8,
+        modes_w=8,
+        width=32,
+        n_layers=4,
+        use_grid=True,
+        use_time=True,
+        min_std=1e-4,
+        sequence_length=25
+    )
 
     # 2. Instantiate FNO model
     model = FNO(fno_cfg)

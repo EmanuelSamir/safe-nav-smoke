@@ -1,17 +1,16 @@
-from dataclasses import dataclass
 from enum import Enum
-from typing import Optional, Union
+from typing import Union
 
 import gymnasium as gym
-import hydra
 import numpy as np
 import torch
 from gymnasium import spaces
-from omegaconf import OmegaConf
 
-from src.agents.basic_robot import RobotParams
 from src.agents.dubins_robot import DubinsRobot
-from src.env.simulator.playback import Playback, PlaybackParams
+from src.agents.schemas import RobotParams
+from src.env.schemas import BlobParams, EnvConfig, SmokeParams
+from src.env.schemas import PlaybackConfig as PlaybackParams
+from src.env.simulator.playback import Playback
 from src.env.simulator.playback_schema import SmokeDataSchema
 from src.env.simulator.sensor import (
     Camera1DSensor,
@@ -19,7 +18,7 @@ from src.env.simulator.sensor import (
     GlobalSensor,
     SensorOutput,
 )
-from src.env.simulator.smoke import BlobParams, Smoke, SmokeParams
+from src.env.simulator.smoke import Smoke
 from src.utils.config_utils import get_device
 from src.visualization import BaseRenderer, SimpleRenderer
 
@@ -28,37 +27,6 @@ class RenderMode(str, Enum):
     HUMAN = "human"
     RGB_ARRAY = "rgb_array"
     NONE = "none"
-
-
-@dataclass
-class EnvConfig:
-    world_x_size: float
-    world_y_size: float
-    max_steps: int
-    clock: float
-    render: Union[RenderMode, str]
-    render_save_every: int
-    goal_radius: float
-    num_agents: int
-    collision_radius: float
-    terminate_on_collision: bool
-    collision_penalty: float
-    smoke_density_threshold: Optional[float]
-
-    goal_locations: Optional[list[list[float]]] = None
-    initial_locations: Optional[list[list[float]]] = None
-
-    # Extra parameters in smoke_env.yaml configuration
-    test: Optional[bool] = None
-    num_episodes: Optional[int] = None
-    save_transitions: bool = False
-
-    def __post_init__(self):
-        try:
-            self.render = RenderMode(self.render)
-        except ValueError:
-            valid_values = [e.value for e in RenderMode]
-            raise ValueError(f"render must be one of {valid_values}, got {self.render}")
 
 
 class SmokeAgent:
@@ -551,17 +519,65 @@ class SmokeEnv(gym.Env):
             print(f"[SmokeEnv] Successfully saved {len(ds)} transitions to {save_dir}")
 
 
-def main(cfg) -> None:
-    # 1. Resolve configuration in-place
-    OmegaConf.resolve(cfg)
+def run_tests() -> None:
+    from src.env.schemas import EnvConfig, SmokeParams
+    from src.agents.schemas import RobotParams
+    from src.env.schemas import GlobalSensorConfig
 
-    env_params = OmegaConf.to_object(cfg.env)
-    robot_params = OmegaConf.to_object(cfg.agent)
-    smoke_params = OmegaConf.to_object(cfg.simulator)
-    sensor_params = OmegaConf.to_object(cfg.sensor)
+    env_params = EnvConfig(
+        world_x_size=50.0,
+        world_y_size=50.0,
+        num_agents=1,
+        max_steps=100,
+        collision_radius=1.0,
+        goal_radius=1.0,
+        initial_locations=[[10.0, 10.0]],
+        goal_locations=[[40.0, 40.0]],
+        render="none",
+        render_save_every=1,
+        terminate_on_collision=False,
+        collision_penalty=10.0,
+        smoke_density_threshold=0.5,
+        save_transitions=True,
+        test=True,
+        num_episodes=1,
+        save_transitions_path=None
+    )
 
-    # Force save_transitions to True for testing the dataset serialization code
-    env_params.save_transitions = True
+    robot_params = RobotParams(
+        action_min=[0.0, -1.0],
+        action_max=[1.0, 1.0],
+        action_dim=2,
+        state_dim=3,
+        state_min=[0.0, 0.0, 0.0],
+        state_max=[50.0, 50.0, 6.28],
+        dt=0.1
+    )
+
+    smoke_params = SmokeParams(
+        resolution=1.0,
+        average_wind_speed=2.0,
+        smoke_decay_rate=0.99,
+        smoke_emission_rate=5.0,
+        smoke_diffusion_rate=0.01,
+        inflow_bank_count=5,
+        buoyancy_factor=0.1,
+        dt=0.1,
+        x_size=50.0,
+        y_size=50.0,
+        velocity_iterations=4,
+        pressure_iterations=20,
+        mac_cormack=True,
+        buoyancy_alpha=0.05,
+        buoyancy_beta=0.5
+    )
+
+    sensor_params = GlobalSensorConfig(
+        sensor_type="global",
+        density_reading_per_unit_length=0.0,
+        world_x_size=50.0,
+        world_y_size=50.0,
+    )
 
     # Test single agent initialization
     print("Testing Single Agent Environment Initialization...")
@@ -594,6 +610,10 @@ def main(cfg) -> None:
     env.close()
 
     # Test multi-agent initialization
+    env_params.num_agents = 2
+    env_params.initial_locations = [[10.0, 10.0], [20.0, 20.0]]
+    env_params.goal_locations = [[40.0, 40.0], [30.0, 30.0]]
+    
     num_agents = env_params.num_agents
     print(
         f"\nTesting Multi-Agent Environment (num_agents = {num_agents}) Initialization with Composite Spaces..."
@@ -638,11 +658,6 @@ def main(cfg) -> None:
 
     env_multi.close()
     print("\nAll tests executed successfully!")
-
-
-@hydra.main(version_base=None, config_path="../../configs", config_name="config")
-def run_tests(cfg) -> None:
-    main(cfg)
 
 
 if __name__ == "__main__":

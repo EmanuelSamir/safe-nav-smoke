@@ -8,39 +8,40 @@ Usage:
     preds = model.autoregressive_forecast(seed, horizon=15)
 """
 
-from dataclasses import dataclass
 from typing import List, Optional, Tuple
 
-import hydra
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from omegaconf import DictConfig
+from pydantic import model_validator
 from torch.distributions import Normal
 
+from src.utils.config_utils import StrictBaseModel
 
-@dataclass
-class ConvLSTMConfig:
+
+class ConvLSTMConfig(StrictBaseModel):
     # Context / prediction
-    h_ctx: int  # Context frames
-    h_pred: int  # Future frames per forward pass
+    h_ctx: int = 10  # Context frames
+    h_pred: int = 5  # Future frames per forward pass
 
     # Architecture
-    hidden_dim: int  # Hidden state channels for LSTM layers
-    n_layers: int  # Number of ConvLSTM layers
-    kernel_size: int  # Kernel size for convolutions
+    hidden_dim: int = 32  # Hidden state channels for LSTM layers
+    n_layers: int = 3  # Number of ConvLSTM layers
+    kernel_size: int = 3  # Kernel size for convolutions
 
     # Features
-    use_grid: bool  # Append (x,y) grid after temporal aggregation
-    use_time: bool  # Append normalised t as extra input channel per frame
+    use_grid: bool = True  # Append (x,y) grid after temporal aggregation
+    use_time: bool = True  # Append normalised t as extra input channel per frame
 
     # Normalisation
-    min_std: float
-    sequence_length: Optional[int] = None
+    min_std: float = 1e-4
+    sequence_length: Optional[int] = 25
 
-    def __post_init__(self):
+    @model_validator(mode="after")
+    def validate_kernel(self):
         if self.kernel_size % 2 == 0:
             raise ValueError(f"kernel_size ({self.kernel_size}) must be odd for symmetric padding.")
+        return self
 
 
 class ConvLSTMCell(nn.Module):
@@ -252,14 +253,19 @@ class ConvLSTMModel(nn.Module):
 # ---------------------------------------------------------------------------
 
 
-@hydra.main(version_base=None, config_path="../../configs/models", config_name="conv_lstm")
-def main(cfg: DictConfig):
-    from omegaconf import OmegaConf
-
-    print("Starting ConvLSTM Hydra sanity check...")
-    # 1. Validate Hydra Config using ConvLSTMConfig
-    cfg_dict = OmegaConf.to_container(cfg, resolve=True)
-    conv_cfg = ConvLSTMConfig(**cfg_dict)
+def main():
+    print("Starting ConvLSTM sanity check...")
+    conv_cfg = ConvLSTMConfig(
+        h_ctx=5,
+        h_pred=5,
+        hidden_dim=32,
+        n_layers=3,
+        kernel_size=3,
+        use_grid=True,
+        use_time=True,
+        min_std=1e-4,
+        sequence_length=25
+    )
 
     # 2. Instantiate ConvLSTM model
     model = ConvLSTMModel(conv_cfg)
