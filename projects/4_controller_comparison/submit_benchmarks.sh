@@ -53,7 +53,7 @@ export PREFECT_HOME="/data/emunoz/prefect_home"
 
 cd ${PROJECT_ROOT}
 
-apptainer exec --nv --bind /data/emunoz:/data /data/emunoz/imgs/python_full.sif /data/emunoz/envs/dev_env/bin/python projects/4_controller_comparison/benchmark.py --controllers ${CTRL} --output_dir ${OUTPUT_DIR} --episodes ${EPISODES} ${RENDER_ARG}
+apptainer exec --nv --bind /data/emunoz:/data /data/emunoz/imgs/python_full.sif /data/emunoz/envs/dev_env/bin/python projects/4_controller_comparison/benchmark.py --controllers ${CTRL} --output_dir ${OUTPUT_DIR} --episodes ${EPISODES} ${RENDER_ARG} --device cuda
 EOF
 
 done
