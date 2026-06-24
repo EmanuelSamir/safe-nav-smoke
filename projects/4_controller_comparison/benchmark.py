@@ -73,8 +73,8 @@ def instantiate_controller(
     cfg_controller,
     robot_params,
     collision_radius: float,
+    device: str,
 ):
-    device = cfg_controller.mppi.device
 
     if name == "nominal":
         from src.controllers.base_multi_agent import BaseMultiAgentController
@@ -221,7 +221,7 @@ def evaluate_controller_task(
     )
 
     controller = instantiate_controller(
-        name, num_agents, goal_radius, dt, cfg_agent, cfg_controller, robot_params, collision_radius
+        name, num_agents, goal_radius, dt, cfg_agent, cfg_controller, robot_params, collision_radius, device
     )
 
     goals_dict = {f"agent_{i}": np.array(goal_locations[i]) for i in range(num_agents)}
