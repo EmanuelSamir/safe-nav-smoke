@@ -84,7 +84,7 @@ class SimpleRenderer(BaseRenderer):
             self.window["ax"],
             env.env_params,
             env.agents,
-            env.env_params.sensor_params,
+            env.env_params_sensor_params,
             env.sensor,
             goal_circles=self.window.get("goal_circles", []),
             controller=controller,
@@ -101,10 +101,10 @@ class SimpleRenderer(BaseRenderer):
             width, height = self.window["fig"].canvas.get_width_height()
             try:
                 rgba = np.asarray(self.window["fig"].canvas.buffer_rgba())
-                img = rgba[..., :3]
+                img = rgba[..., :3].copy()
             except AttributeError:
                 img = np.frombuffer(self.window["fig"].canvas.tostring_rgb(), dtype="uint8")
-                img = img.reshape(height, width, 3)
+                img = img.reshape(height, width, 3).copy()
             return img
         return None
 

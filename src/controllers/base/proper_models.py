@@ -21,6 +21,10 @@ class RelativeDubinsDynamics(dynamics.ControlAndDisturbanceAffineDynamics):
     """
 
     def __init__(self, action_min, action_max, control_mode="max", disturbance_mode="min"):
+        if hasattr(action_min, "detach"):
+            action_min = action_min.detach().cpu().numpy()
+        if hasattr(action_max, "detach"):
+            action_max = action_max.detach().cpu().numpy()
         control_space = sets.Box(jnp.array(action_min), jnp.array(action_max))
         disturbance_space = sets.Box(jnp.array(action_min), jnp.array(action_max))
         super().__init__(control_mode, disturbance_mode, control_space, disturbance_space)

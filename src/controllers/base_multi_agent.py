@@ -15,9 +15,9 @@ from typing import Any, Callable, Dict, Literal, Optional, Tuple
 import numpy as np
 import torch
 
-from agents.dubins_robot import DubinsRobot
-from controllers.base.dual_guard import DualGuardShield
-from controllers.base.mppi import MPPI, MPPIParams
+from src.agents.dubins_robot import DubinsRobot
+from src.controllers.base.dual_guard import DualGuardShield
+from src.controllers.base.mppi import MPPI, MPPIParams
 
 logger = logging.getLogger(__name__)
 
@@ -194,6 +194,65 @@ class BaseMultiAgentController:
         for ctrl in self.agents_controllers.values():
             ctrl.set_maps(maps_deque)
 
+    # Paleta de colores por agente (6 agentes)
+    _AGENT_COLORS = [
+        "#e63946",
+        "#2a9d8f",
+        "#e9c46a",
+        "#f4a261",
+        "#457b9d",
+        "#a8dadc",
+    ]
+
+    def visualize_rollouts(
+        self,
+        ax,
+        draw_samples: bool = True,
+        sample_alpha: float = 0.12,
+        sample_stride: int = 5,
+    ) -> None:
+        """Dibuja las trayectorias MPPI de cada agente en *ax*.
+
+        Args:
+            ax:            Matplotlib Axes donde dibujar.
+            draw_samples:  Si True, dibuja las K trayectorias muestreadas en gris.
+            sample_alpha:  Transparencia de las trayectorias de muestra.
+            sample_stride: Dibuja 1 de cada N trayectorias para no saturar.
+        """
+        for agent_idx, (agent_key, ctrl) in enumerate(self.agents_controllers.items()):
+            # synthetic_states se puebla después de cada ctrl.command()
+            if ctrl.synthetic_states is None or ctrl.omega is None:
+                continue
+
+            # synthetic_states: (K, T, nx) - en device
+            trajs = ctrl.synthetic_states.detach().cpu().numpy()  # (K, T, nx)
+            omega = ctrl.omega.detach().cpu().numpy()  # (K,)
+
+            color = self._AGENT_COLORS[agent_idx % len(self._AGENT_COLORS)]
+
+            # Trayectorias muestreadas (submuestra para rendimiento)
+            if draw_samples:
+                for k in range(0, trajs.shape[0], sample_stride):
+                    ax.plot(
+                        trajs[k, :, 0],
+                        trajs[k, :, 1],
+                        color="gray",
+                        alpha=sample_alpha,
+                        linewidth=0.5,
+                        zorder=2,
+                    )
+
+            # Trayectoria media ponderada por omega
+            weighted = (omega[:, None, None] * trajs).sum(axis=0)  # (T, nx)
+            ax.plot(
+                weighted[:, 0],
+                weighted[:, 1],
+                color=color,
+                linewidth=2.0,
+                zorder=3,
+                alpha=0.9,
+            )
+
     def get_commands(self, current_obs: Dict[str, Dict[str, Any]]) -> Dict[str, torch.Tensor]:
         """Decentralized planning step with concurrent agent scheduling."""
         agents_states = {
@@ -350,6 +409,7 @@ class BaseMultiAgentController:
                     h = safety_fn(state, t if t is not None else 0)
                     safety_cost = penalty_weight * torch.clamp(-h, min=0.0) ** 2
 
+                safety_cost = safety_cost.to(base.device)
                 return base + safety_cost
 
             ego_ctrl.running_cost_fn = penalty_running_cost

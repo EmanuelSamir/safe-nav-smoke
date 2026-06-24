@@ -1,90 +1,75 @@
-# Risk-Aware Navigation in Dynamic Smoke Environments via Probabilistic Fourier Neural Operators
+# Safe Navigation in Smoke Environments via Multi-Agent Drones
 
-This repository contains the codebase for the paper **"Risk-Aware Navigation in Dynamic Smoke Environments via Probabilistic Fourier Neural Operators"**. It provides a novel framework that integrates Probabilistic Fourier Neural Operators (PFNO) to forecast the dynamics of dense smoke environments and a risk-aware Model Predictive Path Integral (MPPI) control strategy that evaluates these probabilistic predictions to navigate safely through stochastic fluid hazards.
+Este repositorio contiene la infraestructura y algoritmos para un proyecto de investigación enfocado en la **navegación segura de múltiples drones (2D) en entornos simulados de humo**. 
 
+El objetivo principal es permitir que múltiples agentes naveguen de forma segura (evitando colisiones entre ellos y minimizando el riesgo al atravesar zonas peligrosas) utilizando predicción del comportamiento del entorno y algoritmos de control predictivo.
 
-## Repository Structure
+## 🚀 Características Principales
 
-- `agents/`: Agent definitions (Unicycle, Dubins).
-- `configs/`: Hydra configuration files for models, environments, and experiments.
-- `media/`: Images and visualization recordings.
-- `scripts/`: Standalone scripts for generating rollouts, benchmarking, and analyzing metrics.
-- `simulator/`: Dynamic fluid smoke simulation built using PhiFlow.
-- `src/`: Core logic containing experimental pipelines, the MPPI-CVaR controller, mathematical models (PFNO, ConvLSTM), and custom environment wrappers.
-- `run_experiment.py`: Main entry point for evaluating path planners.
-- `scripts/analyze_metrics.py`: Script to parse rollout trajectories to reproduce paper box/bar plots.
+1. **Smoke Forecasting (Predicción de Humo):**
+   - Entrenamos modelos para predecir la propagación del humo en el tiempo.
+   - **Propuesta Principal:** Fourier Neural Operator (FNO).
+   - **Baseline:** ConvLSTM.
+   
+2. **Navegación y Control Predictivo:**
+   - Utilizamos múltiples variantes de **MPPI** (Model Predictive Path Integral).
+   - Implementamos un controlador **Dual Guard**, que hereda de MPPI pero incorpora una función de seguridad (Safety Shield / Control Barrier Functions) durante el rollout para garantizar seguridad teórica.
 
-## Installation
+3. **Simulación Controlada (Playback):**
+   - Dado que la simulación de fluidos de humo es muy costosa computacionalmente, el entorno usa un sistema de **Playback**. 
+   - El Playback lee simulaciones previamente guardadas para garantizar comparaciones 1 a 1 justas entre diferentes controladores y modelos, todo bajo las mismas condiciones.
 
-1. Clone the repository and navigate to its root:
-   ```bash
-   git clone https://github.com/yourusername/safe-nav-smoke.git
-   cd safe-nav-smoke
-   ```
+---
 
-2. Establish the virtual environment and install the required torch, fourier-neural-operator, and phiflow dependencies using the provided bash script:
-   ```bash
-   bash setup.sh
-   # This will create a local `.env/` and install requirements.txt automatically.
-   ```
+## 📂 Arquitectura Actual
 
-## Pipeline Outline
+El código base se divide principalmente en los módulos core (`src/`) y los scripts de ejecución o experimentos.
 
-Our navigational framework follows four primary stages: Data Generation, Physics/Behavior Prediction, Forecast Uncertainty Quantification, and finally Navigation and Control evaluation.
+* `src/env/`: Entornos de simulación, incluyendo la lógica de `playback` para cargar episodios pre-calculados de humo.
+* `src/models/` y `src/training/`: Arquitecturas de redes neuronales (FNO, ConvLSTM) en PyTorch Lightning y sus lógicas de entrenamiento.
+* `src/controllers/`: Controladores de navegación (MPPI, Dual Guard, CBF, HJ).
+* `src/wrappers/`: Adaptadores para acoplar las predicciones de humo al entorno.
+* `scripts/`: Scripts bash/Slurm para ejecución en HPC (High Performance Computing).
 
-### 1. Data Generation
+## 🛠️ Flujo de Trabajo Actual (Legacy Pipeline)
 
-To train the physical neural operators, we simulate completely randomized fluid boundaries using our `simulator/dynamic_smoke.py`. For convenience, the `scripts/generate_smoke_data.py` script manages the generation of random fluid episodes to build testing and validation trajectories.
+Actualmente, el flujo de recolección de datos funcional consta de dos scripts en la raíz de `src/`:
 
-### 2. Behavior Prediction (Model Training)
+1. `src/0_data_playback_physics_collection.py`: Recolecta la física/dinámica base.
+2. `src/1_data_playback_env_collection.py`: Genera los episodios del entorno.
 
-The core dynamics map $\rho_{t} \to (\mu, \sigma)_{t+N}$ is learned across the randomized datasets using the **PFNO (FNO3D)** model. We benchmark its structural reconstruction capacity against a temporal **ConvLSTM**.
+*(Nota: Los scripts de la versión 2 en adelante están deprecados y serán reemplazados por la nueva arquitectura descrita a continuación).*
 
-To automatically launch the training curriculum for the predictive models, invoke the bash script:
-```bash
-bash src/training/run_all_training.sh
+---
+
+## 🏗️ Filosofía de Configuración y Futura Estructura (Próximamente)
+
+El proyecto se encuentra en plena migración para abandonar Hydra en favor de **Pydantic Estricto**. La nueva arquitectura busca resolver dolores de cabeza con configuraciones ocultas, promoviendo las siguientes reglas de diseño:
+
+* **Separación de Responsabilidades:** El código core (`src/`) debe ser completamente agnóstico a la ejecución. 
+* **Cero Valores por Defecto (No Defaults):** Los archivos YAML serán explícitos y la única fuente de verdad.
+* **Cero Parámetros Fantasma:** Uso estricto de `model_config = ConfigDict(extra="forbid")` para que cualquier parámetro obsoleto en el YAML detenga la ejecución.
+* **Manejo Explícito de Directorios:** En lugar de directorios dinámicos inyectados mágicamente, el orquestador creará su propia carpeta con un timestamp y guardará una copia del YAML para reproducibilidad.
+
+### Nueva Estructura de Proyectos (`projects/`)
+
+Para aplicar esta filosofía, los experimentos y el pipeline dejarán de estar directamente en `src/` y se moverán a una nueva carpeta `projects/`. Cada experimento será autocontenido y agrupará su propia lógica de orquestación, sus esquemas compuestos (Pydantic) y sus archivos YAML:
+
+```text
+├── src/                             # CÓDIGO CORE (agnóstico a la ejecución)
+│
+└── projects/                        # EXPERIMENTOS ACUMULATIVOS Y PIPELINE
+    │
+    ├── 01_data_collection/          # PROYECTO 1: Recolectar datos
+    │   ├── schema.py                # Esquema compuesto SOLO para colectar
+    │   ├── run.py                   # El script ejecutable de colecta
+    │   ├── config_omni_fast.yaml    # Config para el robot Omni
+    │   └── config_quad_slow.yaml    # Config para el Quadruped
+    │
+    └── 02_sac_benchmark/            # PROYECTO 2: Comparativa de controladores
+        ├── schema.py                # Esquema compuesto SOLO para el benchmark
+        ├── run.py                   # El script que itera los controladores
+        └── benchmark_v1.yaml        # Config con la lista de controladores
 ```
 
-*(Note: Ensure paths inside the `.sh` correspond correctly to your local environment context. Results and checkpoints will automatically populate to an `outputs/` directory.)*
-
-### 3. Uncertainty Quantification (Forecasting Rollouts)
-
-We utilize the trained generative boundaries to evaluate pure $N$-step spatiotemporal prediction metrics. 
-The forecasting modules generate autoregressive probabilistic density rollouts, which evaluate both explicit spread and associated structural uncertainties ($\sigma$).
-
-You can run batched multi-sample model forecasting (or evaluate a pre-trained model checkpoint) through the evaluation script:
-```bash
-# Ensure you update the checkpoint paths CKPT_* inside this script before running.
-bash scripts/run_rollouts.sh
-```
-
-### 4. Policy Planning and Risk Navigation
-
-We map the $N$-step output distributions $(\mu, \sigma)$ to a structural cost map through a Conditional Value-at-Risk (CVaR) conversion mechanism, driving an information-theoretic MPPI approach. 
-
-The baseline experiments evaluated in the paper—and the primary script for dynamically rendering episodes tracking the agent through the environment—is controlled through `run_experiment.py`. It integrates seamlessly with the configurations via hydra overrides:
-
-```bash
-# 1. PFNO-MPPI (Our Proposed Probabilistic Framework)
-python run_experiment.py --config-name behavior_prediction
-
-# 2. HOCBF Baseline (High-Order Control Barrier Functions)
-python run_experiment.py --config-name cbf
-
-# 3. Static MPPI Baseline (Persistence Assumption)
-python run_experiment.py --config-name persistent
-
-# 4. Risk-Agnostic MPPI Baseline (Idealized shortest-path reference)
-python run_experiment.py --config-name no_risk
-```
-Experiment rollouts and metrics are saved dynamically to `outputs/`.
-
-### 5. Evaluation and Paper Metrics (Figure Reproduction)
-
-Once the configurations have been evaluated across various randomized test cases, the summary path planning results—which include bounding evaluations of **Max / Mean Smoke Exposure** and **Flight Navigation Time**—can be plotted precisely corresponding to the paper artifacts via the analysis script:
-
-```bash
-python scripts/analyze_metrics.py
-```
-Outputs are routed to `.pdf` and `.png` versions within the central logging directory.
-
+Con esta estructura, es mucho más sencillo iterar experimentos aislados (ej: testear modelos, comparar controladores o realizar una integración total) sin romper pipelines pasados o arrastrar configuraciones heredadas.

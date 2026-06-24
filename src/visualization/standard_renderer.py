@@ -100,7 +100,7 @@ class StandardRenderer(BaseRenderer):
             self.axes["env"],
             env.env_params,
             env.agents,
-            env.env_params.sensor_params,
+            env.env_params_sensor_params,
             env.sensor,
             goal_circles=self._goal_circles,
             controller=info.get("nom_controller"),

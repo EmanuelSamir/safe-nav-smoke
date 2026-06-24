@@ -4,7 +4,7 @@ checkpoint: null
 ensemble_size: 15
 process_noise_std: 0.05
 cvar_alpha: 0.95
-device: "cpu"
+device: "mps"
 h_ctx: 5
 x_size: 30.0
 y_size: 30.0

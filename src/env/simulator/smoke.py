@@ -124,9 +124,9 @@ class Smoke:
         # 4. --- SMOKE ADVECTION ---
         self.smoke_map = flow.advect.semi_lagrangian(self.smoke_map, self.velocity, dt=dt)
 
-        # 4.5 Diffusion
+        # 4.5 Diffusion (implicit solver: unconditionally stable, no CFL constraint)
         if self.params.smoke_diffusion_rate > 0:
-            self.smoke_map = flow.diffuse.explicit(
+            self.smoke_map = flow.diffuse.implicit(
                 self.smoke_map, diffusivity=self.params.smoke_diffusion_rate, dt=dt
             )
 

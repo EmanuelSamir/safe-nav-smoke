@@ -1,0 +1,212 @@
+agent:
+  action_min: [-6.0, -0.6]
+  action_max: [6.0, 0.6]
+  action_dim: 2
+  state_dim: 3
+
+env:
+  num_agents: 6
+  world_x_size: 35.0
+  world_y_size: 35.0
+  clock: 0.1
+  max_steps: 1000
+  collision_radius: 0.4
+  goal_radius: 1.0
+  render: "none"
+  render_save_every: 1
+  terminate_on_collision: false
+  collision_penalty: 10.0
+  smoke_density_threshold: 0.5
+  save_transitions: false
+  # Coordenadas cruzadas
+  initial_locations:
+    - [3.0, 5.0]
+    - [3.0, 17.5]
+    - [3.0, 30.0]
+    - [32.0, 5.0]
+    - [32.0, 17.5]
+    - [32.0, 30.0]
+  goal_locations:
+    - [32.0, 30.0]
+    - [32.0, 17.5]
+    - [32.0, 5.0]
+    - [3.0, 30.0]
+    - [3.0, 17.5]
+    - [3.0, 5.0]
+
+sensor:
+  sensor_type: "global"
+  density_reading_per_unit_length: 0.0
+
+playback:
+  # Ruta a los datos de la simulación base a reproducir
+  data_path: "/data/emunoz/hf_datasets/physics_base"
+
+# Diccionario de controladores. Eliminamos cualquier ambiguedad y listamos todos los parámetros.
+controllers:
+  nominal:
+    type: "nominal"
+    mppi:
+      horizon: 14
+      num_samples: 5000
+      lambda_: 1.0
+      device: "cpu"
+      alpha_noise_sigma: 10.0
+      noise_abs_cost: false
+
+  cbf_filter:
+    type: "cbf"
+    mode: "filter"
+    dt: 0.1
+    k1: 5.0
+    k2: 1.0
+    rho: 1.0
+    L: 1.0
+    safety:
+      d_safe: 0.8
+      r_sense: 5.0
+    mppi:
+      horizon: 25
+      num_samples: 5000
+      lambda_: 1.0
+      device: "cpu"
+      alpha_noise_sigma: 10.0
+      noise_abs_cost: false
+
+  cbf_rollout:
+    type: "cbf"
+    mode: "rollout"
+    dt: 0.1
+    k1: 5.0
+    k2: 1.0
+    rho: 1.0
+    L: 1.0
+    safety:
+      d_safe: 0.8
+      r_sense: 5.0
+    mppi:
+      horizon: 25
+      num_samples: 5000
+      lambda_: 1.0
+      device: "cpu"
+      alpha_noise_sigma: 10.0
+      noise_abs_cost: false
+
+  cbf_penalty:
+    type: "cbf"
+    mode: "penalty"
+    dt: 0.1
+    k1: 5.0
+    k2: 1.0
+    rho: 1.0
+    L: 1.0
+    safety:
+      d_safe: 0.8
+      r_sense: 5.0
+    mppi:
+      horizon: 25
+      num_samples: 5000
+      lambda_: 1.0
+      device: "cpu"
+      alpha_noise_sigma: 10.0
+      noise_abs_cost: false
+
+  hj_filter:
+    type: "hj"
+    mode: "filter"
+    dt: 0.1
+    action_min: [-6.0, -0.6]
+    action_max: [6.0, 0.6]
+    safety:
+      d_safe: 0.8
+      r_sense: 5.0
+    solver:
+      safe_margin: 0.2
+      domain_cells: [51, 51, 51]
+      domain: [[-5.0, 5.0], [-5.0, 5.0], [0.0, 6.283185307179586]]
+      accuracy: "high"
+      target_time: 1.5
+      dt: 0.1
+      epsilon: 0.2
+    mppi:
+      horizon: 25
+      num_samples: 5000
+      lambda_: 1.0
+      device: "cpu"
+      alpha_noise_sigma: 10.0
+      noise_abs_cost: false
+
+  hj_rollout:
+    type: "hj"
+    mode: "rollout"
+    dt: 0.1
+    action_min: [-6.0, -0.6]
+    action_max: [6.0, 0.6]
+    safety:
+      d_safe: 0.8
+      r_sense: 5.0
+    solver:
+      safe_margin: 0.2
+      domain_cells: [51, 51, 51]
+      domain: [[-5.0, 5.0], [-5.0, 5.0], [0.0, 6.283185307179586]]
+      accuracy: "high"
+      target_time: 1.5
+      dt: 0.1
+      epsilon: 0.2
+    mppi:
+      horizon: 25
+      num_samples: 5000
+      lambda_: 1.0
+      device: "cpu"
+      alpha_noise_sigma: 10.0
+      noise_abs_cost: false
+
+  hj_online_rollout:
+    type: "hj"
+    mode: "online_rollout"
+    dt: 0.1
+    action_min: [-6.0, -0.6]
+    action_max: [6.0, 0.6]
+    safety:
+      d_safe: 0.8
+      r_sense: 5.0
+    solver:
+      safe_margin: 0.2
+      domain_cells: [51, 51, 51]
+      domain: [[-5.0, 5.0], [-5.0, 5.0], [0.0, 6.283185307179586]]
+      accuracy: "high"
+      target_time: 1.5
+      dt: 0.1
+      epsilon: 0.2
+    mppi:
+      horizon: 25
+      num_samples: 5000
+      lambda_: 1.0
+      device: "cpu"
+      alpha_noise_sigma: 10.0
+      noise_abs_cost: false
+
+  hj_penalty:
+    type: "hj"
+    mode: "penalty"
+    dt: 0.1
+    action_min: [-6.0, -0.6]
+    action_max: [6.0, 0.6]
+    safety:
+      d_safe: 0.8
+      r_sense: 5.0
+    solver:
+      safe_margin: 0.2
+      domain_cells: [51, 51, 51]
+      domain: [[-5.0, 5.0], [-5.0, 5.0], [0.0, 6.283185307179586]]
+      accuracy: "high"
+      target_time: 1.5
+      dt: 0.1
+      epsilon: 0.2
+    mppi:
+      horizon: 25
+      num_samples: 5000
+      lambda_: 1.0
+      device: "cpu"
+      alpha_noise_sigma: 10.0
+      noise_abs_cost: false

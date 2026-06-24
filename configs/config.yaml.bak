@@ -1,5 +1,5 @@
 defaults:
-  - env/simulator@simulator: playback
+  - env/simulator@simulator: smoke
   - env/sensors@sensor: global
   - env: smoke_env
   - agent: dubins

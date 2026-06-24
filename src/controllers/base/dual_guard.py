@@ -2,7 +2,7 @@ from typing import Callable
 
 import torch
 
-from controllers.base.mppi import MPPI, MPPIParams
+from src.controllers.base.mppi import MPPI, MPPIParams
 
 
 class DualGuardShield:
@@ -38,6 +38,9 @@ class DualGuardShield:
         except TypeError:
             u_safe_t = self.safe_control_function(state)
 
+        unsafe_mask = unsafe_mask.to(u_nominal.device)
+        u_safe_t = u_safe_t.to(u_nominal.device)
+        
         # Construct shielded action
         u_shielded = torch.where(unsafe_mask.unsqueeze(-1), u_safe_t, u_nominal)
         return u_shielded
@@ -85,6 +88,9 @@ class DualGuard(MPPI):
             except TypeError:
                 u_safe_t = safe_control_function(state)
 
+            unsafe_mask = unsafe_mask.to(u_nominal.device)
+            u_safe_t = u_safe_t.to(u_nominal.device)
+            
             # Construct shielded action
             u_shielded = torch.where(unsafe_mask.unsqueeze(-1), u_safe_t, u_nominal)
             return u_shielded

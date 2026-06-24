@@ -1,23 +1,15 @@
+import logging
 import os
 import sys
 
-# Ensure project root and src/ are in sys.path before executing imports
-project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "../.."))
-src_path = os.path.join(project_root, "src")
-if project_root not in sys.path:
-    sys.path.insert(0, project_root)
-if src_path not in sys.path:
-    sys.path.insert(0, src_path)
-
-import logging
 import numpy as np
-import torch
 import skfmm
+import torch
 
-from src.utils.optimization import solve_qp_batch_pytorch
-from src.env.smoke_env import EnvConfig
 from src.agents.basic_robot import RobotParams
 from src.controllers.schemas import CBFSmokeConfig
+from src.env.smoke_env import EnvConfig
+from src.utils.optimization import solve_qp_batch_pytorch
 
 logger = logging.getLogger(__name__)
 
@@ -30,7 +22,7 @@ def solve_qp_numpy(
     u_min: np.ndarray,
     u_max: np.ndarray,
     max_iters: int = 20,
-    rho: float = 10.0
+    rho: float = 10.0,
 ) -> np.ndarray:
     """NumPy wrapper that converts arguments to PyTorch tensors,
     calls solve_qp_batch_pytorch, and converts the result back to NumPy.
@@ -44,9 +36,7 @@ def solve_qp_numpy(
     u_min_t = torch.tensor(u_min, dtype=torch.float32, device=device)
     u_max_t = torch.tensor(u_max, dtype=torch.float32, device=device)
 
-    u_t = solve_qp_batch_pytorch(
-        u_nom_t, R_diag_t, A_t, C_t, u_min_t, u_max_t, max_iters, rho
-    )
+    u_t = solve_qp_batch_pytorch(u_nom_t, R_diag_t, A_t, C_t, u_min_t, u_max_t, max_iters, rho)
     return u_t.detach().cpu().numpy()
 
 
@@ -62,7 +52,9 @@ class CBFSmokeController:
         num_agents: int = 1,
     ):
         # Assert to guarantee this controller only runs with a single agent
-        assert num_agents == 1, f"CBFSmokeController only supports a single agent, but got num_agents={num_agents}"
+        assert num_agents == 1, (
+            f"CBFSmokeController only supports a single agent, but got num_agents={num_agents}"
+        )
 
         self.config = config
         self.env_params = env_params
@@ -244,7 +236,9 @@ class CBFSmokeController:
             elif x_idx == W - 1:
                 dh_dx = (distance_map[y_idx, W - 1] - distance_map[y_idx, W - 2]) / dx
             else:
-                dh_dx = (distance_map[y_idx, x_idx + 1] - distance_map[y_idx, x_idx - 1]) / (2.0 * dx)
+                dh_dx = (distance_map[y_idx, x_idx + 1] - distance_map[y_idx, x_idx - 1]) / (
+                    2.0 * dx
+                )
 
             # Y derivative (dh_dy)
             if H <= 1:
@@ -254,7 +248,9 @@ class CBFSmokeController:
             elif y_idx == H - 1:
                 dh_dy = (distance_map[H - 1, x_idx] - distance_map[H - 2, x_idx]) / dy
             else:
-                dh_dy = (distance_map[y_idx + 1, x_idx] - distance_map[y_idx - 1, x_idx]) / (2.0 * dy)
+                dh_dy = (distance_map[y_idx + 1, x_idx] - distance_map[y_idx - 1, x_idx]) / (
+                    2.0 * dy
+                )
 
             dh_dth = 0.0  # Barrier is independent of vehicle heading angle
             return h_val, dh_dx, dh_dy, dh_dth
@@ -316,7 +312,8 @@ class CBFSmokeController:
 if __name__ == "__main__":
     import os
     import sys
-    from hydra import initialize, compose
+
+    from hydra import compose, initialize
     from omegaconf import OmegaConf
 
     # Set up sys.path dynamically to import other project packages
@@ -325,11 +322,13 @@ if __name__ == "__main__":
         sys.path.insert(0, project_root)
 
     print("=== Testing CBFSmokeController with Hydra Config ===")
-    
+
     with initialize(version_base=None, config_path="../../configs"):
         # Load configs, overriding controller to select cbf_smoke and sensor to global
-        cfg = compose(config_name="config", overrides=["+controller=cbf_smoke", "env/sensors@sensor=global"])
-        
+        cfg = compose(
+            config_name="config", overrides=["+controller=cbf_smoke", "env/sensors@sensor=global"]
+        )
+
         cbf_config = cfg.controller
         print(f"Loaded config type: {type(cbf_config)}")
         print("Config Values:")
@@ -360,7 +359,7 @@ if __name__ == "__main__":
             env_params=env_params,
             robot_params=robot_params,
             goal=goal,
-            num_agents=1
+            num_agents=1,
         )
         print("Successfully instantiated CBFSmokeController!")
 
@@ -371,7 +370,7 @@ if __name__ == "__main__":
                 env_params=env_params,
                 robot_params=robot_params,
                 goal=goal,
-                num_agents=2
+                num_agents=2,
             )
             raise AssertionError("Assertion failed: num_agents=2 did not raise an error.")
         except AssertionError as e:
@@ -382,7 +381,7 @@ if __name__ == "__main__":
 
         # 2. Run simulation loop for exactly 2 steps using SmokeEnv
         from src.env.smoke_env import SmokeEnv
-        
+
         print("Initializing SmokeEnv...")
         env = SmokeEnv(
             env_params=env_params,
@@ -411,11 +410,12 @@ if __name__ == "__main__":
 
             # Compute safe projected action
             cmd = controller.get_command(state)
-            print(f"Step {step+1}: State={state}, Nominal={controller.nominal_control(state)}, Safe Action={cmd}")
+            print(
+                f"Step {step + 1}: State={state}, Nominal={controller.nominal_control(state)}, Safe Action={cmd}"
+            )
 
             # Step environment
             obs, rewards, terminateds, truncateds, infos = env.step({"agent_0": cmd})
 
         env.close()
         print("Verification completed successfully!")
-

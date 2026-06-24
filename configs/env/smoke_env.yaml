@@ -8,7 +8,7 @@ num_episodes: 200
 
 # render: "human"     → live matplotlib window (use for debugging/demo)
 # render: "rgb_array" → no live window, frames saved to gif
-render: "human"
+render: "rgb_array"
 render_save_every: 2
 
 # Set to true to save environment transitions as a Hugging Face dataset.
@@ -16,7 +16,7 @@ save_transitions: false
 
 # Goal settings (used when playback_path is not set or as fallback)
 goal_radius: 0.5
-num_agents: 1
+num_agents: 6
 goal_locations: [[5.0, 5.0]]
 initial_locations: null
 

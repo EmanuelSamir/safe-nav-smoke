@@ -29,8 +29,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 from tqdm import tqdm
 
-from env.simulator.playback_schema import SmokeDataSchema
-from env.simulator.smoke import BlobParams, Smoke, SmokeParams
+from src.env.simulator.playback_schema import SmokeDataSchema
+from src.env.simulator.smoke import BlobParams, Smoke, SmokeParams
 
 
 @hydra.main(
@@ -86,15 +86,15 @@ def main(cfg: DictConfig):
         params = SmokeParams(
             x_size=x_size,
             y_size=y_size,
-            smoke_blob_params=episode_blobs,
             resolution=resolution,
             average_wind_speed=float(cfg.wind_speed),
             smoke_emission_rate=float(cfg.emission_rate),
             smoke_diffusion_rate=float(cfg.diffusion_rate),
             smoke_decay_rate=float(cfg.decay_rate),
             buoyancy_factor=float(cfg.buoyancy),
+            inflow_bank_count=5,
         )
-        sim = Smoke(params)
+        sim = Smoke(params, blob_params_list=episode_blobs)
 
         for step in range(episode_steps):
             sim.plot_smoke_map(fig=fig, ax=ax)
@@ -152,15 +152,15 @@ def main(cfg: DictConfig):
             params = SmokeParams(
                 x_size=x_size,
                 y_size=y_size,
-                smoke_blob_params=episode_blobs,
                 resolution=resolution,
                 average_wind_speed=float(cfg.wind_speed),
                 smoke_emission_rate=float(cfg.emission_rate),
                 smoke_diffusion_rate=float(cfg.diffusion_rate),
                 smoke_decay_rate=float(cfg.decay_rate),
                 buoyancy_factor=float(cfg.buoyancy),
+                inflow_bank_count=5,
             )
-            sim = Smoke(params)
+            sim = Smoke(params, blob_params_list=episode_blobs)
 
             # 3. Simulate episode steps and record map
             episode_data = np.zeros((episode_steps, H, W), dtype=np.float32)

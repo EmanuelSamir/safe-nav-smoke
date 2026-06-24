@@ -9,8 +9,10 @@ safety:
 mppi:
   num_samples: 120
   horizon: 14
-  lambda_: 1.2
-  device: "cpu"
+  lambda_: 3.0
+  alpha_noise_sigma: 10.0
+  noise_abs_cost: false
+  device: "mps"
 
 mode: "rollout"
 

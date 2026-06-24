@@ -30,8 +30,8 @@ import matplotlib.pyplot as plt
 import numpy as np
 from tqdm import tqdm
 
-from env.simulator.playback_schema import SmokeDataSchema
-from env.simulator.smoke import BlobParams, Smoke, SmokeParams
+from src.env.simulator.playback_schema import SmokeDataSchema
+from src.env.simulator.smoke import BlobParams, Smoke, SmokeParams
 
 
 @hydra.main(version_base=None, config_path="../configs/data_collection", config_name="playback_env")
@@ -59,30 +59,32 @@ def main(cfg: DictConfig):
 
     start_time = time.time()
 
+    # y_pos centrados en 17.5 (centro del mundo 35×35)
+    # Shift de -2.5: 10→7.5 | 15→12.5 | 20→17.5 | 25→22.5 | 30→27.5
     tailored_blobs = {
         "case_1": {
             "x_pos": [11.5, 11.5, 11.5, 23.5, 23.5],
-            "y_pos": [7.5, 15.0, 22.5, 11.25, 18.75],
+            "y_pos": [7.5, 17.5, 27.5, 12.5, 22.5],
         },
         "case_2": {
             "x_pos": [23.5, 23.5, 23.5, 11.5, 11.5],
-            "y_pos": [7.5, 15.0, 22.5, 11.25, 18.75],
+            "y_pos": [7.5, 17.5, 27.5, 12.5, 22.5],
         },
         "case_3": {
             "x_pos": [11.5, 11.5, 11.5, 23.5, 23.5, 23.5],
-            "y_pos": [7.5, 15.0, 22.5, 7.5, 15.0, 22.5],
+            "y_pos": [7.5, 17.5, 27.5, 7.5, 17.5, 27.5],
         },
         "case_4": {
             "x_pos": [23.5, 23.5, 23.5, 11.5, 11.5, 11.5],
-            "y_pos": [7.5, 15.0, 22.5, 7.5, 15.0, 22.5],
+            "y_pos": [7.5, 17.5, 27.5, 7.5, 17.5, 27.5],
         },
         "case_5": {
             "x_pos": [10.5, 10.5, 17.5, 24.5, 24.5],
-            "y_pos": [7.5, 22.5, 15.0, 7.5, 22.5],
+            "y_pos": [7.5, 27.5, 17.5, 7.5, 27.5],
         },
         "case_6": {
             "x_pos": [10.5, 17.5, 17.5, 17.5, 24.5],
-            "y_pos": [15.0, 7.5, 15.0, 22.5, 15.0],
+            "y_pos": [17.5, 7.5, 17.5, 27.5, 17.5],
         },
     }
 
@@ -108,15 +110,15 @@ def main(cfg: DictConfig):
         params = SmokeParams(
             x_size=x_size,
             y_size=y_size,
-            smoke_blob_params=episode_blobs,
             resolution=resolution,
             average_wind_speed=float(cfg.wind_speed),
             smoke_emission_rate=float(cfg.emission_rate),
             smoke_diffusion_rate=float(cfg.diffusion_rate),
             smoke_decay_rate=float(cfg.decay_rate),
             buoyancy_factor=float(cfg.buoyancy),
+            inflow_bank_count=5,
         )
-        sim = Smoke(params)
+        sim = Smoke(params, blob_params_list=episode_blobs)
 
         for step in range(episode_steps):
             sim.plot_smoke_map(fig=fig, ax=ax)
@@ -149,15 +151,15 @@ def main(cfg: DictConfig):
             params = SmokeParams(
                 x_size=x_size,
                 y_size=y_size,
-                smoke_blob_params=episode_blobs,
                 resolution=resolution,
                 average_wind_speed=float(cfg.wind_speed),
                 smoke_emission_rate=float(cfg.emission_rate),
                 smoke_diffusion_rate=float(cfg.diffusion_rate),
                 smoke_decay_rate=float(cfg.decay_rate),
                 buoyancy_factor=float(cfg.buoyancy),
+                inflow_bank_count=5,
             )
-            sim = Smoke(params)
+            sim = Smoke(params, blob_params_list=episode_blobs)
 
             episode_data = np.zeros((episode_steps, H, W), dtype=np.float32)
             for step in range(episode_steps):
