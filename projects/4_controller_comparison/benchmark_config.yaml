@@ -123,7 +123,7 @@ controllers:
     solver:
       safe_margin: 0.2
       domain_cells: [51, 51, 51]
-      domain: [[-5.0, 5.0], [-5.0, 5.0], [0.0, 6.283185307179586]]
+      domain: [[-5.0, -5.0, 0.0], [5.0, 5.0, 6.283185307179586]]
       accuracy: "high"
       target_time: 1.5
       dt: 0.1
@@ -148,7 +148,7 @@ controllers:
     solver:
       safe_margin: 0.2
       domain_cells: [51, 51, 51]
-      domain: [[-5.0, 5.0], [-5.0, 5.0], [0.0, 6.283185307179586]]
+      domain: [[-5.0, -5.0, 0.0], [5.0, 5.0, 6.283185307179586]]
       accuracy: "high"
       target_time: 1.5
       dt: 0.1
@@ -173,7 +173,7 @@ controllers:
     solver:
       safe_margin: 0.2
       domain_cells: [51, 51, 51]
-      domain: [[-5.0, 5.0], [-5.0, 5.0], [0.0, 6.283185307179586]]
+      domain: [[-5.0, -5.0, 0.0], [5.0, 5.0, 6.283185307179586]]
       accuracy: "high"
       target_time: 1.5
       dt: 0.1
@@ -198,7 +198,7 @@ controllers:
     solver:
       safe_margin: 0.2
       domain_cells: [51, 51, 51]
-      domain: [[-5.0, 5.0], [-5.0, 5.0], [0.0, 6.283185307179586]]
+      domain: [[-5.0, -5.0, 0.0], [5.0, 5.0, 6.283185307179586]]
       accuracy: "high"
       target_time: 1.5
       dt: 0.1
