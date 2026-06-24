@@ -43,7 +43,7 @@ for CTRL in "${CONTROLLERS[@]}"; do
 #SBATCH -w pleiades-0-23
 #SBATCH --job-name=bench_${CTRL}
 #SBATCH --time=08:00:00
-#SBATCH --cpus-per-task=8
+#SBATCH --cpus-per-task=4
 #SBATCH --gpus=1
 #SBATCH --mem=16G
 #SBATCH --output=/home/emunoz/slurm_logs/bench_${CTRL}_%j.log
