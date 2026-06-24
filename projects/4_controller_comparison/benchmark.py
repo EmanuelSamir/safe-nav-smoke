@@ -72,6 +72,7 @@ def instantiate_controller(
     cfg_agent,
     cfg_controller,
     robot_params,
+    collision_radius: float,
 ):
     device = cfg_controller.mppi.device
 
@@ -119,13 +120,15 @@ def instantiate_controller(
         from src.controllers.multi_agent_hj import MultiAgentHJController
 
         mppi_params = _make_mppi_params(cfg_agent, cfg_controller.mppi, device)
+        effective_d_safe = 2.0 * collision_radius + cfg_controller.safety.d_safe
         hj_params = HJFilterParams(
-            d_safe=cfg_controller.safety.d_safe,
+            d_safe=effective_d_safe,
             safe_margin=cfg_controller.solver.safe_margin,
             dt=cfg_controller.dt,
             r_sense=cfg_controller.safety.r_sense,
             action_min=torch.tensor(cfg_controller.action_min, device=device),
             action_max=torch.tensor(cfg_controller.action_max, device=device),
+            control_type=cfg_controller.control_type,
         )
         sol_cfg = HJSolverConfig(
             domain_cells=np.array(cfg_controller.solver.domain_cells),
@@ -218,7 +221,7 @@ def evaluate_controller_task(
     )
 
     controller = instantiate_controller(
-        name, num_agents, goal_radius, dt, cfg_agent, cfg_controller, robot_params
+        name, num_agents, goal_radius, dt, cfg_agent, cfg_controller, robot_params, collision_radius
     )
 
     goals_dict = {f"agent_{i}": np.array(goal_locations[i]) for i in range(num_agents)}
@@ -518,7 +521,9 @@ def benchmark_flow(
 
 def main():
     parser = argparse.ArgumentParser(description="Prefect decentralized controllers benchmark.")
-    parser.add_argument("--episodes", type=int, default=10, help="Number of episodes (default: 10)")
+    parser.add_argument(
+        "--episodes", type=int, default=100, help="Number of episodes (default: 10)"
+    )
     parser.add_argument(
         "--steps", type=int, default=None, help="Limit maximum steps per episode for testing"
     )

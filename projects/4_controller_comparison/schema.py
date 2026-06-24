@@ -96,6 +96,7 @@ class CBFControllerConfig(StrictBaseModel):
 class HJControllerConfig(StrictBaseModel):
     type: Literal["hj"]
     mode: str
+    control_type: Literal["smooth", "bang_bang"] = "smooth"
     dt: float
     action_min: List[float]
     action_max: List[float]

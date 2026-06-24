@@ -130,8 +130,8 @@ class CBFFilter:
         p_i_safe, p_j_pred, v_j, trig = self._geometry(state, neighbors, t, device)
         cos_t, sin_t = trig  # (K,), (K,)
 
-        # Extra margin in the QP to account for control latency
-        d_safe_barrier = p.d_safe + 2.0 * p.L + 0.2
+        # Mathematical constraint for unicycle lookahead points
+        d_safe_barrier = p.d_safe + 2.0 * p.L
         p_rel = p_i_safe.unsqueeze(1) - p_j_pred.unsqueeze(0)  # (K, N, 2)
         dist_sq = torch.sum(p_rel**2, dim=2)                    # (K, N)
         h0_all = dist_sq - d_safe_barrier**2                    # (K, N)
@@ -197,9 +197,13 @@ class CBFFilter:
         p_j_center = neighbors_tensor[:, [_X, _Y]]
         p_j_safe = p_j_center + p.L * torch.stack([cos_j, sin_j], dim=1)
 
-        # TODO: Replace v_nominal with a per-neighbour estimate when available.
-        v_nominal = 3.0  # m/s — assumed constant for all neighbours
-        v_j = v_nominal * torch.stack([cos_j, sin_j], dim=1)
+        if neighbors_tensor.shape[1] > 3:
+            v_nominal = neighbors_tensor[:, 3]  # (N,)
+            v_j = v_nominal.unsqueeze(-1) * torch.stack([cos_j, sin_j], dim=1)
+        else:
+            # TODO: Replace v_nominal with a per-neighbour estimate when available.
+            v_nominal = 3.0  # m/s — assumed constant for all neighbours
+            v_j = v_nominal * torch.stack([cos_j, sin_j], dim=1)
 
         p_j_pred = p_j_safe + v_j * (t * p.dt)
 

@@ -15,7 +15,7 @@ If both are precomputed, the relative (dynamic) filter takes precedence.
 """
 
 import logging
-from typing import Any, Optional
+from typing import Any, Dict, Optional
 
 import jax
 import jax.numpy as jnp
@@ -129,6 +129,7 @@ class MultiAgentHJController(BaseMultiAgentController):
         )
         problem = dict(solver_settings=solver_settings, dynamics=dynamics, grid=grid)
 
+        target_time = -abs(target_time)
         times = np.linspace(time, target_time, int(abs(target_time - time) / dt))
         values = initial_values
 
@@ -150,6 +151,16 @@ class MultiAgentHJController(BaseMultiAgentController):
         self._hj_relative_values = np.array(values)
         self._hj_relative_values_grad = list(jnp.gradient(jnp.asarray(self._hj_relative_values)))
         logger.info("Relative HJI solved and gradients precomputed.")
+
+    # ------------------------------------------------------------------
+    # Execution
+    # ------------------------------------------------------------------
+
+    def get_commands(self, current_obs: Dict[str, Dict[str, Any]]) -> Dict[str, torch.Tensor]:
+        if self.hj_mode == "online_rollout":
+            # Solve relative game once per timestep for all agents
+            self.solve_relative()
+        return super().get_commands(current_obs)
 
     # ------------------------------------------------------------------
     # Safety filter injection
@@ -183,9 +194,11 @@ class MultiAgentHJController(BaseMultiAgentController):
 
         qp_fn = lambda state, u, t=0: hj.lrf_filter(state, u, neighbors, grid, values, grad, t)
 
+        actual_mode = "rollout" if self.hj_mode == "online_rollout" else self.hj_mode
+
         self._make_filter_fns(
             ego_ctrl,
-            self.hj_mode,
+            actual_mode,
             safety_fn=safety_fn,
             qp_fn=qp_fn,
             safe_margin=self.hj_params.safe_margin,
@@ -205,19 +218,28 @@ class MultiAgentHJController(BaseMultiAgentController):
         )
 
         def safety_fn(state: torch.Tensor, t: int = 0) -> torch.Tensor:
-            """Look up V(x) directly on the absolute grid."""
-            state_j = jnp.asarray(state.detach().cpu())
-            lo = jnp.asarray(domain[0])
-            hi = jnp.asarray(domain[1])
-            c = jnp.asarray(cells, dtype=jnp.int32)
+            """Look up V(x) directly on the absolute grid using pure PyTorch."""
+            device = state.device
+            dtype = state.dtype
+            
+            lo = torch.tensor(domain[0], device=device, dtype=dtype)
+            hi = torch.tensor(domain[1], device=device, dtype=dtype)
+            c = torch.tensor(cells, device=device, dtype=torch.long)
             dx = (hi - lo) / c
-            idx = jnp.clip(jnp.round((state_j - lo) / dx).astype(jnp.int32), 0, c - 1)
-            v = jnp.asarray(values)[idx[:, 0], idx[:, 1], idx[:, 2]]
-            return torch.as_tensor(np.asarray(v), dtype=state.dtype, device=state.device)
+            
+            idx = torch.round((state - lo) / dx).long()
+            idx = torch.clamp(idx, 0, c - 1)
+            
+            v_grid = values.to(device) if torch.is_tensor(values) else torch.tensor(np.asarray(values), device=device)
+            v = v_grid[idx[:, 0], idx[:, 1], idx[:, 2]]
+            
+            return v
+
+        actual_mode = "rollout" if self.hj_mode == "online_rollout" else self.hj_mode
 
         self._make_filter_fns(
             ego_ctrl,
-            self.hj_mode,
+            actual_mode,
             safety_fn=safety_fn,
             qp_fn=qp_fn,
             safe_margin=self.hj_params.safe_margin,
@@ -238,32 +260,47 @@ class MultiAgentHJController(BaseMultiAgentController):
         t: int,
     ) -> torch.Tensor:
         """Extract minimum V(x_rel) over neighbours as the safety scalar.
-
-        This is a thin helper so DualGuardShield has a proper h(x) signal.
-        The actual value lookup is done via grid.nearest_index inside HJFilter.
+        
+        Pure PyTorch implementation to avoid JAX overhead inside DualGuardShield.
         """
         if not neighbors:
-            return 1000.0 * torch.ones(state.shape[0], dtype=state.dtype)
+            return 1000.0 * torch.ones(state.shape[0], dtype=state.dtype, device=state.device)
 
-        state_np = state.detach().cpu().numpy()
-        v_list = []
-        for n in neighbors:
-            n_np = n.cpu().numpy() if torch.is_tensor(n) else np.asarray(n)
-            dx = n_np[0] - state_np[:, 0]
-            dy = n_np[1] - state_np[:, 1]
-            theta = state_np[:, 2]
-            xr = np.cos(theta) * dx + np.sin(theta) * dy
-            yr = -np.sin(theta) * dx + np.cos(theta) * dy
-            thr = (n_np[2] - theta) % (2.0 * np.pi)
-            states_rel = jnp.asarray(np.stack([xr, yr, thr], axis=-1))
-            idx = jax.vmap(grid.nearest_index)(states_rel)
-            i0 = jnp.clip(idx[:, 0], 0, grid.shape[0] - 1)
-            i1 = jnp.clip(idx[:, 1], 0, grid.shape[1] - 1)
-            i2 = idx[:, 2] % grid.shape[2]
-            v_list.append(np.asarray(values[i0, i1, i2]))
+        device = state.device
+        dtype = state.dtype
+        K = state.shape[0]
 
-        v_min = np.min(np.stack(v_list, axis=1), axis=1)
-        return torch.as_tensor(v_min, dtype=state.dtype, device=state.device)
+        arrays = [n if torch.is_tensor(n) else torch.tensor(np.asarray(n), device=device, dtype=dtype) for n in neighbors]
+        neighbors_t = torch.stack(arrays).to(device=device, dtype=dtype)
+        N = neighbors_t.shape[0]
+
+        theta = state[:, 2:3]  # (K, 1)
+        theta_j = neighbors_t[:, 2]  # (N,)
+
+        dx = neighbors_t[:, 0] - state[:, 0:1]  # (K, N)
+        dy = neighbors_t[:, 1] - state[:, 1:2]
+
+        xr = torch.cos(theta) * dx + torch.sin(theta) * dy  # (K, N)
+        yr = -torch.sin(theta) * dx + torch.cos(theta) * dy
+        thr = (theta_j - theta) % (2.0 * torch.pi)  # (K, N)
+
+        lo = torch.tensor(grid.domain.lo, device=device, dtype=dtype)
+        hi = torch.tensor(grid.domain.hi, device=device, dtype=dtype)
+        cells = torch.tensor(grid.shape, device=device, dtype=torch.long)
+        dx_grid = (hi - lo) / cells
+
+        states_rel_flat = torch.stack([xr.reshape(-1), yr.reshape(-1), thr.reshape(-1)], dim=-1)
+        idx = torch.round((states_rel_flat - lo) / dx_grid).long()
+
+        i0 = torch.clamp(idx[:, 0], 0, cells[0] - 1)
+        i1 = torch.clamp(idx[:, 1], 0, cells[1] - 1)
+        i2 = idx[:, 2] % cells[2]
+
+        v_grid = values.to(device) if torch.is_tensor(values) else torch.tensor(np.asarray(values), device=device)
+        v_kn = v_grid[i0, i1, i2].reshape(K, N)
+        v_min, _ = torch.min(v_kn, dim=1)
+
+        return v_min
 
 
 if __name__ == "__main__":

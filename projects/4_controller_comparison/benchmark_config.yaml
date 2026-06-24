@@ -47,8 +47,8 @@ controllers:
   nominal:
     type: "nominal"
     mppi:
-      horizon: 14
-      num_samples: 5000
+      horizon: 20
+      num_samples: 200
       lambda_: 1.0
       device: "cpu"
       alpha_noise_sigma: 10.0
@@ -66,8 +66,8 @@ controllers:
       d_safe: 0.8
       r_sense: 5.0
     mppi:
-      horizon: 25
-      num_samples: 5000
+      horizon: 20
+      num_samples: 200
       lambda_: 1.0
       device: "cpu"
       alpha_noise_sigma: 10.0
@@ -85,8 +85,8 @@ controllers:
       d_safe: 0.8
       r_sense: 5.0
     mppi:
-      horizon: 25
-      num_samples: 5000
+      horizon: 20
+      num_samples: 200
       lambda_: 1.0
       device: "cpu"
       alpha_noise_sigma: 10.0
@@ -104,8 +104,8 @@ controllers:
       d_safe: 0.8
       r_sense: 5.0
     mppi:
-      horizon: 25
-      num_samples: 5000
+      horizon: 20
+      num_samples: 200
       lambda_: 1.0
       device: "cpu"
       alpha_noise_sigma: 10.0
@@ -114,9 +114,10 @@ controllers:
   hj_filter:
     type: "hj"
     mode: "filter"
+    control_type: "bang_bang"
     dt: 0.1
-    action_min: [-6.0, -0.6]
-    action_max: [6.0, 0.6]
+    action_min: [0.0, -4.0]
+    action_max: [6.0, 4.0]
     safety:
       d_safe: 0.8
       r_sense: 5.0
@@ -129,8 +130,8 @@ controllers:
       dt: 0.1
       epsilon: 0.2
     mppi:
-      horizon: 25
-      num_samples: 5000
+      horizon: 20
+      num_samples: 200
       lambda_: 1.0
       device: "cpu"
       alpha_noise_sigma: 10.0
@@ -139,9 +140,10 @@ controllers:
   hj_rollout:
     type: "hj"
     mode: "rollout"
+    control_type: "bang_bang"
     dt: 0.1
-    action_min: [-6.0, -0.6]
-    action_max: [6.0, 0.6]
+    action_min: [0.0, -4.0]
+    action_max: [6.0, 4.0]
     safety:
       d_safe: 0.8
       r_sense: 5.0
@@ -154,8 +156,8 @@ controllers:
       dt: 0.1
       epsilon: 0.2
     mppi:
-      horizon: 25
-      num_samples: 5000
+      horizon: 20
+      num_samples: 200
       lambda_: 1.0
       device: "cpu"
       alpha_noise_sigma: 10.0
@@ -164,9 +166,10 @@ controllers:
   hj_online_rollout:
     type: "hj"
     mode: "online_rollout"
+    control_type: "bang_bang"
     dt: 0.1
-    action_min: [-6.0, -0.6]
-    action_max: [6.0, 0.6]
+    action_min: [0.0, -4.0]
+    action_max: [6.0, 4.0]
     safety:
       d_safe: 0.8
       r_sense: 5.0
@@ -179,8 +182,8 @@ controllers:
       dt: 0.1
       epsilon: 0.2
     mppi:
-      horizon: 25
-      num_samples: 5000
+      horizon: 20
+      num_samples: 200
       lambda_: 1.0
       device: "cpu"
       alpha_noise_sigma: 10.0
@@ -189,9 +192,10 @@ controllers:
   hj_penalty:
     type: "hj"
     mode: "penalty"
+    control_type: "bang_bang"
     dt: 0.1
-    action_min: [-6.0, -0.6]
-    action_max: [6.0, 0.6]
+    action_min: [0.0, -4.0]
+    action_max: [6.0, 4.0]
     safety:
       d_safe: 0.8
       r_sense: 5.0
@@ -204,8 +208,8 @@ controllers:
       dt: 0.1
       epsilon: 0.2
     mppi:
-      horizon: 25
-      num_samples: 5000
+      horizon: 20
+      num_samples: 200
       lambda_: 1.0
       device: "cpu"
       alpha_noise_sigma: 10.0

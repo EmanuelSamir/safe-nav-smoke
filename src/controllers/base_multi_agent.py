@@ -180,6 +180,7 @@ class BaseMultiAgentController:
         }
 
         self.executor = ThreadPoolExecutor(max_workers=max(1, num_agents))
+        self.last_commands: Dict[str, torch.Tensor] = {}
 
     # ------------------------------------------------------------------
     # Public API
@@ -227,11 +228,11 @@ class BaseMultiAgentController:
             # synthetic_states: (K, T, nx) - en device
             trajs = ctrl.synthetic_states.detach().cpu().numpy()  # (K, T, nx)
             omega = ctrl.omega.detach().cpu().numpy()  # (K,)
-            
+
             # Prepend current state (t=0) to close the visual gap
-            current_state = ctrl.state.detach().cpu().numpy() # (nx,)
-            current_state_repeated = np.tile(current_state, (trajs.shape[0], 1, 1)) # (K, 1, nx)
-            trajs = np.concatenate([current_state_repeated, trajs], axis=1) # (K, T+1, nx)
+            current_state = ctrl.state.detach().cpu().numpy()  # (nx,)
+            current_state_repeated = np.tile(current_state, (trajs.shape[0], 1, 1))  # (K, 1, nx)
+            trajs = np.concatenate([current_state_repeated, trajs], axis=1)  # (K, T+1, nx)
 
             color = self._AGENT_COLORS[agent_idx % len(self._AGENT_COLORS)]
 
@@ -260,22 +261,24 @@ class BaseMultiAgentController:
 
     def get_commands(self, current_obs: Dict[str, Dict[str, Any]]) -> Dict[str, torch.Tensor]:
         """Decentralized planning step with concurrent agent scheduling."""
-        agents_states = {
-            key: torch.tensor(
-                [obs["location"][0], obs["location"][1], obs["angle"]], dtype=self.dtype
-            )
-            for key, obs in current_obs.items()
-            if obs is not None and key in self.agents_controllers
-        }
+        agents_states = {}
+        for key, obs in current_obs.items():
+            if obs is not None and key in self.agents_controllers:
+                x, y = obs["location"]
+                theta = obs["angle"]
+                # Get last velocity from previous command, default to 0.0 if not available
+                v = self.last_commands[key][0].item() if key in self.last_commands else 0.0
+                agents_states[key] = torch.tensor([x, y, theta, v], dtype=self.dtype)
 
         def plan_agent(ego_key: str, ego_ctrl: AgentMPPI) -> Tuple[str, Optional[torch.Tensor]]:
             if ego_key not in agents_states:
                 return ego_key, None
 
-            ego_state = agents_states[ego_key]
-            ego_ctrl.state = ego_state.to(device=self.device)
+            ego_state_full = agents_states[ego_key]
+            ego_state_core = ego_state_full[:3].to(device=self.device)
+            ego_ctrl.state = ego_state_core
 
-            ego_pos = ego_state[:2]
+            ego_pos = ego_state_full[:2]
             neighbors = [
                 state
                 for k, state in agents_states.items()
@@ -283,7 +286,7 @@ class BaseMultiAgentController:
             ]
 
             self._prepare_agent(ego_key, ego_ctrl, neighbors)
-            command = ego_ctrl.command(ego_state)
+            command = ego_ctrl.command(ego_state_core)
             return ego_key, command
 
         commands: Dict[str, torch.Tensor] = {}
@@ -293,6 +296,7 @@ class BaseMultiAgentController:
                 k, cmd = plan_agent(key, ctrl)
                 if cmd is not None:
                     commands[k] = cmd
+                    self.last_commands[k] = cmd
         else:
             futures = [
                 self.executor.submit(plan_agent, key, ctrl)
@@ -302,6 +306,7 @@ class BaseMultiAgentController:
                 key, cmd = future.result()
                 if cmd is not None:
                     commands[key] = cmd
+                    self.last_commands[key] = cmd
 
         return commands
 
@@ -376,11 +381,7 @@ class BaseMultiAgentController:
             nu = ego_ctrl.nu
             shield = DualGuardShield(
                 safety_function=safety_fn,
-                safe_control_function=lambda state, t=0: qp_fn(
-                    state,
-                    torch.zeros((state.shape[0], nu), dtype=self.dtype, device=self.device),
-                    t,
-                ),
+                safe_control_function=lambda state, u, t=0: qp_fn(state, u, t),
                 safe_margin=safe_margin,
             )
             ego_ctrl.rollout_filter_fn = shield
@@ -394,7 +395,10 @@ class BaseMultiAgentController:
             ego_ctrl.rollout_filter_fn = None
             ego_ctrl.output_filter_fn = None
 
-            base_cost_fn = ego_ctrl.running_cost_fn  # may be None → use default
+            # Prevent infinite wrapping of the cost function across timesteps
+            if not hasattr(ego_ctrl, "_original_running_cost_fn"):
+                ego_ctrl._original_running_cost_fn = ego_ctrl.running_cost_fn
+            base_cost_fn = ego_ctrl._original_running_cost_fn
 
             def penalty_running_cost(
                 state: torch.Tensor, u: torch.Tensor, t: Optional[int] = None
@@ -412,7 +416,9 @@ class BaseMultiAgentController:
                     safety_cost = penalty_fn(state, u, t if t is not None else 0)
                 else:
                     h = safety_fn(state, t if t is not None else 0)
-                    safety_cost = penalty_weight * torch.clamp(-h, min=0.0) ** 2
+                    # Use a heavy linear penalty (C_pen = 1000.0) to match the old CBF implementation
+                    # and ensure safety costs strongly dominate the goal distance during violations
+                    safety_cost = 100.0 * penalty_weight * torch.clamp(-h, min=0.0)
 
                 safety_cost = safety_cost.to(base.device)
                 return base + safety_cost

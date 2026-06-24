@@ -34,9 +34,12 @@ class DualGuardShield:
         unsafe_mask = safety_val < self.safe_margin  # (K,)
 
         try:
-            u_safe_t = self.safe_control_function(state, t)
+            u_safe_t = self.safe_control_function(state, u_nominal, t)
         except TypeError:
-            u_safe_t = self.safe_control_function(state)
+            try:
+                u_safe_t = self.safe_control_function(state, t)
+            except TypeError:
+                u_safe_t = self.safe_control_function(state)
 
         unsafe_mask = unsafe_mask.to(u_nominal.device)
         u_safe_t = u_safe_t.to(u_nominal.device)
@@ -84,9 +87,12 @@ class DualGuard(MPPI):
             unsafe_mask = safety_val < safe_margin  # (K,)
 
             try:
-                u_safe_t = safe_control_function(state, t)
+                u_safe_t = safe_control_function(state, u_nominal, t)
             except TypeError:
-                u_safe_t = safe_control_function(state)
+                try:
+                    u_safe_t = safe_control_function(state, t)
+                except TypeError:
+                    u_safe_t = safe_control_function(state)
 
             unsafe_mask = unsafe_mask.to(u_nominal.device)
             u_safe_t = u_safe_t.to(u_nominal.device)

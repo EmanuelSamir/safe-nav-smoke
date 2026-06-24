@@ -14,7 +14,7 @@ Neighbour tensors share the same layout.
 """
 
 from dataclasses import dataclass
-from typing import Union
+from typing import Optional, Union
 
 import jax
 import jax.numpy as jnp
@@ -57,6 +57,7 @@ class HJFilterParams:
     dt: float
     action_min: torch.Tensor
     action_max: torch.Tensor
+    control_type: str = "smooth"  # "smooth" (QP projection) or "bang_bang" (optimal avoidance)
 
 
 # ---------------------------------------------------------------------------
@@ -87,14 +88,15 @@ class HJFilter:
         u_nominal: torch.Tensor,
         neighbors: Neighbors,
         grid,
-        relative_values: jax.Array,
+        relative_values: Union[jax.Array, np.ndarray, torch.Tensor],
         relative_values_grad: ValuesGrad,
         t: int = 0,
     ) -> torch.Tensor:
         """Vectorized HJI Dubins least-restrictive controller for dynamic neighbours.
 
-        All intermediate computation stays in JAX. Uses ``grid.nearest_index``
-        vmapped over the full ``(K × N)`` batch of relative states.
+        All computation is done purely in PyTorch to avoid massive PyTorch <-> JAX
+        memory transfer overheads during the MPPI hot loop. Uses `torch.round` for
+        nearest-index lookup over the full `(K × N)` batch of relative states.
 
         Args:
             state:                Ego states, shape ``(K, 3)`` — columns: x, y, theta.
@@ -102,8 +104,8 @@ class HJFilter:
             neighbors:            Neighbour states as a list of ``(3,)`` arrays/tensors
                                   **or** an array of shape ``(N, 3)``.
             grid:                 ``hj_reachability.Grid`` for the relative frame.
-            relative_values:      HJ value function — JAX array, shape ``(Gx, Gy, Gtheta)``.
-            relative_values_grad: ``jnp.gradient(relative_values)`` — one JAX array per dim.
+            relative_values:      HJ value function — shape ``(Gx, Gy, Gtheta)``.
+            relative_values_grad: ``jnp.gradient(relative_values)`` — one array per dim.
             t:                    Look-ahead step for neighbour position prediction.
 
         Returns:
@@ -115,44 +117,54 @@ class HJFilter:
         dtype = state.dtype
         device = state.device
 
-        # ── Boundary: torch → jax (once) ─────────────────────────────────────
-        state_j = jnp.asarray(state.detach().cpu())  # (K, 3)
-        u_nom_j = jnp.asarray(u_nominal.detach().cpu())  # (K, 2)
-        neighbors_j = self._to_jax(neighbors)  # (N, 3)
-        neighbors_j = self._predict_neighbors_jax(neighbors_j, t)  # (N, 3)
+        K = state.shape[0]
 
-        K = state_j.shape[0]
-        N = neighbors_j.shape[0]
+        # ── Fast PyTorch operations ──────────────────────────────────────────
+        neighbors_t = self._to_torch(neighbors, device, dtype)  # (N, 3)
+        neighbors_t = self._predict_neighbors_torch(neighbors_t, t)  # (N, 3)
+        N = neighbors_t.shape[0]
 
-        # ── All jnp from here ─────────────────────────────────────────────────
-        theta = state_j[:, 2:3]  # (K, 1)
-        theta_j = neighbors_j[:, 2]  # (N,)
+        theta = state[:, 2:3]  # (K, 1)
+        theta_j = neighbors_t[:, 2]  # (N,)
 
-        dx = neighbors_j[:, 0] - state_j[:, 0:1]  # (K, N)
-        dy = neighbors_j[:, 1] - state_j[:, 1:2]
+        dx = neighbors_t[:, 0] - state[:, 0:1]  # (K, N)
+        dy = neighbors_t[:, 1] - state[:, 1:2]
 
-        xr = jnp.cos(theta) * dx + jnp.sin(theta) * dy  # (K, N)
-        yr = -jnp.sin(theta) * dx + jnp.cos(theta) * dy
-        thr = (theta_j - theta) % (2.0 * jnp.pi)  # (K, N)
+        xr = torch.cos(theta) * dx + torch.sin(theta) * dy  # (K, N)
+        yr = -torch.sin(theta) * dx + torch.cos(theta) * dy
+        thr = (theta_j - theta) % (2.0 * torch.pi)  # (K, N)
 
-        # Flatten to (K*N, 3) for a single vmapped nearest_index call
-        states_rel_flat = jnp.stack([xr.ravel(), yr.ravel(), thr.ravel()], axis=-1)  # (K*N, 3)
+        # ── Fast Grid Lookup in PyTorch ──────────────────────────────────────
+        lo = torch.tensor(grid.domain.lo, device=device, dtype=dtype)
+        hi = torch.tensor(grid.domain.hi, device=device, dtype=dtype)
+        cells = torch.tensor(grid.shape, device=device, dtype=torch.long)
+        dx_grid = (hi - lo) / cells
 
-        idx = jax.vmap(grid.nearest_index)(states_rel_flat)  # (K*N, 3) int
+        # Flatten to (K*N, 3)
+        states_rel_flat = torch.stack([xr.reshape(-1), yr.reshape(-1), thr.reshape(-1)], dim=-1)
+
+        idx = torch.round((states_rel_flat - lo) / dx_grid).long()
 
         # Safely wrap periodic theta dimension and clip x/y dimensions
-        i0 = jnp.clip(idx[:, 0], 0, grid.shape[0] - 1)
-        i1 = jnp.clip(idx[:, 1], 0, grid.shape[1] - 1)
-        i2 = idx[:, 2] % grid.shape[2]
+        i0 = torch.clamp(idx[:, 0], 0, cells[0] - 1)
+        i1 = torch.clamp(idx[:, 1], 0, cells[1] - 1)
+        i2 = idx[:, 2] % cells[2]
 
-        v_kn = relative_values[i0, i1, i2].reshape(K, N)
-        gx_kn = relative_values_grad[0][i0, i1, i2].reshape(K, N)
-        gy_kn = relative_values_grad[1][i0, i1, i2].reshape(K, N)
-        gt_kn = relative_values_grad[2][i0, i1, i2].reshape(K, N)
+        # Convert JAX arrays to PyTorch tensors (cached in memory if possible)
+        v_grid = self._as_torch(relative_values, device)
+        gx_grid = self._as_torch(relative_values_grad[0], device)
+        gy_grid = self._as_torch(relative_values_grad[1], device)
+        gt_grid = self._as_torch(relative_values_grad[2], device)
+
+        v_kn = v_grid[i0, i1, i2].reshape(K, N)
+        gx_kn = gx_grid[i0, i1, i2].reshape(K, N)
+        gy_kn = gy_grid[i0, i1, i2].reshape(K, N)
+        gt_kn = gt_grid[i0, i1, i2].reshape(K, N)
 
         # Select critical (most dangerous) neighbour per ego agent
-        crit_idx = jnp.argmin(v_kn, axis=1)  # (K,)
-        batch_idx = jnp.arange(K)
+        crit_idx = torch.argmin(v_kn, dim=1)  # (K,)
+        batch_idx = torch.arange(K, device=device)
+
         v_min = v_kn[batch_idx, crit_idx]  # (K,)
         xr_crit = xr[batch_idx, crit_idx]
         yr_crit = yr[batch_idx, crit_idx]
@@ -165,28 +177,35 @@ class HJFilter:
         A_w = yr_crit * gx_crit - xr_crit * gy_crit - gt_crit
 
         unsafe_mask = v_min <= self.params.safe_margin
-        u_safe_j = self._project(u_nom_j, A_v, A_w, unsafe_mask)
+        u_safe = self._project(
+            u_nominal,
+            A_v,
+            A_w,
+            unsafe_mask,
+            control_type=self.params.control_type,
+            action_min=self.params.action_min,
+            action_max=self.params.action_max,
+        )
 
-        # ── Boundary: jax → torch (once) ─────────────────────────────────────
-        return torch.as_tensor(np.asarray(u_safe_j), dtype=dtype, device=device)
+        return u_safe
 
     def static_filter(
         self,
         state: torch.Tensor,
         u_nominal: torch.Tensor,
-        static_values: jax.Array,
+        static_values: Union[jax.Array, np.ndarray, torch.Tensor],
         static_values_grad: ValuesGrad,
         domain: np.ndarray,
         domain_cells: np.ndarray,
         t: int = 0,
     ) -> torch.Tensor:
-        """Least-restrictive static obstacle avoidance filter.
+        """Least-restrictive static obstacle avoidance filter in pure PyTorch.
 
         Args:
             state:              Ego states, shape ``(K, 3)``.
             u_nominal:          Nominal controls, shape ``(K, 2)``.
-            static_values:      HJ value function — JAX array, shape ``(Gx, Gy, Gtheta)``.
-            static_values_grad: ``jnp.gradient(static_values)`` — one JAX array per dim.
+            static_values:      HJ value function — shape ``(Gx, Gy, Gtheta)``.
+            static_values_grad: Gradients — one array per dim.
             domain:             Grid bounds, shape ``(2, 3)`` — rows: lo, hi.
             domain_cells:       Number of grid cells per dimension, shape ``(3,)``.
             t:                  Unused; reserved for future time-varying obstacles.
@@ -197,77 +216,94 @@ class HJFilter:
         dtype = state.dtype
         device = state.device
 
-        # ── Boundary: torch → jax (once) ─────────────────────────────────────
-        state_j = jnp.asarray(state.detach().cpu())  # (K, 3)
-        u_nom_j = jnp.asarray(u_nominal.detach().cpu())  # (K, 2)
+        lo = torch.tensor(domain[0], device=device, dtype=dtype)
+        hi = torch.tensor(domain[1], device=device, dtype=dtype)
+        cells = torch.tensor(domain_cells, device=device, dtype=torch.long)
 
-        lo = jnp.asarray(domain[0])  # (3,)
-        hi = jnp.asarray(domain[1])
-        cells = jnp.asarray(domain_cells, dtype=jnp.int32)  # (3,)
-
-        # ── All jnp from here ─────────────────────────────────────────────────
         dx_grid = (hi - lo) / cells
-        idx = jnp.clip(
-            jnp.round((state_j - lo) / dx_grid).astype(jnp.int32),
-            0,
-            cells - 1,
-        )  # (K, 3)
+        idx = torch.round((state - lo) / dx_grid).long()
+        idx = torch.clamp(idx, 0, cells - 1)
 
         i0, i1, i2 = idx[:, 0], idx[:, 1], idx[:, 2]
-        v_val = static_values[i0, i1, i2]
-        grad_x = static_values_grad[0][i0, i1, i2]
-        grad_y = static_values_grad[1][i0, i1, i2]
-        grad_th = static_values_grad[2][i0, i1, i2]
 
-        theta = state_j[:, 2]
-        A_v = jnp.cos(theta) * grad_x + jnp.sin(theta) * grad_y
+        v_grid = self._as_torch(static_values, device)
+        gx_grid = self._as_torch(static_values_grad[0], device)
+        gy_grid = self._as_torch(static_values_grad[1], device)
+        gt_grid = self._as_torch(static_values_grad[2], device)
+
+        v_val = v_grid[i0, i1, i2]
+        grad_x = gx_grid[i0, i1, i2]
+        grad_y = gy_grid[i0, i1, i2]
+        grad_th = gt_grid[i0, i1, i2]
+
+        theta = state[:, 2]
+        A_v = torch.cos(theta) * grad_x + torch.sin(theta) * grad_y
         A_w = grad_th
 
         unsafe_mask = v_val <= self.params.safe_margin
-        u_safe_j = self._project(u_nom_j, A_v, A_w, unsafe_mask)
-
-        # ── Boundary: jax → torch (once) ─────────────────────────────────────
-        return torch.as_tensor(np.asarray(u_safe_j), dtype=dtype, device=device)
+        return self._project(
+            u_nominal,
+            A_v,
+            A_w,
+            unsafe_mask,
+            control_type=self.params.control_type,
+            action_min=self.params.action_min,
+            action_max=self.params.action_max,
+        )
 
     # ------------------------------------------------------------------
-    # Shared QP projection kernel — pure jnp
+    # Shared QP projection kernel — pure PyTorch
     # ------------------------------------------------------------------
 
     @staticmethod
     def _project(
-        u_nom: jax.Array,
-        A_v: jax.Array,
-        A_w: jax.Array,
-        unsafe_mask: jax.Array,
-    ) -> jax.Array:
+        u_nom: torch.Tensor,
+        A_v: torch.Tensor,
+        A_w: torch.Tensor,
+        unsafe_mask: torch.Tensor,
+        control_type: str = "smooth",
+        action_min: Optional[torch.Tensor] = None,
+        action_max: Optional[torch.Tensor] = None,
+    ) -> torch.Tensor:
         """Project nominal controls onto the safe half-space ``A · u >= 0``.
 
         Args:
-            u_nom:       Nominal controls, shape ``(K, 2)``.
-            A_v:         Linear velocity component of the HJ gradient, shape ``(K,)``.
-            A_w:         Angular velocity component of the HJ gradient, shape ``(K,)``.
-            unsafe_mask: Boolean mask of unsafe samples, shape ``(K,)``.
-
-        Returns:
-            Projected controls, shape ``(K, 2)``.
+            u_nom:        Nominal controls, shape ``(K, 2)``.
+            A_v:          Hamiltonian coefficient for linear velocity.
+            A_w:          Hamiltonian coefficient for angular velocity.
+            unsafe_mask:  Boolean mask of unsafe states, shape ``(K,)``.
+            control_type: "smooth" (QP projection) or "bang_bang" (optimal avoidance).
+            action_min:   Lower control bounds (required for bang_bang).
+            action_max:   Upper control bounds (required for bang_bang).
         """
-        A_norm_sq = jnp.maximum(A_v**2 + A_w**2, 1e-6)
+        if control_type == "bang_bang":
+            assert action_min is not None and action_max is not None
+            v_star = torch.where(A_v > 0, action_max[0], action_min[0])
+            w_star = torch.where(A_w > 0, action_max[1], action_min[1])
+            u_bang = torch.stack([v_star, w_star], dim=1)
+            # Override completely with optimal avoidance if unsafe
+            return torch.where(unsafe_mask.unsqueeze(-1), u_bang, u_nom)
+
+        A_norm_sq = torch.clamp(A_v**2 + A_w**2, min=1e-6)
         A_u = A_v * u_nom[:, 0] + A_w * u_nom[:, 1]
-        proj_scale = jnp.where(unsafe_mask & (-A_u > 0), -A_u / A_norm_sq, 0.0)
+        proj_scale = torch.where(unsafe_mask & (-A_u > 0), -A_u / A_norm_sq, torch.zeros_like(A_u))
 
-        return u_nom.at[:, 0].add(proj_scale * A_v).at[:, 1].add(proj_scale * A_w)
+        u_safe = u_nom.clone()
+        u_safe[:, 0] += proj_scale * A_v
+        u_safe[:, 1] += proj_scale * A_w
+        return u_safe
 
     # ------------------------------------------------------------------
-    # Neighbour helpers — pure jnp
+    # Neighbour helpers — pure PyTorch
     # ------------------------------------------------------------------
 
-    def _predict_neighbors_jax(self, neighbors_j: jax.Array, t: int) -> jax.Array:
-        """Predict neighbour positions at look-ahead step *t* using jnp.
+    def _predict_neighbors_torch(self, neighbors_t: torch.Tensor, t: int) -> torch.Tensor:
+        """Predict neighbour positions at look-ahead step *t* using pure PyTorch.
 
         Constant-heading, constant-speed model at ``v_nominal = 3.0 m/s``.
 
         Args:
-            neighbors_j: Neighbour states, JAX array shape ``(N, 3)``.
+            neighbors_t: Neighbour states, PyTorch tensor shape ``(N, 3)``.
             t:           Look-ahead step.
 
         Returns:
@@ -277,26 +313,41 @@ class HJFilter:
         v_nominal = 3.0  # m/s
         dt_ahead = t * self.params.dt
 
-        theta_j = neighbors_j[:, 2]
-        dx = v_nominal * jnp.cos(theta_j) * dt_ahead
-        dy = v_nominal * jnp.sin(theta_j) * dt_ahead
+        theta_j = neighbors_t[:, 2]
+        dx = v_nominal * torch.cos(theta_j) * dt_ahead
+        dy = v_nominal * torch.sin(theta_j) * dt_ahead
 
-        return neighbors_j.at[:, 0].add(dx).at[:, 1].add(dy)
+        out = neighbors_t.clone()
+        out[:, 0] += dx
+        out[:, 1] += dy
+        return out
 
     @staticmethod
-    def _to_jax(neighbors: Neighbors) -> jax.Array:
-        """Convert any neighbour format to a JAX array of shape ``(N, 3)``."""
-        if isinstance(neighbors, jax.Array):
-            return neighbors
+    def _to_torch(neighbors: Neighbors, device: torch.device, dtype: torch.dtype) -> torch.Tensor:
+        """Convert any neighbour format to a PyTorch tensor of shape ``(N, 3)``."""
         if isinstance(neighbors, torch.Tensor):
-            return jnp.asarray(neighbors.detach().cpu().numpy())
+            return neighbors.to(device=device, dtype=dtype)
         if isinstance(neighbors, np.ndarray):
-            return jnp.asarray(neighbors)
-        # list[Tensor | ndarray]
+            return torch.tensor(neighbors, device=device, dtype=dtype)
+        if hasattr(neighbors, "device"):  # jax.Array
+            return torch.tensor(np.asarray(neighbors), device=device, dtype=dtype)
+
         arrays = [
-            n.detach().cpu().numpy() if torch.is_tensor(n) else np.asarray(n) for n in neighbors
+            n if torch.is_tensor(n) else torch.tensor(np.asarray(n), device=device, dtype=dtype)
+            for n in neighbors
         ]
-        return jnp.asarray(np.stack(arrays))
+        if len(arrays) == 0:
+            return torch.empty((0, 3), device=device, dtype=dtype)
+        return torch.stack(arrays).to(device=device, dtype=dtype)
+
+    @staticmethod
+    def _as_torch(
+        array: Union[jax.Array, np.ndarray, torch.Tensor], device: torch.device
+    ) -> torch.Tensor:
+        """Helper to cast value functions to Torch and send to device once."""
+        if isinstance(array, torch.Tensor):
+            return array.to(device)
+        return torch.tensor(np.asarray(array), device=device)
 
     @staticmethod
     def _no_neighbors(neighbors: Neighbors) -> bool:
