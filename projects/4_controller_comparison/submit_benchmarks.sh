@@ -13,7 +13,7 @@ echo "Output directory created: $OUTPUT_DIR"
 RENDER_ARG=""
 if [ "$1" == "--test" ]; then
     echo "Running in TEST MODE: Only evaluating 'nominal' controller for 1 episode."
-    CONTROLLERS=("nominal")
+    CONTROLLERS=("hj_rollout")
     EPISODES=1
     RENDER_ARG="--render rgb_array"
 else

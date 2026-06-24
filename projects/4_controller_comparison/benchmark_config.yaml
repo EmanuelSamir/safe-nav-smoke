@@ -12,7 +12,7 @@ env:
   max_steps: 1000
   collision_radius: 0.8
   goal_radius: 1.2
-  render: "none"
+  render: "rgb_array"
   render_save_every: 1
   terminate_on_collision: false
   collision_penalty: 10.0

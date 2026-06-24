@@ -19,7 +19,6 @@ project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "../.."))
 if project_root not in sys.path:
     sys.path.insert(0, project_root)
 
-from prefect import flow, task
 from schema import BenchmarkConfig
 
 from src.agents.basic_robot import RobotParams
@@ -163,7 +162,6 @@ def instantiate_controller(
         raise ValueError(f"Unknown controller: {name}")
 
 
-@task(name="Evaluate Safety Controller Task")
 def evaluate_controller_task(
     name: str,
     episodes: int,
@@ -474,7 +472,6 @@ def evaluate_controller_task(
     return aggregated
 
 
-@flow(name="Decentralized Controllers Swarm Benchmark")
 def benchmark_flow(
     episodes: int,
     device: Optional[str],
