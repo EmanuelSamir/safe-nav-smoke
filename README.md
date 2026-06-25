@@ -1,75 +1,69 @@
 # Safe Navigation in Smoke Environments via Multi-Agent Drones
 
-Este repositorio contiene la infraestructura y algoritmos para un proyecto de investigación enfocado en la **navegación segura de múltiples drones (2D) en entornos simulados de humo**. 
+This repository contains the infrastructure and algorithms for a research project focused on the **safe navigation of multiple drones (2D) in simulated smoke environments**.
 
-El objetivo principal es permitir que múltiples agentes naveguen de forma segura (evitando colisiones entre ellos y minimizando el riesgo al atravesar zonas peligrosas) utilizando predicción del comportamiento del entorno y algoritmos de control predictivo.
+The main objective is to enable multiple agents to navigate safely (avoiding collisions and minimizing risk when crossing hazardous zones) using environment behavior prediction and predictive control algorithms.
 
-## 🚀 Características Principales
+## 🚀 Key Features
 
-1. **Smoke Forecasting (Predicción de Humo):**
-   - Entrenamos modelos para predecir la propagación del humo en el tiempo.
-   - **Propuesta Principal:** Fourier Neural Operator (FNO).
+1. **Smoke Forecasting:**
+   - We train models to predict smoke propagation over time.
+   - **Primary Proposal:** Fourier Neural Operator (FNO).
    - **Baseline:** ConvLSTM.
    
-2. **Navegación y Control Predictivo:**
-   - Utilizamos múltiples variantes de **MPPI** (Model Predictive Path Integral).
-   - Implementamos un controlador **Dual Guard**, que hereda de MPPI pero incorpora una función de seguridad (Safety Shield / Control Barrier Functions) durante el rollout para garantizar seguridad teórica.
+2. **Predictive Control & Navigation:**
+   - We use multiple variants of **MPPI** (Model Predictive Path Integral).
+   - We implemented a **Dual Guard** controller, which inherits from MPPI but incorporates a safety function (Safety Shield / Control Barrier Functions / Hamilton-Jacobi Reachability) during the rollout to theoretically guarantee safety.
 
-3. **Simulación Controlada (Playback):**
-   - Dado que la simulación de fluidos de humo es muy costosa computacionalmente, el entorno usa un sistema de **Playback**. 
-   - El Playback lee simulaciones previamente guardadas para garantizar comparaciones 1 a 1 justas entre diferentes controladores y modelos, todo bajo las mismas condiciones.
-
----
-
-## 📂 Arquitectura Actual
-
-El código base se divide principalmente en los módulos core (`src/`) y los scripts de ejecución o experimentos.
-
-* `src/env/`: Entornos de simulación, incluyendo la lógica de `playback` para cargar episodios pre-calculados de humo.
-* `src/models/` y `src/training/`: Arquitecturas de redes neuronales (FNO, ConvLSTM) en PyTorch Lightning y sus lógicas de entrenamiento.
-* `src/controllers/`: Controladores de navegación (MPPI, Dual Guard, CBF, HJ).
-* `src/wrappers/`: Adaptadores para acoplar las predicciones de humo al entorno.
-* `scripts/`: Scripts bash/Slurm para ejecución en HPC (High Performance Computing).
-
-## 🛠️ Flujo de Trabajo Actual (Legacy Pipeline)
-
-Actualmente, el flujo de recolección de datos funcional consta de dos scripts en la raíz de `src/`:
-
-1. `src/0_data_playback_physics_collection.py`: Recolecta la física/dinámica base.
-2. `src/1_data_playback_env_collection.py`: Genera los episodios del entorno.
-
-*(Nota: Los scripts de la versión 2 en adelante están deprecados y serán reemplazados por la nueva arquitectura descrita a continuación).*
+3. **Controlled Simulation (Playback):**
+   - Since simulating fluid dynamics for smoke is computationally expensive, the environment uses a **Playback** system.
+   - Playback reads previously saved simulations to guarantee fair 1-to-1 comparisons between different controllers and models under identical conditions.
 
 ---
 
-## 🏗️ Filosofía de Configuración y Futura Estructura (Próximamente)
+## 📂 Architecture
 
-El proyecto se encuentra en plena migración para abandonar Hydra en favor de **Pydantic Estricto**. La nueva arquitectura busca resolver dolores de cabeza con configuraciones ocultas, promoviendo las siguientes reglas de diseño:
+The codebase is mainly divided into core modules (`src/`) and the execution pipelines (`projects/`).
 
-* **Separación de Responsabilidades:** El código core (`src/`) debe ser completamente agnóstico a la ejecución. 
-* **Cero Valores por Defecto (No Defaults):** Los archivos YAML serán explícitos y la única fuente de verdad.
-* **Cero Parámetros Fantasma:** Uso estricto de `model_config = ConfigDict(extra="forbid")` para que cualquier parámetro obsoleto en el YAML detenga la ejecución.
-* **Manejo Explícito de Directorios:** En lugar de directorios dinámicos inyectados mágicamente, el orquestador creará su propia carpeta con un timestamp y guardará una copia del YAML para reproducibilidad.
+* `src/env/`: Simulation environments, including `playback` logic to load pre-calculated smoke episodes.
+* `src/models/` and `src/training/`: Neural network architectures (FNO, ConvLSTM) in PyTorch Lightning and their training logic.
+* `src/controllers/`: Navigation controllers (MPPI, Dual Guard, CBF, HJ).
+* `src/agents/`: Robot dynamics and parameters.
+* `src/wrappers/`: Adapters to couple smoke predictions with the environment.
+* `projects/`: Self-contained project folders for execution pipelines.
 
-### Nueva Estructura de Proyectos (`projects/`)
+## 🏗️ Configuration Philosophy
 
-Para aplicar esta filosofía, los experimentos y el pipeline dejarán de estar directamente en `src/` y se moverán a una nueva carpeta `projects/`. Cada experimento será autocontenido y agrupará su propia lógica de orquestación, sus esquemas compuestos (Pydantic) y sus archivos YAML:
+The project has completely migrated away from Hydra and now uses **Strict Pydantic** for configuration management. This architecture promotes clean, reproducible experiments with the following design rules:
+
+* **Separation of Concerns:** Core code (`src/`) is completely agnostic to execution. It simply defines the logic and Pydantic schemas with sensible defaults.
+* **Minimal YAML Configurations:** Project YAMLs are now extremely clean. They only contain the parameters you want to **override**. All other parameters automatically inherit their defaults from the Pydantic schemas.
+* **No Ghost Parameters:** We strictly use `model_config = ConfigDict(extra="forbid")` in Pydantic so that any obsolete or misspelled parameter in a YAML will immediately halt execution.
+* **Reproducibility (`config_used.yaml`):** Every time an experiment runs, it merges the minimal YAML with the Python defaults and saves the complete, resolved configuration as `config_used.yaml` in the output directory. This serves as the single source of truth for reproducibility.
+
+### Projects Structure (`projects/`)
+
+Experiments and pipelines are grouped in the `projects/` folder. Each project is self-contained and groups its own orchestration logic, compound Pydantic schemas, and local YAML configurations. No global `configs/` folder is needed anymore.
 
 ```text
-├── src/                             # CÓDIGO CORE (agnóstico a la ejecución)
+├── src/                             # CORE CODE (execution-agnostic)
 │
-└── projects/                        # EXPERIMENTOS ACUMULATIVOS Y PIPELINE
+└── projects/                        # CUMULATIVE EXPERIMENTS & PIPELINES
     │
-    ├── 01_data_collection/          # PROYECTO 1: Recolectar datos
-    │   ├── schema.py                # Esquema compuesto SOLO para colectar
-    │   ├── run.py                   # El script ejecutable de colecta
-    │   ├── config_omni_fast.yaml    # Config para el robot Omni
-    │   └── config_quad_slow.yaml    # Config para el Quadruped
+    ├── 1_data_collection/           # PROJECT 1: Collect smoke and environment data
+    │   ├── schema.py                # Schema tailored ONLY for data collection
+    │   ├── 0_data_playback...py     # Executable scripts
+    │   └── physics_config.yaml      # Minimal YAML overriding specific params
     │
-    └── 02_sac_benchmark/            # PROYECTO 2: Comparativa de controladores
-        ├── schema.py                # Esquema compuesto SOLO para el benchmark
-        ├── run.py                   # El script que itera los controladores
-        └── benchmark_v1.yaml        # Config con la lista de controladores
+    ├── 2_training/                  # PROJECT 2: Train prediction models
+    │   ├── schema.py                # Schema defining FNO and ConvLSTM training settings
+    │   ├── run_fno.py               # Executable for training FNO
+    │   └── fno_config.yaml          # Minimal YAML for FNO training
+    │
+    └── 4_controller_comparison/     # PROJECT 4: Benchmark controllers
+        ├── schema.py                # Schema tailored for benchmark runs
+        ├── benchmark.py             # Script to evaluate controllers
+        └── benchmark_config.yaml    # Config listing the controllers to test
 ```
 
-Con esta estructura, es mucho más sencillo iterar experimentos aislados (ej: testear modelos, comparar controladores o realizar una integración total) sin romper pipelines pasados o arrastrar configuraciones heredadas.
+This structure makes it much easier to iterate on isolated experiments (e.g. testing models, comparing controllers, running the full integration) without breaking past pipelines or carrying over inherited configurations.
