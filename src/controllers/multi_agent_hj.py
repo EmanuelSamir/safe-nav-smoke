@@ -17,7 +17,6 @@ If both are precomputed, the relative (dynamic) filter takes precedence.
 import logging
 from typing import Any, Dict, Optional
 
-import jax
 import jax.numpy as jnp
 import numpy as np
 import torch
@@ -221,18 +220,22 @@ class MultiAgentHJController(BaseMultiAgentController):
             """Look up V(x) directly on the absolute grid using pure PyTorch."""
             device = state.device
             dtype = state.dtype
-            
+
             lo = torch.tensor(domain[0], device=device, dtype=dtype)
             hi = torch.tensor(domain[1], device=device, dtype=dtype)
             c = torch.tensor(cells, device=device, dtype=torch.long)
             dx = (hi - lo) / c
-            
+
             idx = torch.round((state - lo) / dx).long()
             idx = torch.clamp(idx, 0, c - 1)
-            
-            v_grid = values.to(device) if torch.is_tensor(values) else torch.tensor(np.asarray(values), device=device)
+
+            v_grid = (
+                values.to(device)
+                if torch.is_tensor(values)
+                else torch.tensor(np.asarray(values), device=device)
+            )
             v = v_grid[idx[:, 0], idx[:, 1], idx[:, 2]]
-            
+
             return v
 
         actual_mode = "rollout" if self.hj_mode == "online_rollout" else self.hj_mode
@@ -260,7 +263,7 @@ class MultiAgentHJController(BaseMultiAgentController):
         t: int,
     ) -> torch.Tensor:
         """Extract minimum V(x_rel) over neighbours as the safety scalar.
-        
+
         Pure PyTorch implementation to avoid JAX overhead inside DualGuardShield.
         """
         if not neighbors:
@@ -270,7 +273,10 @@ class MultiAgentHJController(BaseMultiAgentController):
         dtype = state.dtype
         K = state.shape[0]
 
-        arrays = [n if torch.is_tensor(n) else torch.tensor(np.asarray(n), device=device, dtype=dtype) for n in neighbors]
+        arrays = [
+            n if torch.is_tensor(n) else torch.tensor(np.asarray(n), device=device, dtype=dtype)
+            for n in neighbors
+        ]
         neighbors_t = torch.stack(arrays).to(device=device, dtype=dtype)
         N = neighbors_t.shape[0]
 
@@ -296,7 +302,11 @@ class MultiAgentHJController(BaseMultiAgentController):
         i1 = torch.clamp(idx[:, 1], 0, cells[1] - 1)
         i2 = idx[:, 2] % cells[2]
 
-        v_grid = values.to(device) if torch.is_tensor(values) else torch.tensor(np.asarray(values), device=device)
+        v_grid = (
+            values.to(device)
+            if torch.is_tensor(values)
+            else torch.tensor(np.asarray(values), device=device)
+        )
         v_kn = v_grid[i0, i1, i2].reshape(K, N)
         v_min, _ = torch.min(v_kn, dim=1)
 

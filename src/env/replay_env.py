@@ -5,7 +5,7 @@ from typing import Any, Dict, List, Optional
 import numpy as np
 from datasets import load_from_disk
 
-from src.env.simulator.playback_schema import SmokeDataSchema
+from src.env.simulator.smoke_data_schema import SmokeDataSchema
 
 
 class ReplayEnv:

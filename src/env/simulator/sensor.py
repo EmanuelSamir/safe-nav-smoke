@@ -3,7 +3,8 @@ from dataclasses import dataclass
 
 import torch
 
-from src.env.schemas import (
+from src.env.simulator.base_smoke_simulator import BaseSmokeSimulator
+from src.env.simulator.schemas import (
     BaseSensorConfig,
     Camera1DSensorConfig,
     DownwardsSensorConfig,
@@ -18,15 +19,17 @@ class SensorOutput:
 
 
 class BaseSensor:
-    def __init__(self, params: BaseSensorConfig):
+    def __init__(self, cfg: BaseSensorConfig):
         """Initialize the base sensor.
 
         Args:
-            params: Parameters for the sensor.
+            cfg: Configuration for the sensor.
         """
-        self.params = params
+        self.cfg = cfg
 
-    def projection_bounds(self, pos_x: float, pos_y: float) -> torch.Tensor:
+    def projection_bounds(
+        self, simulator: BaseSmokeSimulator, pos_x: float, pos_y: float
+    ) -> torch.Tensor:
         raise NotImplementedError("Projection bounds must be implemented in the subclass")
 
     def read(self, simulator, curr_pos: torch.Tensor) -> SensorOutput:
@@ -34,19 +37,22 @@ class BaseSensor:
 
 
 class DownwardsSensor(BaseSensor):
-    def __init__(self, params: DownwardsSensorConfig):
-        self.params = params
+    def __init__(self, cfg: DownwardsSensorConfig):
+        """Initializes the DownwardsSensor with the given configuration."""
+        super().__init__(cfg)
 
-        density = self.params.density_reading_per_unit_length
+        density = self.cfg.density_reading_per_unit_length
         if density == 0:
             density = 1.0
 
-        self.nx = max(1, round(density * self.params.x_fov_size))
-        self.ny = max(1, round(density * self.params.y_fov_size))
+        self.nx = max(1, round(density * self.cfg.x_fov_size))
+        self.ny = max(1, round(density * self.cfg.y_fov_size))
 
-    def projection_bounds(self, pos_x: float, pos_y: float) -> torch.Tensor:
-        half_x = self.params.x_fov_size / 2
-        half_y = self.params.y_fov_size / 2
+    def projection_bounds(
+        self, simulator: BaseSmokeSimulator, pos_x: float, pos_y: float
+    ) -> torch.Tensor:
+        half_x = self.cfg.x_fov_size / 2
+        half_y = self.cfg.y_fov_size / 2
         return torch.tensor(
             [
                 [pos_x - half_x, pos_y - half_y],
@@ -57,20 +63,22 @@ class DownwardsSensor(BaseSensor):
             dtype=torch.float32,
         )
 
-    def read(self, simulator, curr_pos: torch.Tensor) -> SensorOutput:
+    def read(self, simulator: BaseSmokeSimulator, curr_pos: torch.Tensor) -> SensorOutput:
         grid = simulator.get_smoke_map_tensor()  # shape: (H, W)
         curr_pos = curr_pos.to(grid.device)
         device = curr_pos.device
         center_pos = curr_pos[:2]
 
-        resolution = getattr(simulator, "resolution", getattr(simulator.params, "resolution", None))
+        resolution = simulator.cfg.resolution
+        assert resolution is not None, "Resolution must be provided"
+
         H, W = grid.shape
 
-        density = self.params.density_reading_per_unit_length
+        density = self.cfg.density_reading_per_unit_length
         if density == 0:
             # Exact crop slicing without interpolation
-            nx = max(1, round(self.params.x_fov_size / resolution))
-            ny = max(1, round(self.params.y_fov_size / resolution))
+            nx = max(1, round(self.cfg.x_fov_size / resolution))
+            ny = max(1, round(self.cfg.y_fov_size / resolution))
 
             center_grid_x = center_pos[0] / resolution
             center_grid_y = center_pos[1] / resolution
@@ -89,9 +97,9 @@ class DownwardsSensor(BaseSensor):
             # Filter valid physical bounds
             in_bounds_phys = (
                 (positions[:, 0] >= 0)
-                & (positions[:, 0] <= self.params.world_x_size)
+                & (positions[:, 0] <= simulator.cfg.x_size)
                 & (positions[:, 1] >= 0)
-                & (positions[:, 1] <= self.params.world_y_size)
+                & (positions[:, 1] <= simulator.cfg.y_size)
             )
             valid_positions = positions[in_bounds_phys]
 
@@ -114,8 +122,8 @@ class DownwardsSensor(BaseSensor):
             return SensorOutput(readings=readings, positions=valid_positions)
         else:
             # Resampling using grid_sample bilinear interpolation
-            dx = self.params.x_fov_size / self.nx
-            dy = self.params.y_fov_size / self.ny
+            dx = self.cfg.x_fov_size / self.nx
+            dy = self.cfg.y_fov_size / self.ny
 
             x_range = (
                 torch.arange(self.nx, device=device, dtype=torch.float32) - self.nx / 2 + 0.5
@@ -131,9 +139,9 @@ class DownwardsSensor(BaseSensor):
 
             in_bounds = (
                 (positions[:, 0] >= 0)
-                & (positions[:, 0] <= self.params.world_x_size)
+                & (positions[:, 0] <= simulator.cfg.x_size)
                 & (positions[:, 1] >= 0)
-                & (positions[:, 1] <= self.params.world_y_size)
+                & (positions[:, 1] <= simulator.cfg.y_size)
             )
             valid_positions = positions[in_bounds]
 
@@ -143,8 +151,8 @@ class DownwardsSensor(BaseSensor):
                     positions=torch.zeros((0, 2), device=device),
                 )
 
-            x_norm = 2.0 * (valid_positions[:, 0] / self.params.world_x_size) - 1.0
-            y_norm = 2.0 * (valid_positions[:, 1] / self.params.world_y_size) - 1.0
+            x_norm = 2.0 * (valid_positions[:, 0] / simulator.cfg.x_size) - 1.0
+            y_norm = 2.0 * (valid_positions[:, 1] / simulator.cfg.y_size) - 1.0
             grid_coords = torch.stack([x_norm, y_norm], dim=-1).view(1, -1, 1, 2)
 
             grid_unsqueezed = grid.unsqueeze(0).unsqueeze(0)
@@ -161,16 +169,19 @@ class DownwardsSensor(BaseSensor):
 
 
 class GlobalSensor(BaseSensor):
-    def __init__(self, params: GlobalSensorConfig):
-        self.params = params
+    def __init__(self, cfg: GlobalSensorConfig):
+        """Initializes the GlobalSensor with the given configuration."""
+        super().__init__(cfg)
 
-    def projection_bounds(self, pos_x: float, pos_y: float) -> torch.Tensor:
+    def projection_bounds(
+        self, simulator: BaseSmokeSimulator, pos_x: float, pos_y: float
+    ) -> torch.Tensor:
         return torch.tensor(
             [
                 [0.0, 0.0],
-                [self.params.world_x_size, 0.0],
-                [self.params.world_x_size, self.params.world_y_size],
-                [0.0, self.params.world_y_size],
+                [simulator.cfg.x_size, 0.0],
+                [simulator.cfg.x_size, simulator.cfg.y_size],
+                [0.0, simulator.cfg.y_size],
             ],
             dtype=torch.float32,
         )
@@ -180,21 +191,17 @@ class GlobalSensor(BaseSensor):
         device = grid.device
 
         # If density_reading_per_unit_length is 0, we do not resample
-        if self.params.density_reading_per_unit_length == 0:
+        if self.cfg.density_reading_per_unit_length == 0:
             readings = grid.ravel().unsqueeze(-1)
             ny, nx = grid.shape
-            dx = self.params.world_x_size / nx
-            dy = self.params.world_y_size / ny
+            dx = simulator.cfg.x_size / nx
+            dy = simulator.cfg.y_size / ny
         else:
-            nx = max(
-                1, round(self.params.density_reading_per_unit_length * self.params.world_x_size)
-            )
-            ny = max(
-                1, round(self.params.density_reading_per_unit_length * self.params.world_y_size)
-            )
+            nx = max(1, round(self.cfg.density_reading_per_unit_length * simulator.cfg.x_size))
+            ny = max(1, round(self.cfg.density_reading_per_unit_length * simulator.cfg.y_size))
 
-            dx = self.params.world_x_size / nx
-            dy = self.params.world_y_size / ny
+            dx = simulator.cfg.x_size / nx
+            dy = simulator.cfg.y_size / ny
 
             # Resample using torch.nn.functional.interpolate
             grid_unsqueezed = grid.unsqueeze(0).unsqueeze(0)
@@ -213,17 +220,21 @@ class GlobalSensor(BaseSensor):
 
 
 class Camera1DSensor(BaseSensor):
-    def __init__(self, params: Camera1DSensorConfig):
-        self.params = params
-        self.fov_size_rad = math.radians(self.params.fov_size_degrees)
+    def __init__(self, cfg: Camera1DSensorConfig):
+        """Initializes the Camera1DSensor with the given configuration."""
+        super().__init__(cfg)
 
-    def projection_bounds(self, pos_x: float, pos_y: float) -> torch.Tensor:
+        self.fov_size_rad = math.radians(self.cfg.fov_size_degrees)
+
+    def projection_bounds(
+        self, simulator: BaseSmokeSimulator, pos_x: float, pos_y: float
+    ) -> torch.Tensor:
         return torch.tensor(
             [
-                [pos_x - self.params.max_range, pos_y - self.params.max_range],
-                [pos_x + self.params.max_range, pos_y - self.params.max_range],
-                [pos_x + self.params.max_range, pos_y + self.params.max_range],
-                [pos_x - self.params.max_range, pos_y + self.params.max_range],
+                [pos_x - self.cfg.max_range, pos_y - self.cfg.max_range],
+                [pos_x + self.cfg.max_range, pos_y - self.cfg.max_range],
+                [pos_x + self.cfg.max_range, pos_y + self.cfg.max_range],
+                [pos_x - self.cfg.max_range, pos_y + self.cfg.max_range],
             ],
             dtype=torch.float32,
         )
@@ -233,22 +244,21 @@ class Camera1DSensor(BaseSensor):
         grid = simulator.get_smoke_map_tensor()
         curr_pos = curr_pos.to(grid.device)
         device = curr_pos.device
-        pos_x, pos_y, theta = curr_pos[0], curr_pos[1], curr_pos[2]
+        theta = curr_pos[2]
 
         # Calculate the angle of each ray within the field of view
         angles = torch.linspace(
             theta - self.fov_size_rad / 2,
             theta + self.fov_size_rad / 2,
-            self.params.num_rays,
+            self.cfg.num_rays,
             device=device,
         )
         ray_dirs = torch.stack([torch.cos(angles), torch.sin(angles)], dim=-1)
 
         # Pre-compute all distances to sample along each ray
-        max_steps = int(self.params.max_range / self.params.step_size)
+        max_steps = int(self.cfg.max_range / self.cfg.step_size)
         ray_distances = (
-            torch.arange(1, max_steps + 1, device=device, dtype=torch.float32)
-            * self.params.step_size
+            torch.arange(1, max_steps + 1, device=device, dtype=torch.float32) * self.cfg.step_size
         )
 
         # Generate sampling points: (num_rays, max_steps, 2)
@@ -257,71 +267,57 @@ class Camera1DSensor(BaseSensor):
 
         # Batch query all generated point densities directly from the full grid
         flat_ray_points = ray_points.view(-1, 2)
-        x_norm = 2.0 * (flat_ray_points[:, 0] / self.params.world_x_size) - 1.0
-        y_norm = 2.0 * (flat_ray_points[:, 1] / self.params.world_y_size) - 1.0
+        x_norm = 2.0 * (flat_ray_points[:, 0] / simulator.cfg.x_size) - 1.0
+        y_norm = 2.0 * (flat_ray_points[:, 1] / simulator.cfg.y_size) - 1.0
         grid_coords = torch.stack([x_norm, y_norm], dim=-1).view(1, -1, 1, 2)
 
         grid_unsqueezed = grid.unsqueeze(0).unsqueeze(0)
         sampled = torch.nn.functional.grid_sample(
             grid_unsqueezed, grid_coords, mode="bilinear", padding_mode="zeros", align_corners=False
         )
-        densities = sampled.view(self.params.num_rays, max_steps)
+        densities = sampled.view(self.cfg.num_rays, max_steps)
 
         # Mask out-of-bounds densities
         in_bounds = (
             (ray_points[:, :, 0] >= 0)
-            & (ray_points[:, :, 0] <= self.params.world_x_size)
+            & (ray_points[:, :, 0] <= simulator.cfg.x_size)
             & (ray_points[:, :, 1] >= 0)
-            & (ray_points[:, :, 1] <= self.params.world_y_size)
+            & (ray_points[:, :, 1] <= simulator.cfg.y_size)
         )
         densities = torch.where(in_bounds, densities, torch.zeros_like(densities))
 
         # Integrate densities over the distance of the ray
-        accumulated_density = torch.cumsum(densities * self.params.step_size, dim=1)
+        accumulated_density = torch.cumsum(densities * self.cfg.step_size, dim=1)
 
         # For each ray, find where the density exceeds the visibility (opacity threshold)
-        is_opaque = accumulated_density >= self.params.opacity_threshold
+        is_opaque = accumulated_density >= self.cfg.opacity_threshold
         any_opaque = torch.any(is_opaque, dim=1)
         first_opaque_step = torch.argmax(is_opaque.to(torch.int8), dim=1)
 
         # Retrieve the accumulated density at the limit
         idx = torch.where(any_opaque, first_opaque_step, torch.tensor(max_steps - 1, device=device))
-        ray_images = accumulated_density[torch.arange(self.params.num_rays, device=device), idx]
+        ray_images = accumulated_density[torch.arange(self.cfg.num_rays, device=device), idx]
 
         # The returned positions represent the origin of the sensor readings
-        sensor_position_readings = curr_pos[:2].unsqueeze(0).repeat(self.params.num_rays, 1)
+        sensor_position_readings = curr_pos[:2].unsqueeze(0).repeat(self.cfg.num_rays, 1)
 
         return SensorOutput(readings=ray_images, positions=sensor_position_readings)
 
 
 def run_tests() -> None:
-    from src.env.simulator.smoke import BlobParams, Smoke
-    from src.env.schemas import SmokeParams
+    """Run tests for the sensor module."""
+    from src.env.simulator.schemas import BlobConfig, SmokeConfig
+    from src.env.simulator.smoke import Smoke
 
-    smoke_params = SmokeParams(
-        resolution=1.0,
-        average_wind_speed=2.0,
-        smoke_decay_rate=0.99,
-        smoke_emission_rate=5.0,
-        smoke_diffusion_rate=0.01,
-        inflow_bank_count=5,
-        buoyancy_factor=0.1,
-        dt=0.1,
-        x_size=50.0,
-        y_size=50.0,
-        velocity_iterations=4,
-        pressure_iterations=20,
-        mac_cormack=True,
-        buoyancy_alpha=0.05,
-        buoyancy_beta=0.5
-    )
+    smoke_cfg = SmokeConfig()
 
     # Initialize Smoke
-    blob_params_list = [
-        BlobParams(x_pos=10, y_pos=20, intensity=1.0, spread_rate=4.0),
+    blob_cfg_list = [
+        BlobConfig(x_pos=10, y_pos=20, intensity=1.0, spread_rate=4.0),
     ]
-    smoke = Smoke(params=smoke_params, blob_params_list=blob_params_list)
-    smoke.step(dt=0.1)
+    smoke_cfg = SmokeConfig(blobs=blob_cfg_list)
+    smoke = Smoke(cfg=smoke_cfg)
+    smoke.step()
 
     # Define the sensor configurations to test
     sensor_configs = ["global", "downwards", "camera1d"]
@@ -332,39 +328,18 @@ def run_tests() -> None:
 
         if stype == "global":
             sensor_class = GlobalSensor
-            sensor_params = GlobalSensorConfig(
-                sensor_type="global",
-                density_reading_per_unit_length=0.0,
-                world_x_size=50.0,
-                world_y_size=50.0,
-            )
+            sensor_cfg = GlobalSensorConfig()
         elif stype == "downwards":
             sensor_class = DownwardsSensor
-            sensor_params = DownwardsSensorConfig(
-                sensor_type="downwards",
-                density_reading_per_unit_length=0.0,
-                world_x_size=50.0,
-                world_y_size=50.0,
-                x_fov_size=10.0,
-                y_fov_size=10.0,
-            )
+            sensor_cfg = DownwardsSensorConfig()
         elif stype == "camera1d":
             sensor_class = Camera1DSensor
-            sensor_params = Camera1DSensorConfig(
-                sensor_type="camera_1d",
-                world_x_size=50.0,
-                world_y_size=50.0,
-                fov_size_degrees=90.0,
-                num_rays=10,
-                step_size=1.0,
-                max_range=20.0,
-                opacity_threshold=0.5,
-            )
+            sensor_cfg = Camera1DSensorConfig()
         else:
             raise ValueError(f"Unknown sensor type: {stype}")
 
         # Instantiate and run the sensor
-        sensor = sensor_class(sensor_params)
+        sensor = sensor_class(sensor_cfg)
         res = sensor.read(smoke, curr_pos)
 
         print(f"{sensor_class.__name__} readings shape:", res.readings.shape)

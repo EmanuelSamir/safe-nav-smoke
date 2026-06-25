@@ -1,7 +1,9 @@
 import logging
+
 import torch
 
-from src.agents.basic_robot import Robot, RobotParams
+from src.agents.basic_robot import Robot
+from src.agents.schemas import DubinsConfig, RobotConfig
 
 # State indices constants for 2D kinematics
 X_DIM = 0
@@ -14,7 +16,7 @@ OMEGA_DIM = 1
 
 
 class DubinsRobot(Robot):
-    def __init__(self, params: RobotParams, log_enabled: bool = False) -> None:
+    def __init__(self, params: RobotConfig, log_enabled: bool = False) -> None:
         """Dubins robot is a robot that can move in a 2D space using a Dubins path.
 
         The state is [x_pos, y_pos, angle].
@@ -107,20 +109,13 @@ class DubinsRobot(Robot):
 
 
 def run_tests() -> None:
-    robot_params = RobotParams(
-        action_min=[0.0, -1.0],
-        action_max=[1.0, 1.0],
-        action_dim=2,
-        state_dim=3,
-        state_min=[0.0, 0.0, 0.0],
-        state_max=[35.0, 35.0, 6.28],
-        dt=0.1
-    )
-    robot = DubinsRobot(robot_params)
+    """Run basic tests to verify bounds, action filtering, and RK4 dynamics."""
+    robot_cfg = DubinsConfig()
+    robot = DubinsRobot(robot_cfg)
 
     # 1. Test bound_state & filter_action
-    v_max = robot_params.action_max[V_DIM]
-    w_max = robot_params.action_max[OMEGA_DIM]
+    v_max = robot_cfg.action_max[V_DIM]
+    w_max = robot_cfg.action_max[OMEGA_DIM]
     assert torch.allclose(
         robot.filter_action(torch.tensor([v_max + 1.0, w_max + 1.0])),
         torch.tensor([v_max, w_max]),
@@ -128,8 +123,8 @@ def run_tests() -> None:
 
     # Test bounding with values derived from the configuration instead of hardcoded literals
     # We exceed state_max on y-axis and test angle wrapping
-    # robot_params.state_max[1] comes from the config file (e.g. world_size.1)
-    expected_y = robot_params.state_max[1]
+    # robot_cfg.state_max[1] comes from the config file (e.g. world_size.1)
+    expected_y = robot_cfg.state_max[1]
     expected_state = torch.tensor([0.0, expected_y, torch.pi], dtype=torch.float32)
     assert torch.allclose(
         robot.bound_state(torch.tensor([-1.0, 60.0, 3 * torch.pi])),
@@ -141,7 +136,7 @@ def run_tests() -> None:
     states_t = torch.tensor([[10.0, 10.0, 0.0]], dtype=torch.float32)
     actions_t = torch.tensor([[2.0, 0.0]], dtype=torch.float32)
     next_states = robot.dynamics(states_t, actions_t)
-    expected_x = 10.0 + 2.0 * float(robot_params.dt)
+    expected_x = 10.0 + 2.0 * float(robot_cfg.dt)
     expected_next = torch.tensor([[expected_x, 10.0, 0.0]], dtype=torch.float32)
     assert torch.allclose(next_states, expected_next, atol=1e-3)
     print("Vectorized RK4 Dynamics: PASSED")

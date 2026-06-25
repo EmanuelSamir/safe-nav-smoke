@@ -1,10 +1,10 @@
 import torch
 
-from src.agents.schemas import RobotParams
+from src.agents.schemas import RobotConfig
 
 
 class Robot:
-    def __init__(self, params: RobotParams, log_enabled: bool = False) -> None:
+    def __init__(self, params: RobotConfig, log_enabled: bool = False) -> None:
         """Initializes a generic robot with the given parameters.
 
         Args:

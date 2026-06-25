@@ -13,7 +13,7 @@ Design rules:
   of truth across experiments.
 """
 
-from typing import List, Literal
+from typing import Literal
 
 from src.utils.config_utils import StrictBaseModel
 

@@ -71,30 +71,30 @@ class CBFFilter:
     ) -> torch.Tensor:
         """Compute HOCBF safety index values.
 
-        Returns a tensor of shape ``(K,)`` where positive values indicate a
+        Returns a tensor of shape ``(batch_size,)`` where positive values indicate a
         safe configuration and negative values indicate a constraint violation.
 
         Args:
-            state:     Ego-agent states, shape ``(K, 3)`` — columns: x, y, theta.
+            state:     Ego-agent states, shape ``(batch_size, 3)`` — columns: x, y, theta.
             neighbors: Neighbour states as a list of ``(3,)`` tensors **or** a
                        pre-stacked tensor of shape ``(N_neighbors, 3)``.
             t:         Look-ahead time step for neighbour position prediction.
         """
         p = self.params
         device = state.device
-        K = state.shape[0]
+        batch_size = state.shape[0]
 
         if self._no_neighbors(neighbors):
-            return 1000.0 * torch.ones(K, device=device)
+            return 1000.0 * torch.ones(batch_size, device=device)
 
-        p_i_safe, p_j_pred, _, _ = self._geometry(state, neighbors, t, device)
+        ego_safe_pos, neighbor_pred_pos, _, _ = self._geometry(state, neighbors, t, device)
 
         d_safe_barrier = p.d_safe + 2.0 * p.L
-        p_rel = p_i_safe.unsqueeze(1) - p_j_pred.unsqueeze(0)  # (K, N, 2)
-        dist_sq = torch.sum(p_rel**2, dim=2)  # (K, N)
-        h0 = dist_sq - d_safe_barrier**2
+        relative_pos = ego_safe_pos.unsqueeze(1) - neighbor_pred_pos.unsqueeze(0)  # (batch_size, N, 2)
+        dist_sq = torch.sum(relative_pos**2, dim=2)  # (batch_size, N)
+        barrier_values = dist_sq - d_safe_barrier**2
 
-        h_min, _ = torch.min(h0, dim=1)
+        h_min, _ = torch.min(barrier_values, dim=1)
         return h_min
 
     def qp_filter(
@@ -109,57 +109,55 @@ class CBFFilter:
         """Project *u_nominal* onto the CBF-safe control set via an analytical QP.
 
         Args:
-            state:      Ego-agent states, shape ``(K, 3)``.
-            u_nominal:  Nominal controls, shape ``(K, 2)`` — columns: v, omega.
+            state:      Ego-agent states, shape ``(batch_size, 3)``.
+            u_nominal:  Nominal controls, shape ``(batch_size, 2)`` — columns: v, omega.
             neighbors:  Neighbour states (see :meth:`h_function`).
             action_min: Lower bounds on controls, shape ``(2,)``.
             action_max: Upper bounds on controls, shape ``(2,)``.
             t:          Look-ahead time step for neighbour position prediction.
 
         Returns:
-            Safe controls clamped to ``[action_min, action_max]``, shape ``(K, 2)``.
+            Safe controls clamped to ``[action_min, action_max]``, shape ``(batch_size, 2)``.
         """
         if self._no_neighbors(neighbors):
             return u_nominal
 
         p = self.params
         device = state.device
-        K = state.shape[0]
+        batch_size = state.shape[0]
 
-        p_i_safe, p_j_pred, v_j, trig = self._geometry(state, neighbors, t, device)
-        cos_t, sin_t = trig  # (K,), (K,)
+        ego_safe_pos, neighbor_pred_pos, neighbor_velocity, trig = self._geometry(state, neighbors, t, device)
+        cos_t, sin_t = trig  # (batch_size,), (batch_size,)
 
         # Mathematical constraint for unicycle lookahead points
         d_safe_barrier = p.d_safe + 2.0 * p.L
-        p_rel = p_i_safe.unsqueeze(1) - p_j_pred.unsqueeze(0)  # (K, N, 2)
-        dist_sq = torch.sum(p_rel**2, dim=2)  # (K, N)
-        h0_all = dist_sq - d_safe_barrier**2  # (K, N)
+        relative_pos = ego_safe_pos.unsqueeze(1) - neighbor_pred_pos.unsqueeze(0)  # (batch_size, N, 2)
+        dist_sq = torch.sum(relative_pos**2, dim=2)  # (batch_size, N)
+        all_barrier_values = dist_sq - d_safe_barrier**2  # (batch_size, N)
 
         # Find the critical (closest) neighbour for each batch item
-        crit_idx = torch.argmin(h0_all, dim=1)
-        batch_idx = torch.arange(K, device=device)
+        closest_neighbor_idx = torch.argmin(all_barrier_values, dim=1)
+        batch_idx = torch.arange(batch_size, device=device)
 
-        h0_crit = h0_all[batch_idx, crit_idx]  # (K,)
-        p_rel_crit = p_rel[batch_idx, crit_idx]  # (K, 2)
-        v_j_crit = v_j[crit_idx]  # (K, 2)
+        closest_barrier_value = all_barrier_values[batch_idx, closest_neighbor_idx]  # (batch_size,)
+        closest_relative_pos = relative_pos[batch_idx, closest_neighbor_idx]  # (batch_size, 2)
+        closest_neighbor_velocity = neighbor_velocity[closest_neighbor_idx]  # (batch_size, 2)
 
-        # CBF constraint: A @ u >= B
-        # Jacobian of h0 w.r.t. u through the unicycle kinematics:
-        #   dh/du_v  = 2 * p_rel · [cos θ,  sin θ]
-        #   dh/du_ω  = 2 * p_rel · [-L sin θ, L cos θ]
-        A_v = 2.0 * (p_rel_crit[:, 0] * cos_t + p_rel_crit[:, 1] * sin_t)
-        A_w = 2.0 * (-p.L * p_rel_crit[:, 0] * sin_t + p.L * p_rel_crit[:, 1] * cos_t)
-        A = torch.stack([A_v, A_w], dim=1)  # (K, 2)
+        # CBF constraint: constraint_matrix @ u >= constraint_bound
+        # Jacobian of barrier w.r.t. u through the unicycle kinematics:
+        grad_v = 2.0 * (closest_relative_pos[:, 0] * cos_t + closest_relative_pos[:, 1] * sin_t)
+        grad_w = 2.0 * (-p.L * closest_relative_pos[:, 0] * sin_t + p.L * closest_relative_pos[:, 1] * cos_t)
+        constraint_matrix = torch.stack([grad_v, grad_w], dim=1)  # (batch_size, 2)
 
-        B = 2.0 * torch.sum(p_rel_crit * v_j_crit, dim=1) - p.k1 * h0_crit
+        constraint_bound = 2.0 * torch.sum(closest_relative_pos * closest_neighbor_velocity, dim=1) - p.k1 * closest_barrier_value
 
-        # Projection: u_safe = u_nom + max(0, B - A·u_nom) / ||A||² · A
-        A_u_nom = torch.sum(A * u_nominal, dim=1)
-        violation = B - A_u_nom
-        A_norm_sq = torch.clamp(torch.sum(A**2, dim=1), min=1e-6)
-        u_safe = u_nominal + (torch.clamp(violation, min=0.0) / A_norm_sq).unsqueeze(-1) * A
+        # Projection: safe_action = nominal_action + max(0, bound - A·nominal) / ||A||² · A
+        A_u_nom = torch.sum(constraint_matrix * u_nominal, dim=1)
+        violation = constraint_bound - A_u_nom
+        A_norm_sq = torch.clamp(torch.sum(constraint_matrix**2, dim=1), min=1e-6)
+        safe_action = u_nominal + (torch.clamp(violation, min=0.0) / A_norm_sq).unsqueeze(-1) * constraint_matrix
 
-        return torch.max(torch.min(u_safe, action_max), action_min)
+        return torch.max(torch.min(safe_action, action_max), action_min)
 
     # ------------------------------------------------------------------
     # Shared geometry kernel
@@ -175,38 +173,38 @@ class CBFFilter:
         """Compute the safety points and predicted neighbour positions.
 
         Returns:
-            p_i_safe:  Ego safety points, shape ``(K, 2)``.
-            p_j_pred:  Predicted neighbour safety points at time *t*, shape ``(N, 2)``.
-            v_j:       Neighbour velocities, shape ``(N, 2)``.
-            trig:      Tuple ``(cos θ, sin θ)`` for the ego agents, each shape ``(K,)``.
+            ego_safe_pos:  Ego safety points, shape ``(batch_size, 2)``.
+            neighbor_pred_pos:  Predicted neighbour safety points at time *t*, shape ``(N, 2)``.
+            neighbor_velocity:       Neighbour velocities, shape ``(N, 2)``.
+            trig:      Tuple ``(cos θ, sin θ)`` for the ego agents, each shape ``(batch_size,)``.
         """
         p = self.params
 
         neighbors_tensor = self._to_tensor(neighbors, device)  # (N, 3)
 
-        theta = state[:, _THETA]  # (K,)
+        theta = state[:, _THETA]  # (batch_size,)
         cos_t, sin_t = torch.cos(theta), torch.sin(theta)
 
-        p_i_center = state[:, [_X, _Y]]
-        p_i_safe = p_i_center + p.L * torch.stack([cos_t, sin_t], dim=1)
+        ego_center_pos = state[:, [_X, _Y]]
+        ego_safe_pos = ego_center_pos + p.L * torch.stack([cos_t, sin_t], dim=1)
 
         theta_j = neighbors_tensor[:, _THETA]  # (N,)
         cos_j, sin_j = torch.cos(theta_j), torch.sin(theta_j)
 
-        p_j_center = neighbors_tensor[:, [_X, _Y]]
-        p_j_safe = p_j_center + p.L * torch.stack([cos_j, sin_j], dim=1)
+        neighbor_center_pos = neighbors_tensor[:, [_X, _Y]]
+        neighbor_safe_pos = neighbor_center_pos + p.L * torch.stack([cos_j, sin_j], dim=1)
 
         if neighbors_tensor.shape[1] > 3:
             v_nominal = neighbors_tensor[:, 3]  # (N,)
-            v_j = v_nominal.unsqueeze(-1) * torch.stack([cos_j, sin_j], dim=1)
+            neighbor_velocity = v_nominal.unsqueeze(-1) * torch.stack([cos_j, sin_j], dim=1)
         else:
             # TODO: Replace v_nominal with a per-neighbour estimate when available.
             v_nominal = 3.0  # m/s — assumed constant for all neighbours
-            v_j = v_nominal * torch.stack([cos_j, sin_j], dim=1)
+            neighbor_velocity = v_nominal * torch.stack([cos_j, sin_j], dim=1)
 
-        p_j_pred = p_j_safe + v_j * (t * p.dt)
+        neighbor_pred_pos = neighbor_safe_pos + neighbor_velocity * (t * p.dt)
 
-        return p_i_safe, p_j_pred, v_j, (cos_t, sin_t)
+        return ego_safe_pos, neighbor_pred_pos, neighbor_velocity, (cos_t, sin_t)
 
     # ------------------------------------------------------------------
     # Helpers
@@ -223,34 +221,6 @@ class CBFFilter:
         if isinstance(neighbors, list):
             return torch.stack(neighbors).to(device)
         return neighbors.to(device)
-
-
-# ---------------------------------------------------------------------------
-# Module-level convenience wrappers (backwards-compatible)
-# ---------------------------------------------------------------------------
-
-
-def cbf_h_function(
-    state: torch.Tensor,
-    neighbors: Neighbors,
-    params: CBFFilterParams,
-    t: int = 0,
-) -> torch.Tensor:
-    """Module-level wrapper around :meth:`CBFFilter.h_function`."""
-    return CBFFilter(params).h_function(state, neighbors, t)
-
-
-def qp_cbf_filter(
-    state: torch.Tensor,
-    u_nominal: torch.Tensor,
-    neighbors: Neighbors,
-    action_min: torch.Tensor,
-    action_max: torch.Tensor,
-    params: CBFFilterParams,
-    t: int = 0,
-) -> torch.Tensor:
-    """Module-level wrapper around :meth:`CBFFilter.qp_filter`."""
-    return CBFFilter(params).qp_filter(state, u_nominal, neighbors, action_min, action_max, t)
 
 
 # ---------------------------------------------------------------------------

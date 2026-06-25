@@ -4,32 +4,33 @@ import numpy as np
 from datasets import load_from_disk
 from scipy.ndimage import map_coordinates
 
-from src.env.schemas import PlaybackConfig
-from src.env.simulator.playback_schema import SmokeDataSchema
+from src.env.simulator.base_smoke_simulator import BaseSmokeSimulator
+from src.env.simulator.schemas import PlaybackConfig
+from src.env.simulator.smoke_data_schema import SmokeDataSchema
 
 
-class Playback:
+class Playback(BaseSmokeSimulator):
     """Simulator that plays back pre-calculated smoke simulation data from an HF Dataset."""
 
-    def __init__(self, params: PlaybackConfig):
+    def __init__(self, cfg: PlaybackConfig):
         """Initializes the playback simulator.
 
-        :param params: Configuration containing data_path (HF Dataset directory).
+        :param cfg: Configuration containing data_path (HF Dataset directory).
         """
-        self.params = params
-        if not os.path.exists(params.data_path):
-            raise FileNotFoundError(f"Smoke dataset not found: {params.data_path}")
+        self.cfg = cfg
+        if not os.path.exists(cfg.data_path):
+            raise FileNotFoundError(f"Smoke dataset not found: {cfg.data_path}")
 
-        print(f"Loading smoke data from dataset at {params.data_path}...")
-        self.dataset = load_from_disk(params.data_path)
+        print(f"Loading smoke data from dataset at {cfg.data_path}...")
+        self.dataset = load_from_disk(cfg.data_path)
         self.dataset = self.dataset.with_format("numpy")
 
         # Consistent parameters from the first row
         first_row = self.dataset[0]
-        self.x_size = float(first_row.get(SmokeDataSchema.X_SIZE, 30.0))
-        self.y_size = float(first_row.get(SmokeDataSchema.Y_SIZE, 30.0))
-        self.resolution = float(first_row.get(SmokeDataSchema.RESOLUTION, 0.2))
-        self.dt = float(first_row.get(SmokeDataSchema.DT, 0.1))
+        self.cfg.x_size = float(first_row.get(SmokeDataSchema.X_SIZE, 30.0))
+        self.cfg.y_size = float(first_row.get(SmokeDataSchema.Y_SIZE, 30.0))
+        self.cfg.resolution = float(first_row.get(SmokeDataSchema.RESOLUTION, 0.2))
+        self.cfg.dt = float(first_row.get(SmokeDataSchema.DT, 0.1))
 
         # Grid parameters
         sample_map = np.array(first_row[SmokeDataSchema.SMOKE_DATA][0])
@@ -44,7 +45,7 @@ class Playback:
 
         print(f"Playback ready: {self.num_episodes} episodes, {self.max_steps} steps per episode")
         print(
-            f"Grid: ({self.H}, {self.W}) at {self.resolution}m resolution | World: {self.x_size}mx{self.y_size}m"
+            f"Grid: ({self.H}, {self.W}) at {self.cfg.resolution}m resolution | World: {self.cfg.x_size}mx{self.cfg.y_size}m"
         )
 
     def reset(self, episode_idx=None):
@@ -82,8 +83,8 @@ class Playback:
             pos = pos.reshape(1, 2)
 
         # Map (x, y) to grid indices
-        x_coords = (pos[:, 0] / self.resolution) - 0.5
-        y_coords = (pos[:, 1] / self.resolution) - 0.5
+        x_coords = (pos[:, 0] / self.cfg.resolution) - 0.5
+        y_coords = (pos[:, 1] / self.cfg.resolution) - 0.5
         coords = np.stack([y_coords, x_coords])
 
         grid = self.current_episode_data[self.current_step_idx]
@@ -93,7 +94,7 @@ class Playback:
 
     def get_smoke_extent(self):
         """Returns the [xmin, xmax, ymin, ymax] extent of the world."""
-        return [0, self.x_size, 0, self.y_size]
+        return [0, self.cfg.x_size, 0, self.cfg.y_size]
 
     def get_smoke_map_tensor(self):
         """Returns the current 2D smoke density map as a native PyTorch tensor."""
@@ -109,13 +110,18 @@ if __name__ == "__main__":
 
     # Test with standard path
     try:
-        params = PlaybackParams(data_path="data/playback_smoke_v1")
-        sim = Playback(params)
+        cfg = PlaybackConfig(data_path="data/smoke_env_100ep")
+        sim = Playback(cfg)
         sim.reset()
 
-        smoke_map = sim.get_smoke_map()
-        plt.imshow(smoke_map, origin="lower", extent=sim.get_smoke_extent())
-        plt.title("Playback Test (HF Dataset)")
+        fig, ax = plt.subplots()
+        for _ in range(100):
+            sim.step()
+            sim.plot_smoke_map(fig=fig, ax=ax)
+            print(np.round(sim.get_smoke_density(np.array([[10, 40], [40, 10]])), 2))
+            plt.draw()
+            plt.pause(0.1)
+
         plt.show()
     except Exception as e:
         print(f"Test failed: {e}")

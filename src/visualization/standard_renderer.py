@@ -11,7 +11,7 @@ import numpy as np
 from matplotlib.patches import Arrow, Circle, FancyArrow, Polygon
 from matplotlib.ticker import FormatStrFormatter
 
-from src.utils import clip_world
+from src.utils.geometry import clip_world
 from src.visualization.base_renderer import BaseRenderer
 
 
@@ -85,26 +85,30 @@ class StandardRenderer(BaseRenderer):
             main_ax = self.axes["pred"]
             self.flush_decoratives(main_ax)
 
-        # Render environment background, goals, and robots using SimpleRenderer helpers
-        from visualization.simple_renderer import SimpleRenderer
+        # Render environment background, goals, and robots using plot_utils helpers
+        from src.visualization.plot_utils import (
+            plot_smoke_background,
+            plot_controller_rollouts,
+            plot_goals,
+            plot_robots_and_sensors,
+        )
 
-        SimpleRenderer.plot_smoke_background(self.axes["env"], env.env_params, env.smoke_simulator)
-        SimpleRenderer.plot_controller_rollouts(self.axes["env"], info.get("nom_controller"))
+        plot_smoke_background(self.axes["env"], env.smoke_simulator)
+        plot_controller_rollouts(self.axes["env"], info.get("nom_controller"))
 
         if not hasattr(self, "_goal_circles") or not self._goal_circles:
-            self._goal_circles, _ = SimpleRenderer.plot_goals(
-                self.axes["env"], env.env_params, env.agents
-            )
+            self._goal_circles, _ = plot_goals(self.axes["env"], env.smoke_agents)
 
-        SimpleRenderer.plot_robots_and_sensors(
-            self.axes["env"],
-            env.env_params,
-            env.agents,
-            env.env_params_sensor_params,
-            env.sensor,
+        plot_robots_and_sensors(
+            ax=self.axes["env"],
+            env_cfg=getattr(env, "env_cfg", None),
+            agents=env.smoke_agents,
+            sensor_cfg=getattr(env, "sensor_cfg", None),
+            sensor=getattr(env, "sensor", None),
+            smoke_simulator=env.smoke_simulator,
             goal_circles=self._goal_circles,
             controller=info.get("nom_controller"),
-            get_smoke_density_sensor_fn=env.get_smoke_density_sensor,
+            get_smoke_density_sensor_fn=getattr(env, "get_smoke_density_sensor", None),
         )
 
         # Render predicted risk map
@@ -240,7 +244,7 @@ class StandardRenderer(BaseRenderer):
         )
 
         # Draw sensor field of view
-        square = env.sensor.projection_bounds(location[0], location[1])
+        square = env.sensor.projection_bounds(env.smoke_simulator, location[0], location[1])
         bounded_square = np.array(
             [
                 clip_world(p[0], p[1], env.env_params.world_x_size, env.env_params.world_y_size)

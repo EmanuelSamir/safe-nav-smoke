@@ -4,38 +4,38 @@ import phi.field
 import torch
 from phi.torch import flow
 
-if torch.cuda.is_available():
-    device = "GPU"
-else:
-    device = "CPU"
-
-flow.TORCH.set_default_device(device)
+from src.env.simulator.base_smoke_simulator import BaseSmokeSimulator
+from src.env.simulator.schemas import BlobConfig, SmokeConfig
 
 
-class Smoke:
-    def __init__(self, params: SmokeParams, blob_params_list: list[BlobParams]):
+class Smoke(BaseSmokeSimulator):
+    def __init__(self, cfg: SmokeConfig):
         """Initialize the smoke.
 
-        :param params: Parameters for the smoke simulation.
-        :param blob_params_list: List of parameters for the smoke blobs.
+        :param cfg: Parameters for the smoke simulation.
         """
-        self.params = params
-        self.blob_params_list = blob_params_list
+        if torch.cuda.is_available():
+            device_name = "GPU"
+        else:
+            device_name = "CPU"
+        flow.TORCH.set_default_device(device_name)
 
-        assert (
-            self.params.x_size >= self.params.resolution
-            or self.params.y_size >= self.params.resolution
-        ), "Resolution must be smaller than the size of the world"
-        x_resolution = int(self.params.x_size / self.params.resolution)
-        y_resolution = int(self.params.y_size / self.params.resolution)
+        self.cfg = cfg
+        self.blob_cfg_list = cfg.blobs
 
-        self.scalar_resolution = self.params.resolution
+        assert self.cfg.x_size >= self.cfg.resolution or self.cfg.y_size >= self.cfg.resolution, (
+            "Resolution must be smaller than the size of the world"
+        )
+        x_resolution = int(self.cfg.x_size / self.cfg.resolution)
+        y_resolution = int(self.cfg.y_size / self.cfg.resolution)
+
+        self.scalar_resolution = self.cfg.resolution
         self.spatial_resolution = flow.spatial(x=x_resolution, y=y_resolution)
-        self.bounds = flow.Box(x=self.params.x_size, y=self.params.y_size)
+        self.bounds = flow.Box(x=self.cfg.x_size, y=self.cfg.y_size)
 
         self.inflow_bank = []
-        for _ in range(self.params.inflow_bank_count):
-            self.inflow_bank.append(self.build_smoke_map(self.blob_params_list))
+        for _ in range(self.cfg.inflow_bank_count):
+            self.inflow_bank.append(self.build_smoke_map(self.blob_cfg_list))
 
         self.smoke_map = self.inflow_bank[0]
         self.smoke_map = flow.diffuse.explicit(self.smoke_map, diffusivity=0.1, dt=0.1)
@@ -64,7 +64,7 @@ class Smoke:
 
         # We create an upward force (y-axis = 1) proportional to the smoke density
         # This creates the "mushroom-like" plumes
-        buoyancy_force = smoke_centered * (0, self.params.buoyancy_factor)
+        buoyancy_force = smoke_centered * (0, self.cfg.buoyancy_factor)
 
         # Apply force to velocity
         self.velocity = self.velocity + buoyancy_force * dt
@@ -84,8 +84,8 @@ class Smoke:
         )
 
         # --- Parameters ---
-        tau = self.params.smoke_decay_rate
-        emit_rate = self.params.smoke_emission_rate
+        tau = self.cfg.smoke_decay_rate
+        emit_rate = self.cfg.smoke_emission_rate
 
         # 3. --- SOURCE / INFLOW ---
         # Use random texture bank
@@ -98,13 +98,13 @@ class Smoke:
         self.smoke_map = flow.advect.semi_lagrangian(self.smoke_map, self.velocity, dt=dt)
 
         # 4.5 Diffusion (implicit solver: unconditionally stable, no CFL constraint)
-        if self.params.smoke_diffusion_rate > 0:
+        if self.cfg.smoke_diffusion_rate > 0:
             self.smoke_map = flow.diffuse.implicit(
-                self.smoke_map, diffusivity=self.params.smoke_diffusion_rate, dt=dt
+                self.smoke_map, diffusivity=self.cfg.smoke_diffusion_rate, dt=dt
             )
 
         # 4) Exponential Decay
-        if self.params.smoke_decay_rate > 0:
+        if self.cfg.smoke_decay_rate > 0:
             self.smoke_map = self.smoke_map * flow.math.exp(-dt / tau)
 
         # 5) Clamp (Final cleanup)
@@ -112,13 +112,13 @@ class Smoke:
             phi.field.minimum(self.smoke_map, self.smoke_top), self.smoke_zero
         )
 
-    def build_smoke_map(self, blob_params_list: list[BlobParams]):
+    def build_smoke_map(self, blob_cfg_list: list[BlobConfig]):
         # Initialize empty map
         inflow_map = flow.CenteredGrid(
             0, flow.extrapolation.BOUNDARY, resolution=self.spatial_resolution, bounds=self.bounds
         )
 
-        for blob in blob_params_list:
+        for blob in blob_cfg_list:
             # 1. Define location and base shape (Sphere/Mask)
             loc = flow.tensor(
                 [(blob.x_pos, blob.y_pos)], flow.batch("inflow_loc"), flow.channel(vector="x,y")
@@ -155,7 +155,7 @@ class Smoke:
         return inflow_map
 
     def build_velocity(self):
-        velocity = self.params.average_wind_speed * flow.StaggeredGrid(
+        velocity = self.cfg.average_wind_speed * flow.StaggeredGrid(
             flow.Noise(smoothness=0.4),
             flow.extrapolation.ZERO,
             resolution=self.spatial_resolution,
@@ -205,8 +205,8 @@ class Smoke:
         # Map physical positions to normalized coordinates [-1, 1] for grid_sample.
         # In grid_sample, coordinates must be in range [-1, 1], where:
         # -1 represents the border of the first grid cell, 1 represents the border of the last.
-        x_norm = 2.0 * (pos_t[:, 0] / self.params.x_size) - 1.0
-        y_norm = 2.0 * (pos_t[:, 1] / self.params.y_size) - 1.0
+        x_norm = 2.0 * (pos_t[:, 0] / self.cfg.x_size) - 1.0
+        y_norm = 2.0 * (pos_t[:, 1] / self.cfg.y_size) - 1.0
 
         # grid_sample expects grid format of [x, y] coordinates
         grid_coords = torch.stack([x_norm, y_norm], dim=-1).view(1, -1, 1, 2)
@@ -235,56 +235,23 @@ class Smoke:
         extent = [b.lower[0].numpy(), b.upper[0].numpy(), b.lower[1].numpy(), b.upper[1].numpy()]
         return extent
 
-    def plot_smoke_map(self, fig: plt.Figure = None, ax: plt.Axes = None):
-        if fig is None or ax is None:
-            fig, ax = plt.subplots()
-
-        extent = self.get_smoke_extent()
-        smoke_arr = self.get_smoke_map()
-
-        if ax.images:
-            ax.images[0].set_array(smoke_arr)
-        else:
-            ax_ = ax.imshow(smoke_arr, cmap="gray", extent=extent, origin="lower", vmin=0, vmax=1)
-            fig.colorbar(ax_, label="Smoke Density")
-            ax.set_title("Smoke Map")
-            ax.set_xlabel("X Position")
-            ax.set_ylabel("Y Position")
-
-        fig.canvas.draw()
-
 
 def run_smoke_test() -> None:
     """Run a smoke simulation test."""
-    smoke_params = SmokeParams(
-        resolution=1.0,
-        average_wind_speed=2.0,
-        smoke_decay_rate=0.99,
-        smoke_emission_rate=5.0,
-        smoke_diffusion_rate=0.01,
-        inflow_bank_count=5,
-        buoyancy_factor=0.1,
-        dt=0.1,
-        x_size=50.0,
-        y_size=50.0,
-        velocity_iterations=4,
-        pressure_iterations=20,
-        mac_cormack=True,
-        buoyancy_alpha=0.05,
-        buoyancy_beta=0.5
-    )
+    smoke_cfg = SmokeConfig()
 
-    blob_params_list = [
-        BlobParams(x_pos=10, y_pos=40, intensity=1.0, spread_rate=4.0),
-        BlobParams(x_pos=20, y_pos=20, intensity=1.0, spread_rate=5.0),
-        BlobParams(x_pos=20, y_pos=40, intensity=1.0, spread_rate=3.0),
-        BlobParams(x_pos=30, y_pos=30, intensity=1.0, spread_rate=5.0),
+    blob_cfg_list = [
+        BlobConfig(x_pos=10, y_pos=15, intensity=1.0, spread_rate=4.0),
+        BlobConfig(x_pos=20, y_pos=20, intensity=1.0, spread_rate=5.0),
+        BlobConfig(x_pos=20, y_pos=15, intensity=1.0, spread_rate=3.0),
+        BlobConfig(x_pos=25, y_pos=5, intensity=1.0, spread_rate=5.0),
     ]
+    smoke_cfg = SmokeConfig(blobs=blob_cfg_list)
 
-    smoke = Smoke(params=smoke_params, blob_params_list=blob_params_list)
+    smoke = Smoke(cfg=smoke_cfg)
 
     fig, ax = plt.subplots()
-    for i in range(100):
+    for _ in range(100):
         smoke.step(dt=0.1)
         smoke.plot_smoke_map(fig=fig, ax=ax)
         print(np.round(smoke.get_smoke_density(np.array([[10, 40], [40, 10]])), 2))

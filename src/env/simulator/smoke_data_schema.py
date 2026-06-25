@@ -26,8 +26,8 @@ class SmokeDataSchema:
     NEXT_OBS_LOCATION = "next_obs_location"
     NEXT_OBS_READINGS = "next_obs_readings"
     NEXT_OBS_FULL_MAP = "next_obs_full_map"
-    TERMINATED = "terminated"  # bool
-    TRUNCATED = "truncated"  # bool
+    TERMINATIONS = "terminations"  # bool
+    TRUNCATIONS = "truncations"  # bool
 
     @classmethod
     def get_playback_keys(cls) -> List[str]:
@@ -45,6 +45,6 @@ class SmokeDataSchema:
             cls.NEXT_OBS_LOCATION,
             cls.NEXT_OBS_READINGS,
             cls.NEXT_OBS_FULL_MAP,
-            cls.TERMINATED,
-            cls.TRUNCATED,
+            cls.TERMINATIONS,
+            cls.TRUNCATIONS,
         ]
