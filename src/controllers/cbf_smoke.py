@@ -6,7 +6,7 @@ import numpy as np
 import skfmm
 import torch
 
-from src.agents.basic_robot import RobotParams
+from src.agents.schemas import RobotConfig
 from src.controllers.schemas import CBFSmokeConfig
 from src.env.smoke_env import EnvConfig
 from src.utils.optimization import solve_qp_batch_pytorch
@@ -46,8 +46,8 @@ class CBFSmokeController:
     def __init__(
         self,
         config: CBFSmokeConfig,
-        env_params: EnvConfig,
-        robot_params: RobotParams,
+        env_config: EnvConfig,
+        robot_config: RobotConfig,
         goal: np.ndarray,
         num_agents: int = 1,
     ):
@@ -57,8 +57,8 @@ class CBFSmokeController:
         )
 
         self.config = config
-        self.env_params = env_params
-        self.robot_params = robot_params
+        self.env_config = env_config
+        self.robot_config = robot_config
         self.goal = goal
 
         self.h_discrete_artifacts = {}
@@ -67,8 +67,8 @@ class CBFSmokeController:
         # Map configurations
         self.R_diag = np.array(self.config.R_diag)
         self.rho = self.config.rho
-        self.u_min = np.array(self.robot_params.action_min)
-        self.u_max = np.array(self.robot_params.action_max)
+        self.u_min = np.array(self.robot_config.action_min)
+        self.u_max = np.array(self.robot_config.action_max)
         self.n_u = 2
         self.n_x = 3
         self.k1 = self.config.k1
@@ -312,110 +312,110 @@ class CBFSmokeController:
 if __name__ == "__main__":
     import os
     import sys
-
-    from hydra import compose, initialize
-    from omegaconf import OmegaConf
+    from pathlib import Path
 
     # Set up sys.path dynamically to import other project packages
     project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "../.."))
     if project_root not in sys.path:
         sys.path.insert(0, project_root)
 
-    print("=== Testing CBFSmokeController with Hydra Config ===")
+    from src.env.schemas import EnvConfig
+    from src.agents.schemas import RobotConfig
+    from src.env.simulator.schemas import SmokeConfig, GlobalSensorConfig
 
-    with initialize(version_base=None, config_path="../../configs"):
-        # Load configs, overriding controller to select cbf_smoke and sensor to global
-        cfg = compose(
-            config_name="config", overrides=["+controller=cbf_smoke", "env/sensors@sensor=global"]
-        )
+    print("=== Testing CBFSmokeController with Pydantic Config ===")
 
-        cbf_config = cfg.controller
-        print(f"Loaded config type: {type(cbf_config)}")
-        print("Config Values:")
-        print(OmegaConf.to_yaml(cbf_config))
+    cbf_config = CBFSmokeConfig()
+    print("Successfully initialized CBFSmokeConfig.")
 
-        # Resolve config and extract schemas
-        OmegaConf.resolve(cfg)
-        env_params = OmegaConf.to_object(cfg.env)
-        robot_params = OmegaConf.to_object(cfg.agent)
-        sensor_params = OmegaConf.to_object(cfg.sensor)
-        smoke_params = OmegaConf.to_object(cfg.simulator)
+    env_config = EnvConfig(
+        num_agents=1,
+        max_steps=2,
+        initial_locations=[[5.0, 15.0]],
+        goal_locations=[[25.0, 15.0]],
+        world_x_size=30.0,
+        world_y_size=30.0,
+    )
+    
+    robot_config = RobotConfig(name="dubins2d", action_dim=2, action_min=torch.tensor([0.0,-4.0]), action_max=torch.tensor([6.0,4.0]), state_dim=3, state_min=torch.tensor([-10,-10,-3.14]), state_max=torch.tensor([10,10,3.14]), dt=0.1, device="cpu")
+    smoke_config = SmokeConfig()
+    sensor_config = GlobalSensorConfig(world_x_size=30.0, world_y_size=30.0)
 
-        # Force single agent parameters for test environment
-        env_params.num_agents = 1
-        env_params.max_steps = 2
-        env_params.initial_locations = [[5.0, 15.0]]
-        env_params.goal_locations = [[25.0, 15.0]]
+    # Force single agent parameters for test environment
+    env_config.num_agents = 1
+    env_config.max_steps = 2
+    env_config.initial_locations = [[5.0, 15.0]]
+    env_config.goal_locations = [[25.0, 15.0]]
 
-        # Ensure global sensor size matches environment size
-        sensor_params.world_x_size = env_params.world_x_size
-        sensor_params.world_y_size = env_params.world_y_size
+    # Ensure global sensor size matches environment size
+    sensor_config.world_x_size = env_config.world_x_size
+    sensor_config.world_y_size = env_config.world_y_size
 
-        goal = np.array(env_params.goal_locations[0])
+    goal = np.array(env_config.goal_locations[0])
 
-        # Instantiate Controller
-        controller = CBFSmokeController(
+    # Instantiate Controller
+    controller = CBFSmokeController(
+        config=cbf_config,
+        env_config=env_config,
+        robot_config=robot_config,
+        goal=goal,
+        num_agents=1,
+    )
+    print("Successfully instantiated CBFSmokeController!")
+
+    # 1. Test single agent assertion: instantiating with num_agents=2 should fail
+    try:
+        CBFSmokeController(
             config=cbf_config,
-            env_params=env_params,
-            robot_params=robot_params,
+            env_config=env_config,
+            robot_config=robot_config,
             goal=goal,
-            num_agents=1,
+            num_agents=2,
         )
-        print("Successfully instantiated CBFSmokeController!")
+        raise AssertionError("Assertion failed: num_agents=2 did not raise an error.")
+    except AssertionError as e:
+        if "only supports a single agent" in str(e):
+            print("Assertion test passed: controller raises error for num_agents > 1.")
+        else:
+            raise e
 
-        # 1. Test single agent assertion: instantiating with num_agents=2 should fail
-        try:
-            CBFSmokeController(
-                config=cbf_config,
-                env_params=env_params,
-                robot_params=robot_params,
-                goal=goal,
-                num_agents=2,
-            )
-            raise AssertionError("Assertion failed: num_agents=2 did not raise an error.")
-        except AssertionError as e:
-            if "only supports a single agent" in str(e):
-                print("Assertion test passed: controller raises error for num_agents > 1.")
-            else:
-                raise e
+    # 2. Run simulation loop for exactly 2 steps using SmokeEnv
+    from src.env.smoke_env import SmokeEnv
 
-        # 2. Run simulation loop for exactly 2 steps using SmokeEnv
-        from src.env.smoke_env import SmokeEnv
+    print("Initializing SmokeEnv...")
+    env = SmokeEnv(
+        env_config=env_config,
+        robot_config=robot_config,
+        sensor_config=sensor_config,
+        simulator_params=smoke_config,
+    )
 
-        print("Initializing SmokeEnv...")
-        env = SmokeEnv(
-            env_params=env_params,
-            robot_params=robot_params,
-            sensor_params=sensor_params,
-            simulator_params=smoke_params,
+    print("Resetting SmokeEnv...")
+    obs, _ = env.reset(seed=42)
+    print("SmokeEnv reset successfully.")
+
+    print("Running controller simulation for exactly 2 steps...")
+    for step in range(2):
+        agent_obs = obs["agent_0"]
+        location = np.asarray(agent_obs["location"])
+        angle = float(np.ravel(agent_obs["angle"])[0])
+        state = np.array([location[0], location[1], angle])
+
+        # Extract smoke grid and positions
+        smoke_values = agent_obs["smoke_density"].flatten()
+        smoke_positions = agent_obs["smoke_density_location"]
+
+        # Update controller barrier function h
+        controller.update_h_discrete(smoke_values, smoke_positions, state)
+
+        # Compute safe projected action
+        cmd = controller.get_command(state)
+        print(
+            f"Step {step + 1}: State={state}, Nominal={controller.nominal_control(state)}, Safe Action={cmd}"
         )
 
-        print("Resetting SmokeEnv...")
-        obs, _ = env.reset(seed=42)
-        print("SmokeEnv reset successfully.")
+        # Step environment
+        obs, rewards, terminateds, truncateds, infos = env.step({"agent_0": cmd})
 
-        print("Running controller simulation for exactly 2 steps...")
-        for step in range(2):
-            agent_obs = obs["agent_0"]
-            location = np.asarray(agent_obs["location"])
-            angle = float(np.ravel(agent_obs["angle"])[0])
-            state = np.array([location[0], location[1], angle])
-
-            # Extract smoke grid and positions
-            smoke_values = agent_obs["smoke_density"].flatten()
-            smoke_positions = agent_obs["smoke_density_location"]
-
-            # Update controller barrier function h
-            controller.update_h_discrete(smoke_values, smoke_positions, state)
-
-            # Compute safe projected action
-            cmd = controller.get_command(state)
-            print(
-                f"Step {step + 1}: State={state}, Nominal={controller.nominal_control(state)}, Safe Action={cmd}"
-            )
-
-            # Step environment
-            obs, rewards, terminateds, truncateds, infos = env.step({"agent_0": cmd})
-
-        env.close()
-        print("Verification completed successfully!")
+    env.close()
+    print("Verification completed successfully!")

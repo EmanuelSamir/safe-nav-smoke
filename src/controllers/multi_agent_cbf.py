@@ -4,7 +4,7 @@ Uses ``BaseMultiAgentController._make_filter_fns`` to wire the QP-CBF
 safety filter into MPPI in one of three modes:
 
 * ``"filter"``  — Hard QP projection applied only at the output step.
-* ``"rollout"`` — DualGuard: QP projection during rollout AND output.
+* ``"dual-guard"`` — DualGuard: QP projection during rollout AND output.
 * ``"penalty"`` — Soft barrier penalty added to the running cost.
 """
 
@@ -12,9 +12,10 @@ from typing import Any
 
 import torch
 
-from src.controllers.base.cbf_safety import CBFFilter, CBFFilterParams
-from src.controllers.base.mppi import MPPIParams
-from src.controllers.base_multi_agent import AgentMPPI, BaseMultiAgentController, SafetyMode
+from src.controllers.base.cbf_safety import CBFFilter, CBFFilterConfig
+from src.controllers.base.mppi import MPPIConfig
+from src.controllers.base_multi_agent import AgentMPPI, BaseMultiAgentController
+from src.controllers.schemas import MultiAgentCBFConfig
 
 
 class MultiAgentCBFController(BaseMultiAgentController):
@@ -22,63 +23,64 @@ class MultiAgentCBFController(BaseMultiAgentController):
 
     Args:
         num_agents:  Number of agents.
-        robot_params: Robot configuration.
-        mppi_params: MPPI hyper-parameters.
-        cbf_params:  CBF safety parameters.
-        cbf_mode:    Safety mode — ``"filter"``, ``"rollout"``, or ``"penalty"``.
+        robot_config: Robot configuration.
+        mppi_config: MPPI hyper-parameters.
+        cbf_config:  CBF safety parameters.
+        cbf_mode:    Safety mode — ``"filter"``, ``"dual-guard"``, or ``"penalty"``.
         goal_thresh: Distance threshold for goal-reached detection.
         device:      PyTorch device string.
         dtype:       PyTorch floating-point dtype.
-        dt:          Simulation timestep (s).
     """
 
     def __init__(
         self,
         num_agents: int,
-        robot_params: Any,
-        mppi_params: MPPIParams,
-        cbf_params: CBFFilterParams,
-        cbf_mode: SafetyMode = "filter",
+        robot_config: Any,
+        config: MultiAgentCBFConfig,
         goal_thresh: float = 0.1,
-        device: str = "cpu",
         dtype=torch.float32,
-        dt: float = 0.1,
     ):
         super().__init__(
             num_agents=num_agents,
-            robot_params=robot_params,
-            mppi_params=mppi_params,
+            robot_config=robot_config,
+            config=config,
             goal_thresh=goal_thresh,
-            device=device,
             dtype=dtype,
-            dt=dt,
-            r_sense=cbf_params.r_sense,
         )
-        self.cbf_params = cbf_params
-        self.cbf_mode = cbf_mode
+        self.cbf_mode = config.mode
+        self.cbf_filter_config = CBFFilterConfig(
+            robot_radius=config.safety.robot_radius,
+            safe_margin=config.safety.safe_margin,
+            r_sense=config.safety.r_sense,
+            dt=config.dt,
+            k1=config.k1,
+            k2=config.k2,
+        )
 
     def _prepare_agent(self, ego_key: str, ego_ctrl: AgentMPPI, neighbors: list) -> None:
         u_min = ego_ctrl.u_min
         u_max = ego_ctrl.u_max
-        cbf = CBFFilter(self.cbf_params)
+        cbf = CBFFilter(self.cbf_filter_config)
 
         self._make_filter_fns(
             ego_ctrl,
             self.cbf_mode,
             safety_fn=lambda state, t=0: cbf.h_function(state, neighbors, t),
             qp_fn=lambda state, u, t=0: cbf.qp_filter(state, u, neighbors, u_min, u_max, t),
-            safe_margin=0.0,
-            penalty_weight=self.cbf_params.rho,
+            safe_margin=self.cbf_filter_config.safe_margin,
+            penalty_weight=self.config.rho,
         )
 
 
 if __name__ == "__main__":
     import numpy as np
 
-    from agents.basic_robot import RobotParams
+    from src.agents.schemas import RobotConfig
+    # RobotParams
 
-    robot_params = RobotParams(
-        name="dubins",
+    robot_config = RobotConfig(
+        name="dubins2d",
+        device="cpu",
         action_dim=2,
         state_dim=3,
         action_max=[6.0, 4.0],
@@ -87,7 +89,9 @@ if __name__ == "__main__":
         state_min=[-30.0, -30.0, 0.0],
         dt=0.1,
     )
-    mppi_params = MPPIParams(
+    from src.controllers.schemas import SharedSafetyConfig
+
+    mppi_config = MPPIConfig(
         nx=3,
         noise_sigma=torch.eye(2),
         num_samples=10,
@@ -96,15 +100,16 @@ if __name__ == "__main__":
         u_min=torch.tensor([0.0, -4.0]),
         u_max=torch.tensor([6.0, 4.0]),
     )
-    cbf_params = CBFFilterParams(d_safe=1.6, k1=2.5, k2=2.5, dt=0.1, r_sense=4.0)
+    shared_safety = SharedSafetyConfig(robot_radius=0.4, safe_margin=0.2, r_sense=8.0)
 
-    for mode in ("filter", "rollout", "penalty"):
+    for mode in ("filter", "dual-guard", "penalty"):
+        config = MultiAgentCBFConfig(
+            safety=shared_safety, mppi=mppi_config, mode=mode, k1=1.5, k2=1.5, rho=5.0, dt=0.1
+        )
         controller = MultiAgentCBFController(
             num_agents=2,
-            robot_params=robot_params,
-            mppi_params=mppi_params,
-            cbf_params=cbf_params,
-            cbf_mode=mode,
+            robot_config=robot_config,
+            config=config,
         )
         controller.set_goals({"agent_0": [10.0, 0.0], "agent_1": [-10.0, 0.0]})
         obs = {

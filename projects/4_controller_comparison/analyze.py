@@ -5,13 +5,7 @@ import glob
 import matplotlib.pyplot as plt
 import pandas as pd
 
-# Add project root to sys.path
-project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "../.."))
-if project_root not in sys.path:
-    sys.path.insert(0, project_root)
-
-
-def find_latest_results_dir():
+def find_latest_results_dir(project_root):
     """Scans outputs/benchmark to find the latest timestamped folder."""
     benchmark_root = os.path.join(project_root, "outputs", "benchmark")
     if not os.path.exists(benchmark_root):
@@ -24,21 +18,8 @@ def find_latest_results_dir():
         if os.path.isdir(date_path):
             for time_dir in os.listdir(date_path):
                 time_path = os.path.join(date_path, time_dir)
-                if os.path.isdir(time_path) and (
-                    os.path.exists(os.path.join(time_path, "results.csv")) or
-                    glob.glob(os.path.join(time_path, "results_*.csv"))
-                ):
+                if os.path.isdir(time_path) and glob.glob(os.path.join(time_path, "episodes_results_*.csv")):
                     subdirs.append(time_path)
-
-    if not subdirs:
-        # Check direct subdirectories as well
-        for direct_dir in os.listdir(benchmark_root):
-            direct_path = os.path.join(benchmark_root, direct_dir)
-            if os.path.isdir(direct_path) and (
-                os.path.exists(os.path.join(direct_path, "results.csv")) or
-                glob.glob(os.path.join(direct_path, "results_*.csv"))
-            ):
-                subdirs.append(direct_path)
 
     if not subdirs:
         return None
@@ -49,16 +30,18 @@ def find_latest_results_dir():
 
 def main():
     import yaml
-    from projects.4_controller_comparison.schema import BenchmarkConfig
+    from schema import BenchmarkConfig
     
+    project_root = os.path.abspath(os.path.join(os.path.dirname(__file__), "../.."))
     config_path = os.path.join(os.path.dirname(__file__), "benchmark_config.yaml")
+    
     with open(config_path, "r") as f:
         yaml_data = yaml.safe_load(f)
     benchmark_cfg = BenchmarkConfig(**yaml_data)
 
     output_dir = benchmark_cfg.run.output_dir
     if output_dir is None:
-        output_dir = find_latest_results_dir()
+        output_dir = find_latest_results_dir(project_root)
         if output_dir is None:
             print("Error: No benchmark results found. Run a benchmark first.")
             sys.exit(1)
@@ -66,18 +49,19 @@ def main():
     else:
         output_dir = os.path.abspath(output_dir)
 
-    csv_files = glob.glob(os.path.join(output_dir, "results_*.csv"))
+    csv_files = glob.glob(os.path.join(output_dir, "episodes_results_*.csv"))
     if not csv_files:
-        old_csv = os.path.join(output_dir, "results.csv")
-        if os.path.exists(old_csv):
-            csv_files = [old_csv]
-        else:
-            print(f"Error: No results*.csv found in {output_dir}.")
-            sys.exit(1)
+        print(f"Error: No episodes_results_*.csv found in {output_dir}.")
+        sys.exit(1)
 
-    # Read and concatenate the results
     dfs = [pd.read_csv(f) for f in csv_files]
-    df = pd.concat(dfs, ignore_index=True)
+    df_episodes = pd.concat(dfs, ignore_index=True)
+    df = df_episodes.groupby("Controller").mean().reset_index()
+
+    # Convert binary flags to percentages
+    df["Success"] = df["Success"] * 100.0
+    df["Collision"] = df["Collision"] * 100.0
+
     print("\n" + "=" * 165)
     print("📊 DECENTRALIZED MULTI-AGENT SAFETY SHIELD BENCHMARK COMPARATIVE RESULTS")
     print("=" * 165)
@@ -107,22 +91,21 @@ def main():
     for _, row in df.iterrows():
         print(
             f"{row['Controller']:<17} | "
-            f"{row['Success Rate (%)']:>11.1f} | "
-            f"{row['Collision Rate (%)']:>13.1f} | "
-            f"{row['Avg Reached Drones']:>10.2f} | "
-            f"{row['Avg Collided Drones']:>11.2f} | "
-            f"{row['Avg Steps to Goal']:>9.1f} | "
+            f"{row['Success']:>11.1f} | "
+            f"{row['Collision']:>13.1f} | "
+            f"{row['Reached Drones']:>10.2f} | "
+            f"{row['Collided Drones']:>11.2f} | "
+            f"{row['Avg Steps']:>9.1f} | "
             f"{row['Smoke Q1']:>8.4f} | "
             f"{row['Smoke Median']:>9.4f} | "
             f"{row['Smoke Q3']:>8.4f} | "
-            f"{row['Smoke Max (Peak)']:>9.4f} | "
+            f"{row['Smoke Max']:>9.4f} | "
             f"{row['Min Separation (m)']:>10.3f} | "
-            f"{row['Control Smoothness']:>10.4f} | "
-            f"{row['Avg Planning Latency (ms)']:>11.2f}"
+            f"{row['Smoothness']:>10.4f} | "
+            f"{row['Avg Latency (ms)']:>11.2f}"
         )
     print("=" * 165)
 
-    # 5. Generate high-fidelity comparison plot
     fig, axes = plt.subplots(2, 2, figsize=(14, 10))
     fig.suptitle(
         "Decentralized Multi-Agent Safety Shield Controllers Comparative Study",
@@ -131,23 +114,14 @@ def main():
     )
 
     controllers = df["Controller"].tolist()
-    success_rates = df["Success Rate (%)"].tolist()
-    avg_steps = df["Avg Steps to Goal"].tolist()
+    success_rates = df["Success"].tolist()
+    avg_steps = df["Avg Steps"].tolist()
     smoke_q3 = df["Smoke Q3"].tolist()
     min_seps = df["Min Separation (m)"].tolist()
 
-    # Color palette
     colors = [
-        "#1f77b4",
-        "#ff7f0e",
-        "#2ca02c",
-        "#d62728",
-        "#9467bd",
-        "#8c564b",
-        "#e377c2",
-        "#7f7f7f",
-    ]
-    colors = colors[: len(controllers)]
+        "#1f77b4", "#ff7f0e", "#2ca02c", "#d62728", "#9467bd", "#8c564b", "#e377c2", "#7f7f7f",
+    ][:len(controllers)]
 
     # Success Rate Plot
     axes[0, 0].bar(controllers, success_rates, color=colors, alpha=0.8, edgecolor="black")
@@ -166,22 +140,16 @@ def main():
 
     # Smoke Q3 Plot
     axes[1, 0].bar(controllers, smoke_q3, color=colors, alpha=0.8, edgecolor="black")
-    axes[1, 0].set_title(
-        "Smoke Q3 (75th Percentile Exposure - lower is better)", fontsize=12, fontweight="bold"
-    )
+    axes[1, 0].set_title("Smoke Q3 (75th Percentile Exposure - lower is better)", fontsize=12, fontweight="bold")
     axes[1, 0].set_ylabel("Smoke Density")
     axes[1, 0].grid(axis="y", alpha=0.3)
     axes[1, 0].tick_params(axis="x", rotation=15)
 
     # Min Separation Plot
     axes[1, 1].bar(controllers, min_seps, color=colors, alpha=0.8, edgecolor="black")
-    axes[1, 1].set_title(
-        "Min Inter-Agent Separation (higher is better)", fontsize=12, fontweight="bold"
-    )
+    axes[1, 1].set_title("Min Inter-Agent Separation (higher is better)", fontsize=12, fontweight="bold")
     axes[1, 1].set_ylabel("Separation Distance (meters)")
-    axes[1, 1].axhline(
-        y=0.8, color="r", linestyle="--", linewidth=1.5, label="Collision Limit (0.8m)"
-    )
+    axes[1, 1].axhline(y=0.8, color="r", linestyle="--", linewidth=1.5, label="Collision Limit (0.8m)")
     axes[1, 1].legend()
     axes[1, 1].grid(axis="y", alpha=0.3)
     axes[1, 1].tick_params(axis="x", rotation=15)

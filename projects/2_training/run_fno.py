@@ -2,7 +2,7 @@ import os
 import sys
 
 sys.path.append(os.getcwd())
-
+sys.path.append(os.path.dirname(__file__))
 import logging
 from pathlib import Path
 
@@ -10,14 +10,15 @@ import datetime
 import yaml
 import lightning as L
 
-from src.models.lightning_fno import FNODataModule, FNOLightningModule, FNOVisualizerCallback
-from projects.2_training.schema import FNOTrainingConfig
+from src.models.lightning_fno import FNOLightningModule
+from src.models.shared.base_lightning import BaseDataModule, BaseVisualizerCallback
+from src.models.shared.schemas import FNOTrainingConfig
 
 log = logging.getLogger(__name__)
 
 
 def train():
-    config_path = os.path.join(os.path.dirname(__file__), "../../configs/training/fno.yaml")
+    config_path = os.path.join(os.path.dirname(__file__), "fno_config.yaml")
     with open(config_path, "r") as f:
         yaml_data = yaml.safe_load(f)
     
@@ -45,7 +46,7 @@ def train():
         return
 
     # DataModule
-    datamodule = FNODataModule(t_cfg, data_path)
+    datamodule = BaseDataModule(t_cfg, data_path)
     datamodule.setup()
 
     # Model
@@ -56,16 +57,24 @@ def train():
 
     # Checkpoint and Loggers
     from lightning.pytorch.callbacks import ModelCheckpoint
+    from lightning.pytorch.callbacks.early_stopping import EarlyStopping
     from lightning.pytorch.loggers import TensorBoardLogger
 
+    monitor_metric = t_cfg.checkpoint.monitor.replace("val_", "Val/").replace("nll", "NLL").replace("loss", "Loss")
+    
     checkpoint_callback = ModelCheckpoint(
         dirpath=ckpt_dir,
-        monitor=t_cfg.checkpoint.monitor.replace("val_", "Val/")
-        .replace("nll", "NLL")
-        .replace("loss", "Loss"),  # Map val_nll to Val/NLL
+        monitor=monitor_metric,
         mode=t_cfg.checkpoint.mode,
         save_top_k=t_cfg.checkpoint.save_top_k,
         save_last=True,
+    )
+
+    early_stopping = EarlyStopping(
+        monitor=monitor_metric,
+        patience=10,
+        mode=t_cfg.checkpoint.mode,
+        verbose=True
     )
 
     tb_logger = TensorBoardLogger(save_dir=output_dir, name="", sub_dir="logs")
@@ -75,7 +84,7 @@ def train():
         max_epochs=t_cfg.optimizer.max_epochs,
         accelerator="auto",
         devices=1,
-        callbacks=[checkpoint_callback, FNOVisualizerCallback(t_cfg.visualizer.visualize_every)],
+        callbacks=[checkpoint_callback, early_stopping, BaseVisualizerCallback(t_cfg.visualizer.visualize_every)],
         logger=tb_logger,
         enable_progress_bar=True,
         log_every_n_steps=10,

@@ -1,5 +1,9 @@
+from typing import Literal
+
 import torch
 from pydantic import BaseModel, ConfigDict
+
+DeviceType = Literal["cpu", "cuda", "mps"]
 
 
 class StrictBaseModel(BaseModel):

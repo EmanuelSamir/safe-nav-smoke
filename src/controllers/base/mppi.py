@@ -1,28 +1,9 @@
-from dataclasses import dataclass
 from typing import Callable, Optional
 
 import torch
 from torch.distributions import MultivariateNormal
 
-
-@dataclass
-class MPPIParams:
-    """Configuration parameters for the MPPI Controller."""
-
-    nx: int  # state dimension
-    noise_sigma: torch.Tensor  # (nu x nu) covariance matrix for action noise
-    num_samples: int = 100  # K - number of sampled trajectories
-    horizon: int = 10  # T - planning horizon
-    device: str = "cpu"
-    lambda_: float = 1.0  # temperature parameter
-    noise_mu: Optional[torch.Tensor] = None
-    u_min: Optional[torch.Tensor] = None
-    u_max: Optional[torch.Tensor] = None
-    u_init: Optional[torch.Tensor] = None
-    u_scale: float = 1.0
-    u_per_command: int = 1
-    step_dependent_dynamics: bool = False
-    noise_abs_cost: bool = False
+from src.controllers.base.schemas import MPPIConfig
 
 
 class MPPI:
@@ -34,7 +15,7 @@ class MPPI:
 
     def __init__(
         self,
-        params: MPPIParams,
+        config: MPPIConfig,
         rollout_filter_fn: Optional[
             Callable[[torch.Tensor, torch.Tensor, int], torch.Tensor]
         ] = None,
@@ -42,38 +23,38 @@ class MPPI:
             Callable[[torch.Tensor, torch.Tensor, int], torch.Tensor]
         ] = None,
     ):
-        self.params = params
-        self.device = params.device
-        self.dtype = params.noise_sigma.dtype
-        self.nx = params.nx
-        self.T = params.horizon
-        self.K = params.num_samples
+        self.config = config
+        self.device = config.device
+        self.dtype = config.noise_sigma.dtype
+        self.nx = config.nx
+        self.T = config.horizon
+        self.K = config.num_samples
         self.rollout_filter_fn = rollout_filter_fn
         self.output_filter_fn = output_filter_fn
 
         # --- Determine control dimension (nu) ---
-        self.nu = params.noise_sigma.shape[0] if len(params.noise_sigma.shape) > 0 else 1
+        self.nu = config.noise_sigma.shape[0] if len(config.noise_sigma.shape) > 0 else 1
 
         # --- Define mean and covariance of control noise ---
-        if params.noise_mu is None:
+        if config.noise_mu is None:
             noise_mu = torch.zeros(self.nu, dtype=self.dtype)
         else:
-            noise_mu = params.noise_mu
+            noise_mu = config.noise_mu
         self.noise_mu = noise_mu.to(self.device)
-        self.noise_sigma = params.noise_sigma.to(self.device)
+        self.noise_sigma = config.noise_sigma.to(self.device)
         self.noise_sigma_inv = torch.inverse(self.noise_sigma)
 
         # Create a Gaussian distribution for sampling control noise
         self.noise_dist = MultivariateNormal(self.noise_mu, covariance_matrix=self.noise_sigma)
 
         # --- Control limits (ensure both exist and are tensors) ---
-        self.u_min, self.u_max = self._process_bounds(params.u_min, params.u_max)
+        self.u_min, self.u_max = self._process_bounds(config.u_min, config.u_max)
 
         # --- Initialize nominal control sequence U(t) ---
-        if params.u_init is None:
+        if config.u_init is None:
             self.U = self.noise_dist.sample((self.T,))
         else:
-            self.U = params.u_init.repeat(self.T, 1)
+            self.U = config.u_init.repeat(self.T, 1)
 
         # --- Buffers for results ---
         self.state = None
@@ -156,7 +137,7 @@ class MPPI:
         self.U += perturbation
 
         # Apply output safety filter to the final action at t=0
-        action_opt = self.U[: self.params.u_per_command]
+        action_opt = self.U[: self.config.u_per_command]
         if self.output_filter_fn is not None:
             action = self.output_filter_fn(self.state.unsqueeze(0), action_opt, 0)
         else:
@@ -164,7 +145,7 @@ class MPPI:
 
         return (
             self._bound_action(action[0])
-            if self.params.u_per_command == 1
+            if self.config.u_per_command == 1
             else self._bound_action(action)
         )
 
@@ -187,10 +168,10 @@ class MPPI:
         self._sample_noisy_actions()
 
         # Action noise penalty term (encourages low-variance controls)
-        if self.params.noise_abs_cost:
-            action_cost = self.params.lambda_ * torch.abs(self.noise) @ self.noise_sigma_inv
+        if self.config.noise_abs_cost:
+            action_cost = self.config.lambda_ * torch.abs(self.noise) @ self.noise_sigma_inv
         else:
-            action_cost = self.params.lambda_ * (self.noise @ self.noise_sigma_inv)
+            action_cost = self.config.lambda_ * (self.noise @ self.noise_sigma_inv)
 
         # Rollout to compute running + terminal costs
         rollout_cost, self.synthetic_states, actions = self._rollout_trajectories(
@@ -273,15 +254,15 @@ class MPPI:
             u_shielded_t = self._bound_action(u_shielded_t)
             shielded_actions.append(u_shielded_t)
 
-            u_apply = self.params.u_scale * u_shielded_t
+            u_apply = self.config.u_scale * u_shielded_t
             next_state = (
                 self.dynamics(state, u_apply, t)
-                if self.params.step_dependent_dynamics
+                if self.config.step_dependent_dynamics
                 else self.dynamics(state, u_apply)
             )
             c_t = (
                 self.running_cost(next_state, u_apply, t)
-                if self.params.step_dependent_dynamics
+                if self.config.step_dependent_dynamics
                 else self.running_cost(next_state, u_apply)
             )  # running cost
             cost_total += c_t
@@ -306,7 +287,7 @@ class MPPI:
 
     def _compute_weights(self, cost_total: torch.Tensor) -> torch.Tensor:
         """Compute normalized trajectory weights using PyTorch softmax."""
-        self.omega = torch.softmax(-cost_total / self.params.lambda_, dim=0)
+        self.omega = torch.softmax(-cost_total / self.config.lambda_, dim=0)
         return self.omega
 
     # =====================================================
@@ -328,7 +309,7 @@ if __name__ == "__main__":
             return torch.sum(state**2, dim=-1) + 0.1 * torch.sum(u**2, dim=-1)
 
     # Initialize parameters
-    params = MPPIParams(
+    config = MPPIConfig(
         nx=2,
         noise_sigma=torch.eye(2),
         num_samples=10,
@@ -340,7 +321,7 @@ if __name__ == "__main__":
 
     # Instantiate controller with a dummy safety filter that clamps values to max 0.5
     dummy_filter = lambda state, u, t=0: torch.clamp(u, -0.5, 0.5)
-    controller = SimpleMPPI(params, output_filter_fn=dummy_filter)
+    controller = SimpleMPPI(config, output_filter_fn=dummy_filter)
 
     # Initial state
     state = torch.tensor([1.0, -1.0])

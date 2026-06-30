@@ -16,18 +16,12 @@ import numpy as np
 import torch
 
 from src.agents.dubins_robot import DubinsRobot
+from src.agents.schemas import RobotConfig
 from src.controllers.base.dual_guard import DualGuardShield
-from src.controllers.base.mppi import MPPI, MPPIParams
+from src.controllers.base.mppi import MPPI
+from src.controllers.schemas import BaseMultiAgentConfig, MPPIConfig, SafetyMode
 
 logger = logging.getLogger(__name__)
-
-# Safety mode type alias — used by all concrete controllers.
-# - "filter"        : QP/LRF projection at output step only.
-# - "rollout"       : DualGuard — projection during rollout AND output.
-# - "online_rollout": Like "rollout" but the value function is re-solved every
-#                     planning step (HJ-only; CBF does not use this).
-# - "penalty"       : Soft barrier penalty in the running cost.
-SafetyMode = Literal["filter", "rollout", "online_rollout", "penalty"]
 
 # How neighbours enter the safety computation.
 # - "nearest": only the single most dangerous neighbour (argmin h / V).
@@ -38,7 +32,9 @@ NeighborMode = Literal["nearest", "all"]
 def get_value_in_map_from_coords(
     states_np: np.ndarray, coords: np.ndarray, map_data: np.ndarray
 ) -> np.ndarray:
-    """Nearest-neighbour lookup: for each state in ``(K, 2)``, return the map value
+    """Nearest-neighbour lookup.
+
+    For each state in ``(K, 2)``, return the map value
     at the closest coordinate in ``coords`` of shape ``(N, 2)``.
     """
     from scipy.spatial import KDTree
@@ -62,7 +58,7 @@ class AgentMPPI(MPPI):
 
     def __init__(
         self,
-        params: MPPIParams,
+        config: MPPIConfig,
         robot: DubinsRobot,
         goal_thresh: float = 0.1,
         dt: float = 0.1,
@@ -70,12 +66,12 @@ class AgentMPPI(MPPI):
             Callable[[torch.Tensor, torch.Tensor, Optional[int]], torch.Tensor]
         ] = None,
     ):
-        super().__init__(params=params)
+        super().__init__(config=config)
         self.robot = robot
         self.goal_thresh = goal_thresh
         self.dt = dt
         self._goal: Optional[torch.Tensor] = None
-        self._maps: deque = deque(maxlen=params.horizon)
+        self._maps: deque = deque(maxlen=config.horizon)
         self.running_cost_fn = running_cost_fn
 
     def set_goal(self, goal_position) -> None:
@@ -143,8 +139,8 @@ class BaseMultiAgentController:
 
     Args:
         num_agents:   Number of agents.
-        robot_params: Robot configuration (passed to ``DubinsRobot``).
-        mppi_params:  MPPI hyper-parameters shared across agents.
+        robot_config: Robot configuration (passed to ``DubinsRobot``).
+        mppi_config:  MPPI hyper-parameters shared across agents.
         goal_thresh:  Distance threshold for goal-reached detection.
         device:       PyTorch device string.
         dtype:        PyTorch floating-point dtype.
@@ -155,26 +151,24 @@ class BaseMultiAgentController:
     def __init__(
         self,
         num_agents: int,
-        robot_params: Any,
-        mppi_params: MPPIParams,
+        robot_config: RobotConfig,
+        config: BaseMultiAgentConfig,
         goal_thresh: float = 0.1,
-        device: str = "cpu",
         dtype=torch.float32,
-        dt: float = 0.1,
-        r_sense: float = 8.0,
     ):
         self.num_agents = num_agents
-        self.device = device
+        self.config = config
+        self.device = config.mppi.device
         self.dtype = dtype
-        self.dt = dt
-        self.r_sense = r_sense
+        self.dt = config.dt
+        self.r_sense = config.safety.r_sense
 
         self.agents_controllers: Dict[str, AgentMPPI] = {
             f"agent_{i}": AgentMPPI(
-                params=mppi_params,
-                robot=DubinsRobot(robot_params),
+                config=config.mppi,
+                robot=DubinsRobot(robot_config),
                 goal_thresh=goal_thresh,
-                dt=dt,
+                dt=self.dt,
             )
             for i in range(num_agents)
         }
@@ -343,19 +337,19 @@ class BaseMultiAgentController:
         penalty_weight: float = 1.0,
     ) -> None:
         """Wire safety functions into *ego_ctrl* according to *mode*."""
-        # Validate mode early — "online_rollout" is HJ-specific and must be
+        # Validate mode early — "online_dual-guard" is HJ-specific and must be
         # implemented by the subclass; base class does not handle it.
-        if mode == "online_rollout":
+        if mode == "online_dual-guard":
             raise NotImplementedError(
-                "'online_rollout' must be handled by the subclass before calling _make_filter_fns. "
+                "'online_dual-guard' must be handled by the subclass before calling _make_filter_fns. "
                 "Implement the BRT re-solve logic in _prepare_agent and then call _make_filter_fns "
-                "with mode='rollout' using the freshly computed value function."
+                "with mode='dual-guard' using the freshly computed value function."
             )
         """Wire safety functions into *ego_ctrl* according to *mode*.
 
         Args:
             ego_ctrl:       The agent planner to configure.
-            mode:           One of ``"filter"``, ``"rollout"``, ``"penalty"``.
+            mode:           One of ``"filter"``, ``"dual-guard"``, ``"penalty"``.
             safety_fn:      ``(state, t) -> Tensor(K,)`` — safety index/value.
                             Positive = safe, negative = unsafe.
             qp_fn:          ``(state, u, t) -> Tensor(K, nu)`` — QP/LRF
@@ -373,7 +367,7 @@ class BaseMultiAgentController:
             ego_ctrl.rollout_filter_fn = None
             ego_ctrl.output_filter_fn = lambda state, u, t=0: qp_fn(state, u, t)
 
-        elif mode == "rollout":
+        elif mode == "dual-guard":
             # ── DualGuard / Shielded MPPI ───────────────────────────────────
             # Both rollout samples and the executed action are shielded.
             # MPPI explores within the safe set → better cost landscape near
@@ -427,5 +421,5 @@ class BaseMultiAgentController:
 
         else:
             raise ValueError(
-                f"Unknown safety mode: {mode!r}. Choose 'filter', 'rollout', or 'penalty'."
+                f"Unknown safety mode: {mode!r}. Choose 'filter', 'dual-guard', or 'penalty'."
             )

@@ -8,34 +8,10 @@ from typing import Union
 
 import torch
 
-from src.utils.config_utils import StrictBaseModel
+from src.controllers.base.schemas import CBFFilterConfig
 
 # Column indices for the state/neighbor tensors
 _X, _Y, _THETA = 0, 1, 2
-
-
-class CBFFilterParams(StrictBaseModel):
-    """Parameters for the High-Order Control Barrier Function (HOCBF) filter.
-
-    Attributes:
-        d_safe:          Minimum centre-to-centre clearance distance (m).
-        k1:              Class-K gain for the 1st-order CBF constraint.
-        k2:              Class-K gain for the 2nd-order CBF constraint (reserved).
-        dt:              Simulation time step (s).
-        r_sense:         Sensing radius — neighbours beyond this are ignored (m).
-        L:               Longitudinal offset from vehicle centre to safety point (m).
-        smoke_threshold: Smoke concentration threshold above which motion is penalised.
-        rho:             Penalty weight for smoke exposure in the cost function.
-    """
-
-    d_safe: float
-    k1: float
-    k2: float
-    dt: float
-    r_sense: float
-    L: float = 0.4
-    smoke_threshold: float = 0.75
-    rho: float = 5.0
 
 
 # ---------------------------------------------------------------------------
@@ -56,8 +32,8 @@ class CBFFilter:
         params: CBF hyper-parameters.
     """
 
-    def __init__(self, params: CBFFilterParams) -> None:
-        self.params = params
+    def __init__(self, config: CBFFilterConfig) -> None:
+        self.config = config
 
     # ------------------------------------------------------------------
     # Public API
@@ -80,7 +56,7 @@ class CBFFilter:
                        pre-stacked tensor of shape ``(N_neighbors, 3)``.
             t:         Look-ahead time step for neighbour position prediction.
         """
-        p = self.params
+        p = self.config
         device = state.device
         batch_size = state.shape[0]
 
@@ -89,10 +65,15 @@ class CBFFilter:
 
         ego_safe_pos, neighbor_pred_pos, _, _ = self._geometry(state, neighbors, t, device)
 
-        d_safe_barrier = p.d_safe + 2.0 * p.L
-        relative_pos = ego_safe_pos.unsqueeze(1) - neighbor_pred_pos.unsqueeze(0)  # (batch_size, N, 2)
+        # The CBF ensures the distance between safety points (displaced by robot_radius) is at least barrier_clearance.
+        # Since the robots only move forward (v >= 0), the worst-case collision geometry (overtaking)
+        # implies the safety points are at most 2*R apart when the centers are 2*R apart.
+        barrier_clearance = 2.0 * p.robot_radius + p.safe_margin
+        relative_pos = ego_safe_pos.unsqueeze(1) - neighbor_pred_pos.unsqueeze(
+            0
+        )  # (batch_size, N, 2)
         dist_sq = torch.sum(relative_pos**2, dim=2)  # (batch_size, N)
-        barrier_values = dist_sq - d_safe_barrier**2
+        barrier_values = dist_sq - barrier_clearance**2
 
         h_min, _ = torch.min(barrier_values, dim=1)
         return h_min
@@ -122,18 +103,25 @@ class CBFFilter:
         if self._no_neighbors(neighbors):
             return u_nominal
 
-        p = self.params
+        p = self.config
         device = state.device
         batch_size = state.shape[0]
 
-        ego_safe_pos, neighbor_pred_pos, neighbor_velocity, trig = self._geometry(state, neighbors, t, device)
+        ego_safe_pos, neighbor_pred_pos, neighbor_velocity, trig = self._geometry(
+            state, neighbors, t, device
+        )
         cos_t, sin_t = trig  # (batch_size,), (batch_size,)
 
         # Mathematical constraint for unicycle lookahead points
-        d_safe_barrier = p.d_safe + 2.0 * p.L
-        relative_pos = ego_safe_pos.unsqueeze(1) - neighbor_pred_pos.unsqueeze(0)  # (batch_size, N, 2)
+        # The CBF ensures the distance between safety points (displaced by robot_radius) is at least barrier_clearance.
+        # Since the robots only move forward (v >= 0), the worst-case collision geometry (overtaking)
+        # implies the safety points are at most 2*R apart when the centers are 2*R apart.
+        barrier_clearance = 2.0 * p.robot_radius + p.safe_margin
+        relative_pos = ego_safe_pos.unsqueeze(1) - neighbor_pred_pos.unsqueeze(
+            0
+        )  # (batch_size, N, 2)
         dist_sq = torch.sum(relative_pos**2, dim=2)  # (batch_size, N)
-        all_barrier_values = dist_sq - d_safe_barrier**2  # (batch_size, N)
+        all_barrier_values = dist_sq - barrier_clearance**2  # (batch_size, N)
 
         # Find the critical (closest) neighbour for each batch item
         closest_neighbor_idx = torch.argmin(all_barrier_values, dim=1)
@@ -146,16 +134,25 @@ class CBFFilter:
         # CBF constraint: constraint_matrix @ u >= constraint_bound
         # Jacobian of barrier w.r.t. u through the unicycle kinematics:
         grad_v = 2.0 * (closest_relative_pos[:, 0] * cos_t + closest_relative_pos[:, 1] * sin_t)
-        grad_w = 2.0 * (-p.L * closest_relative_pos[:, 0] * sin_t + p.L * closest_relative_pos[:, 1] * cos_t)
+        grad_w = 2.0 * (
+            -p.robot_radius * closest_relative_pos[:, 0] * sin_t
+            + p.robot_radius * closest_relative_pos[:, 1] * cos_t
+        )
         constraint_matrix = torch.stack([grad_v, grad_w], dim=1)  # (batch_size, 2)
 
-        constraint_bound = 2.0 * torch.sum(closest_relative_pos * closest_neighbor_velocity, dim=1) - p.k1 * closest_barrier_value
+        constraint_bound = (
+            2.0 * torch.sum(closest_relative_pos * closest_neighbor_velocity, dim=1)
+            - p.k1 * closest_barrier_value
+        )
 
         # Projection: safe_action = nominal_action + max(0, bound - A·nominal) / ||A||² · A
         A_u_nom = torch.sum(constraint_matrix * u_nominal, dim=1)
         violation = constraint_bound - A_u_nom
         A_norm_sq = torch.clamp(torch.sum(constraint_matrix**2, dim=1), min=1e-6)
-        safe_action = u_nominal + (torch.clamp(violation, min=0.0) / A_norm_sq).unsqueeze(-1) * constraint_matrix
+        safe_action = (
+            u_nominal
+            + (torch.clamp(violation, min=0.0) / A_norm_sq).unsqueeze(-1) * constraint_matrix
+        )
 
         return torch.max(torch.min(safe_action, action_max), action_min)
 
@@ -178,7 +175,7 @@ class CBFFilter:
             neighbor_velocity:       Neighbour velocities, shape ``(N, 2)``.
             trig:      Tuple ``(cos θ, sin θ)`` for the ego agents, each shape ``(batch_size,)``.
         """
-        p = self.params
+        p = self.config
 
         neighbors_tensor = self._to_tensor(neighbors, device)  # (N, 3)
 
@@ -186,13 +183,15 @@ class CBFFilter:
         cos_t, sin_t = torch.cos(theta), torch.sin(theta)
 
         ego_center_pos = state[:, [_X, _Y]]
-        ego_safe_pos = ego_center_pos + p.L * torch.stack([cos_t, sin_t], dim=1)
+        ego_safe_pos = ego_center_pos + p.robot_radius * torch.stack([cos_t, sin_t], dim=1)
 
         theta_j = neighbors_tensor[:, _THETA]  # (N,)
         cos_j, sin_j = torch.cos(theta_j), torch.sin(theta_j)
 
         neighbor_center_pos = neighbors_tensor[:, [_X, _Y]]
-        neighbor_safe_pos = neighbor_center_pos + p.L * torch.stack([cos_j, sin_j], dim=1)
+        neighbor_safe_pos = neighbor_center_pos + p.robot_radius * torch.stack(
+            [cos_j, sin_j], dim=1
+        )
 
         if neighbors_tensor.shape[1] > 3:
             v_nominal = neighbors_tensor[:, 3]  # (N,)
@@ -233,7 +232,7 @@ if __name__ == "__main__":
     neighbors = [torch.tensor([0.5, 0.0, 0.0])]
     action_min = torch.tensor([-2.0, -2.0])
     action_max = torch.tensor([2.0, 2.0])
-    params = CBFFilterParams(d_safe=1.0, k1=1.0, k2=1.0, dt=0.1, r_sense=5.0)
+    params = CBFFilterConfig(robot_radius=0.4, safe_margin=0.2, k1=1.0, k2=1.0, dt=0.1, r_sense=5.0)
 
     cbf = CBFFilter(params)
     h_val = cbf.h_function(state, neighbors)

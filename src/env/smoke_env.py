@@ -152,7 +152,7 @@ class SmokeEnv(ParallelEnv):
         assert simulator_cfg is not None, "simulator_cfg must be provided to SmokeEnv"
 
         if isinstance(simulator_cfg, PlaybackConfig):
-            self.smoke_simulator = Playback(params=simulator_cfg)
+            self.smoke_simulator = Playback(cfg=simulator_cfg)
             self._apply_playback_overrides()
         elif isinstance(simulator_cfg, SmokeConfig):
             self.smoke_params = simulator_cfg
@@ -205,12 +205,12 @@ class SmokeEnv(ParallelEnv):
         if isinstance(self.smoke_simulator, Playback):
             print(
                 "Overriding sim params from playback:\n",
-                f"x_size: {self.smoke_simulator.x_size}",
-                f"y_size: {self.smoke_simulator.y_size}",
+                f"x_size: {self.smoke_simulator.cfg.x_size}",
+                f"y_size: {self.smoke_simulator.cfg.y_size}",
                 f"max_steps: {self.smoke_simulator.max_steps}",
             )
-            self.env_cfg.world_x_size = self.smoke_simulator.x_size
-            self.env_cfg.world_y_size = self.smoke_simulator.y_size
+            self.env_cfg.world_x_size = self.smoke_simulator.cfg.x_size
+            self.env_cfg.world_y_size = self.smoke_simulator.cfg.y_size
             self.env_cfg.max_steps = self.smoke_simulator.max_steps
 
     def observation_space(self, agent: str):
@@ -540,12 +540,7 @@ class SmokeEnv(ParallelEnv):
         ):
             import os
 
-            try:
-                from hydra.core.hydra_config import HydraConfig
-
-                output_dir = HydraConfig.get().runtime.output_dir
-            except (ValueError, ImportError, KeyError):
-                output_dir = "outputs"
+            output_dir = "outputs"
 
             import datasets
             from datasets import Dataset

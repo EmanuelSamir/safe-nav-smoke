@@ -7,35 +7,9 @@ from pydantic import model_validator
 from torch.distributions import Normal
 
 from src.utils.config_utils import StrictBaseModel
+from src.models.shared.schemas import FNOConfig
 
 
-class FNOConfig(StrictBaseModel):
-    # Context / prediction
-    h_ctx: int = 10  # Context frames (T dimension of the 3D volume)
-    h_pred: int = 5  # Future frames per forward pass
-
-    # 3D spectral modes
-    modes_t: int = 4  # Temporal Fourier modes  (≤ h_ctx // 2)
-    modes_h: int = 8  # Spatial H Fourier modes (≤ H // 2)
-    modes_w: int = 8  # Spatial W Fourier modes (≤ W // 2)
-
-    # Network width and depth
-    width: int = 32  # Latent channel width
-    n_layers: int = 4  # Number of SpectralConv3d + skip blocks
-
-    # Features
-    use_grid: bool = True  # Append (x,y) grid after temporal aggregation
-    use_time: bool = True  # Append normalised t as extra input channel per frame
-
-    # Normalisation
-    min_std: float = 1e-4
-    sequence_length: Optional[int] = 25
-
-    @model_validator(mode="after")
-    def validate_modes(self):
-        if self.modes_t > self.h_ctx // 2:
-            raise ValueError(f"modes_t ({self.modes_t}) must be <= h_ctx // 2 ({self.h_ctx // 2})")
-        return self
 
 
 class SpectralConv3d(nn.Module):

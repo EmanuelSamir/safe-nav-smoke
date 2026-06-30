@@ -17,31 +17,9 @@ from pydantic import model_validator
 from torch.distributions import Normal
 
 from src.utils.config_utils import StrictBaseModel
+from src.models.shared.schemas import ConvLSTMConfig
 
 
-class ConvLSTMConfig(StrictBaseModel):
-    # Context / prediction
-    h_ctx: int = 10  # Context frames
-    h_pred: int = 5  # Future frames per forward pass
-
-    # Architecture
-    hidden_dim: int = 32  # Hidden state channels for LSTM layers
-    n_layers: int = 3  # Number of ConvLSTM layers
-    kernel_size: int = 3  # Kernel size for convolutions
-
-    # Features
-    use_grid: bool = True  # Append (x,y) grid after temporal aggregation
-    use_time: bool = True  # Append normalised t as extra input channel per frame
-
-    # Normalisation
-    min_std: float = 1e-4
-    sequence_length: Optional[int] = 25
-
-    @model_validator(mode="after")
-    def validate_kernel(self):
-        if self.kernel_size % 2 == 0:
-            raise ValueError(f"kernel_size ({self.kernel_size}) must be odd for symmetric padding.")
-        return self
 
 
 class ConvLSTMCell(nn.Module):

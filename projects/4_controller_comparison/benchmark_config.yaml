@@ -8,10 +8,15 @@ run:
   test: false
 
 agent:
+  name: "dubins2d"
   action_min: [0.0, -4.0]
   action_max: [6.0, 4.0]
   action_dim: 2
   state_dim: 3
+  state_min: [0.0, 0.0, 0.0]
+  state_max: [35.0, 35.0, 6.28318530718]
+  dt: 0.1
+  device: "cpu"
 
 env:
   num_agents: 6
@@ -51,175 +56,128 @@ playback:
   # Ruta a los datos de la simulación base a reproducir
   data_path: "data/smoke_env_100ep" # "/data/emunoz/hf_datasets/physics_base"
 
-# Diccionario de controladores. Eliminamos cualquier ambiguedad y listamos todos los parámetros.
+# Diccionario de controladores. Configuraciones minimalistas gracias al polimorfismo y defaults del core.
 controllers:
   nominal:
     type: "nominal"
     mppi:
       horizon: 20
       num_samples: 200
-      lambda_: 1.0
-      device: "cpu"
-      alpha_noise_sigma: 10.0
-      noise_abs_cost: false
 
   cbf_filter:
     type: "cbf"
     mode: "filter"
-    dt: 0.1
     k1: 5.0
     k2: 1.0
     rho: 1.0
     L: 1.0
     safety:
-      d_safe: 0.5
+      safe_margin: 0.5
       r_sense: 5.0
     mppi:
       horizon: 20
       num_samples: 200
-      lambda_: 1.0
-      device: "cpu"
-      alpha_noise_sigma: 10.0
-      noise_abs_cost: false
 
-  cbf_rollout:
+  cbf_dual_guard:
     type: "cbf"
-    mode: "rollout"
-    dt: 0.1
+    mode: "dual-guard"
     k1: 5.0
     k2: 1.0
     rho: 1.0
     L: 1.0
     safety:
-      d_safe: 0.5
+      safe_margin: 0.5
       r_sense: 5.0
     mppi:
       horizon: 20
       num_samples: 200
-      lambda_: 1.0
-      device: "cpu"
-      alpha_noise_sigma: 10.0
-      noise_abs_cost: false
 
   cbf_penalty:
     type: "cbf"
     mode: "penalty"
-    dt: 0.1
     k1: 5.0
     k2: 1.0
     rho: 1.0
     L: 1.0
     safety:
-      d_safe: 0.5
+      safe_margin: 0.5
       r_sense: 5.0
     mppi:
       horizon: 20
       num_samples: 200
-      lambda_: 1.0
-      device: "cpu"
-      alpha_noise_sigma: 10.0
-      noise_abs_cost: false
 
   hj_filter:
     type: "hj"
     mode: "filter"
     control_type: "bang_bang"
-    dt: 0.1
-    action_min: [0.0, -4.0]
-    action_max: [6.0, 4.0]
     safety:
-      d_safe: 0.5
+      safe_margin: 0.5
       r_sense: 5.0
     solver:
-      safe_margin: 0.2
-      domain_cells: [51, 51, 51]
-      domain: [[-5.0, -5.0, 0.0], [5.0, 5.0, 6.283185307179586]]
-      accuracy: "medium"
+      interaction_radius: 5.0
+      spatial_resolution: 0.196
+      angular_cells: 51
       target_time: 1.5
       dt: 0.1
-      epsilon: 0.2
+      superlevel_set_epsilon: 0.2
+      safe_margin: 0.2
     mppi:
       horizon: 20
       num_samples: 200
-      lambda_: 1.0
-      device: "cpu"
-      alpha_noise_sigma: 10.0
-      noise_abs_cost: false
 
-  hj_rollout:
+  hj_dual_guard:
     type: "hj"
-    mode: "rollout"
+    mode: "dual-guard"
     control_type: "bang_bang"
-    dt: 0.1
-    action_min: [0.0, -4.0]
-    action_max: [6.0, 4.0]
     safety:
-      d_safe: 0.5
+      safe_margin: 0.5
       r_sense: 5.0
     solver:
-      safe_margin: 0.2
-      domain_cells: [51, 51, 51]
-      domain: [[-5.0, -5.0, 0.0], [5.0, 5.0, 6.283185307179586]]
-      accuracy: "medium"
+      interaction_radius: 5.0
+      spatial_resolution: 0.196
+      angular_cells: 51
       target_time: 1.5
       dt: 0.1
-      epsilon: 0.2
+      superlevel_set_epsilon: 0.2
+      safe_margin: 0.2
     mppi:
       horizon: 20
       num_samples: 200
-      lambda_: 1.0
-      device: "cpu"
-      alpha_noise_sigma: 10.0
-      noise_abs_cost: false
 
-  hj_online_rollout:
+  hj_online_dual_guard:
     type: "hj"
-    mode: "online_rollout"
+    mode: "online_dual-guard"
     control_type: "bang_bang"
-    dt: 0.1
-    action_min: [0.0, -4.0]
-    action_max: [6.0, 4.0]
     safety:
-      d_safe: 0.5
+      safe_margin: 0.5
       r_sense: 5.0
     solver:
-      safe_margin: 0.2
-      domain_cells: [51, 51, 51]
-      domain: [[-5.0, -5.0, 0.0], [5.0, 5.0, 6.283185307179586]]
-      accuracy: "medium"
+      interaction_radius: 5.0
+      spatial_resolution: 0.196
+      angular_cells: 51
       target_time: 1.5
       dt: 0.1
-      epsilon: 0.2
+      superlevel_set_epsilon: 0.2
+      safe_margin: 0.2
     mppi:
       horizon: 20
       num_samples: 200
-      lambda_: 1.0
-      device: "cpu"
-      alpha_noise_sigma: 10.0
-      noise_abs_cost: false
 
   hj_penalty:
     type: "hj"
     mode: "penalty"
     control_type: "bang_bang"
-    dt: 0.1
-    action_min: [0.0, -4.0]
-    action_max: [6.0, 4.0]
     safety:
-      d_safe: 0.5
+      safe_margin: 0.5
       r_sense: 5.0
     solver:
-      safe_margin: 0.2
-      domain_cells: [51, 51, 51]
-      domain: [[-5.0, -5.0, 0.0], [5.0, 5.0, 6.283185307179586]]
-      accuracy: "medium"
+      interaction_radius: 5.0
+      spatial_resolution: 0.196
+      angular_cells: 51
       target_time: 1.5
       dt: 0.1
-      epsilon: 0.2
+      superlevel_set_epsilon: 0.2
+      safe_margin: 0.2
     mppi:
       horizon: 20
       num_samples: 200
-      lambda_: 1.0
-      device: "cpu"
-      alpha_noise_sigma: 10.0
-      noise_abs_cost: false

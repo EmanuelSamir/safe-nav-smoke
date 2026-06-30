@@ -4,4 +4,8 @@ seed: 42
 data:
   data_path: "data/physics_smoke"
 
+model:
+  type: "conv_lstm"
+  # Sobreescrituras para el modelo ConvLSTM si son necesarias
+
 # Los demás valores usarán los defaults definidos en ConvLSTMTrainingConfig

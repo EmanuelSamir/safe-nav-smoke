@@ -13,7 +13,7 @@ echo "Output directory created: $OUTPUT_DIR"
 RENDER_ARG=""
 if [ "$1" == "--test" ]; then
     echo "Running in TEST MODE: Only evaluating 'nominal' controller for 1 episode."
-    CONTROLLERS=("hj_rollout")
+    CONTROLLERS=("hj_dual_guard")
     EPISODES=1
     RENDER_ARG="--render rgb_array"
 else
@@ -21,11 +21,11 @@ else
     CONTROLLERS=(
         "nominal"
         "cbf_filter"
-        "cbf_rollout"
+        "cbf_dual_guard"
         "cbf_penalty"
         "hj_filter"
-        "hj_rollout"
-        "hj_online_rollout"
+        "hj_dual_guard"
+        "hj_online_dual_guard"
         "hj_penalty"
     )
     # Número de episodios por defecto

@@ -2,7 +2,7 @@ import os
 import sys
 
 sys.path.append(os.getcwd())
-
+sys.path.append(os.path.dirname(__file__))
 import logging
 from pathlib import Path
 
@@ -10,18 +10,15 @@ import datetime
 import yaml
 import lightning as L
 
-from src.models.lightning_conv_lstm import (
-    ConvLSTMDataModule,
-    ConvLSTMLightningModule,
-    ConvLSTMVisualizerCallback,
-)
-from projects.2_training.schema import ConvLSTMTrainingConfig
+from src.models.lightning_conv_lstm import ConvLSTMLightningModule
+from src.models.shared.base_lightning import BaseDataModule, BaseVisualizerCallback
+from src.models.shared.schemas import ConvLSTMTrainingConfig
 
 log = logging.getLogger(__name__)
 
 
 def train():
-    config_path = os.path.join(os.path.dirname(__file__), "../../configs/training/conv_lstm.yaml")
+    config_path = os.path.join(os.path.dirname(__file__), "conv_lstm_config.yaml")
     with open(config_path, "r") as f:
         yaml_data = yaml.safe_load(f)
 
@@ -49,25 +46,35 @@ def train():
         return
 
     # DataModule
-    datamodule = ConvLSTMDataModule(t_cfg, data_path)
+    datamodule = BaseDataModule(t_cfg, data_path)
     datamodule.setup()
 
     # Model
-    model = ConvLSTMLightningModule(t_cfg, datamodule.H, datamodule.W)
+    model = ConvLSTMLightningModule(
+        t_cfg, datamodule.H, datamodule.W, datamodule.x_size, datamodule.y_size
+    )
     print(f"ConvLSTM params: {sum(p.numel() for p in model.model.parameters()):,}")
 
     # Checkpoint and Loggers
     from lightning.pytorch.callbacks import ModelCheckpoint
+    from lightning.pytorch.callbacks.early_stopping import EarlyStopping
     from lightning.pytorch.loggers import TensorBoardLogger
 
+    monitor_metric = t_cfg.checkpoint.monitor.replace("val_", "Val/").replace("nll", "NLL").replace("loss", "Loss")
+    
     checkpoint_callback = ModelCheckpoint(
         dirpath=ckpt_dir,
-        monitor=t_cfg.checkpoint.monitor.replace("val_", "Val/")
-        .replace("nll", "NLL")
-        .replace("loss", "Loss"),  # Map val_nll to Val/NLL
+        monitor=monitor_metric,
         mode=t_cfg.checkpoint.mode,
         save_top_k=t_cfg.checkpoint.save_top_k,
         save_last=True,
+    )
+
+    early_stopping = EarlyStopping(
+        monitor=monitor_metric,
+        patience=10,
+        mode=t_cfg.checkpoint.mode,
+        verbose=True
     )
 
     tb_logger = TensorBoardLogger(save_dir=output_dir, name="", sub_dir="logs")
@@ -79,7 +86,8 @@ def train():
         devices=1,
         callbacks=[
             checkpoint_callback,
-            ConvLSTMVisualizerCallback(t_cfg.visualizer.visualize_every),
+            early_stopping,
+            BaseVisualizerCallback(t_cfg.visualizer.visualize_every),
         ],
         logger=tb_logger,
         enable_progress_bar=True,
