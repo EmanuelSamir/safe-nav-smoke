@@ -67,6 +67,8 @@ legacy/misc/
 legacy/bin/
 legacy/temp_files/
 
+deprecated
+
 # Generated Media
 *.mp4
 *.gif
