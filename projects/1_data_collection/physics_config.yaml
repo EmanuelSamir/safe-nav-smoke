@@ -1,8 +1,0 @@
-# Configuración para la generación de datos físicos de humo
-# Todos los parámetros que no se especifiquen aquí usarán los valores por defecto de PhysicsCollectionConfig.
-
-num_episodes: 500
-output_path: "data/physics_smoke_slow"
-
-# Si deseas cambiar algún valor de defecto, hazlo aquí. Ejemplo:
-# wind_speed: 10.0

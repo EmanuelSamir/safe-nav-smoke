@@ -1,0 +1,24 @@
+data_path: "data/structured_smoke_slow"
+output_dir: "saved_rollouts"
+max_episodes: 10
+
+sequence_length: 30
+forecast_horizon: 20
+mode: "test"
+dense: true
+
+max_horizon_eval: 20
+
+models:
+  - name: "fno_energy"
+    checkpoint_path: "outputs/training/fno_energy_loss/latest/checkpoints/last.ckpt"
+    config_path: "outputs/training/fno_energy_loss/latest/config_used.yaml"
+  - name: "fno_nll"
+    checkpoint_path: "outputs/training/fno_nll_loss/latest/checkpoints/last.ckpt"
+    config_path: "outputs/training/fno_nll_loss/latest/config_used.yaml"
+  - name: "conv_lstm_energy"
+    checkpoint_path: "outputs/training/conv_lstm_energy_loss/latest/checkpoints/last.ckpt"
+    config_path: "outputs/training/conv_lstm_energy_loss/latest/config_used.yaml"
+  - name: "conv_lstm_nll"
+    checkpoint_path: "outputs/training/conv_lstm_nll_loss/latest/checkpoints/last.ckpt"
+    config_path: "outputs/training/conv_lstm_nll_loss/latest/config_used.yaml"

@@ -1,0 +1,11 @@
+experiment_name: "conv_lstm_nll_loss"
+seed: 42
+
+data:
+  data_path: "data/structured_smoke_slow"
+
+loss:
+  name: "nll"
+
+model:
+  type: "conv_lstm"

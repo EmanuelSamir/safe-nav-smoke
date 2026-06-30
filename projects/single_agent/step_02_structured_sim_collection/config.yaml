@@ -1,0 +1,9 @@
+# Configuration for structured smoke data generation
+# All unspecified parameters will use the default values from DataCollectionConfig.
+output_path: "data/structured_smoke_slow"
+
+test: True
+
+# If you wish to override any default value, do it here. Example:
+# smoke_params:
+#   average_wind_speed: 10.0

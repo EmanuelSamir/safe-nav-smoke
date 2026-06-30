@@ -190,3 +190,22 @@ def plot_robots_and_sensors(
                 zorder=4,
             )
             ax.add_patch(circ_safe)
+
+
+def set_ieee_plot_formatting():
+    """Apply IEEE Paper Plot Formatting to Matplotlib RC Params."""
+    import matplotlib.pyplot as plt
+    plt.rcParams.update({
+        "text.usetex": False,
+        "font.family": "serif",
+        "font.serif": ["Times New Roman", "Times", "DejaVu Serif"],
+        "font.size": 10,
+        "mathtext.fontset": "stix",
+        "axes.labelsize": 10,
+        "axes.titlesize": 11,
+        "legend.fontsize": 8,
+        "xtick.labelsize": 8,
+        "ytick.labelsize": 8,
+        "lines.linewidth": 1.5,
+        "figure.dpi": 300,
+    })

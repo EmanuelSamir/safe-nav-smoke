@@ -37,7 +37,7 @@ EXPERIMENTS = {
 }
 
 base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-outputs_dir = os.path.join(base_dir, "outputs")
+outputs_dir = os.path.join(base_dir, "outputs/evaluation")
 
 print(f"Base outputs directory: {outputs_dir}")
 print(f"Configured experiments to compare: {list(EXPERIMENTS.keys())}")

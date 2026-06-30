@@ -1,0 +1,5 @@
+# Configuration for physical smoke data generation (Testing Dataset)
+num_episodes: 100
+output_path: "data/physics_smoke_slow_test"
+
+test: True

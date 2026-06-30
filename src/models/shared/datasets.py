@@ -60,6 +60,8 @@ class BaseSmokeDataset(Dataset):
         elif mode == "val":
             self.smoke_data = self.smoke_data[split_idx:]
             self.n_episodes = self.n_episodes - split_idx
+        elif mode == "test":
+            pass  # Use 100% of the dataset
 
         if max_episodes is not None:
             self.n_episodes = min(self.n_episodes, max_episodes)

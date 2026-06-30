@@ -1,0 +1,39 @@
+experiment_mode: fno
+
+env:
+  num_agents: 1
+  clock: 0.1
+  save_transitions: true
+  save_transitions_path: "outputs/integration/fno"
+  render: "rgb_array"
+  initial_locations: [[5.0, 15.0]]
+  goal_locations: [[25.0, 15.0]]
+
+robot:
+  name: "dubins2d"
+  action_dim: 2
+  action_min: [0.0, -4.0]
+  action_max: [6.0, 4.0]
+  state_dim: 3
+  state_min: [0.0, 0.0, -3.14159]
+  state_max: [30.0, 30.0, 3.14159]
+  dt: 0.1
+  device: "cuda"
+
+simulator:
+  data_path: "data/structured_smoke_slow"
+
+sensor:
+  sensor_type: "global"
+
+mppi:
+  nx: 3
+  noise_sigma: [[2.0, 0.0], [0.0, 2.0]]
+  num_samples: 1000
+  horizon: 20
+  u_min: [0.0, -4.0]
+  u_max: [6.0, 4.0]
+  device: "cuda"
+
+fno_checkpoint: "outputs/training/fno/best.ckpt"
+fno_config: "outputs/training/fno/config_used.yaml"

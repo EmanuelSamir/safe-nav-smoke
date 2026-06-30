@@ -1,0 +1,11 @@
+experiment_name: "conv_lstm_energy_loss"
+seed: 42
+
+data:
+  data_path: "data/structured_smoke_slow"
+
+loss:
+  name: "energy_score"
+
+model:
+  type: "conv_lstm"

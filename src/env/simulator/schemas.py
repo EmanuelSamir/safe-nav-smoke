@@ -60,14 +60,20 @@ class BlobConfig(StrictBaseModel):
 class SmokeConfig(BaseSimConfig):
     resolution: float = 0.2
     dt: float = 0.1
-    x_size: float = 30.0
-    y_size: float = 30.0
+    x_size: float = 35.0
+    y_size: float = 35.0
     # Physics and specific smoke generation parameters
-    velocity_iterations: int = 4
-    pressure_iterations: int = 20
-    mac_cormack: bool = True
-    buoyancy_alpha: float = 0.05
-    buoyancy_beta: float = 0.5
+    solver_max_iterations: int = 2000
+    solver_rel_tol: float = 1e-4
+    solver_abs_tol: float = 1e-4
+
+    wind_noise_smoothness: float = 0.4
+    blob_noise_scale_factor: float = 0.5
+    blob_noise_smoothness: float = 0.8
+
+    initial_diffusivity: float = 0.1
+    initial_dt: float = 0.1
+
     average_wind_speed: float = 5.0
     smoke_decay_rate: float = 1.5
     smoke_emission_rate: float = 1.8

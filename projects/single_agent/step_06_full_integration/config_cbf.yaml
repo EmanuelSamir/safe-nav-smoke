@@ -1,0 +1,35 @@
+experiment_mode: cbf
+
+env:
+  num_agents: 1
+  clock: 0.1
+  save_transitions: true
+  save_transitions_path: "outputs/integration/cbf"
+  render: "rgb_array"
+  initial_locations: [[5.0, 15.0]]
+  goal_locations: [[25.0, 15.0]]
+
+robot:
+  name: "dubins2d"
+  action_dim: 2
+  action_min: [0.0, -4.0]
+  action_max: [6.0, 4.0]
+  state_dim: 3
+  state_min: [0.0, 0.0, -3.14159]
+  state_max: [30.0, 30.0, 3.14159]
+  dt: 0.1
+  device: "cpu"
+
+simulator:
+  data_path: "data/structured_smoke_slow"
+
+sensor:
+  sensor_type: "global"
+
+cbf:
+  smoke_threshold: 0.75
+  k1: 5.0
+  k2: 5.0
+  rho: 5.0
+  margin: 1.0
+  R_diag: [1.0, 1.0]

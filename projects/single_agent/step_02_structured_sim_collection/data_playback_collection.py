@@ -1,61 +1,52 @@
 import os
 import sys
-import yaml
-
-# Add project root to path
-sys.path.append(os.getcwd())
-
-from projects.1_data_collection.schema import DataCollectionConfig
-
-# Load base config
-config_path = os.path.join(
-    os.path.dirname(__file__), "../../configs/data_collection/playback_env.yaml"
-)
-with open(config_path, "r") as f:
-    yaml_data = yaml.safe_load(f)
-
-cfg = DataCollectionConfig(**yaml_data)
-test_mode = cfg.test
+import time
 
 import matplotlib
-
-if not test_mode:
-    matplotlib.use("Agg")
-import time
-import matplotlib.pyplot as plt
 import numpy as np
+import yaml
 from tqdm import tqdm
 
-from src.env.simulator.playback_schema import SmokeDataSchema
-from src.env.simulator.smoke import BlobParams, Smoke, SmokeParams
+# It's better practice to run the script via `python -m` from the root, 
+# but if this is strictly needed, keep it near the top before local imports.
+sys.path.append(os.getcwd())
+
+from projects.single_agent.step_01_data_collection.schema import DataCollectionConfig
+from src.env.simulator.smoke_data_schema import SmokeDataSchema
+from src.env.simulator.schemas import BlobConfig, SmokeConfig
+from src.env.simulator.smoke import Smoke
+
+def load_config() -> DataCollectionConfig:
+    """Loads the local YAML configuration."""
+    config_path = os.path.join(os.path.dirname(__file__), "config.yaml")
+    with open(config_path, "r") as f:
+        yaml_data = yaml.safe_load(f) or {}
+    # Use Pydantic's model_validate for parsing dicts (idiomatic Pydantic v2)
+    return DataCollectionConfig.model_validate(yaml_data)
+
+# Initialize configuration
+cfg = load_config()
+
+# Configure matplotlib backend before importing pyplot
+if not cfg.test:
+    matplotlib.use("Agg")
+
+import matplotlib.pyplot as plt
 
 
 def main():
     # Parameters from config
     test_mode = cfg.test
-    num_episodes = 1 if test_mode else cfg.num_episodes
+    num_episodes = cfg.num_episodes
     episode_steps = cfg.episode_steps
     output_path = cfg.output_path
-    dt = cfg.dt
 
     # Grid settings
-    x_size = cfg.x_size
-    y_size = cfg.y_size
-    resolution = cfg.resolution
+    x_size = cfg.smoke_params.x_size
+    y_size = cfg.smoke_params.y_size
+    resolution = cfg.smoke_params.resolution
+    dt = cfg.smoke_params.dt
 
-    # Ensure data directory exists
-    os.makedirs(os.path.dirname(output_path), exist_ok=True)
-
-    # Storage
-    # Grid shape will be (y_res, x_res)
-    H = int(y_size / resolution)
-    W = int(x_size / resolution)
-    print(f"Grid shape: {H}x{W}")
-
-    start_time = time.time()
-
-    # y_pos centrados en 17.5 (centro del mundo 35×35)
-    # Shift de -2.5: 10→7.5 | 15→12.5 | 20→17.5 | 25→22.5 | 30→27.5
     tailored_blobs = {
         "case_1": {
             "x_pos": [11.5, 11.5, 11.5, 23.5, 23.5],
@@ -83,37 +74,35 @@ def main():
         },
     }
 
-    if test_mode:
-        fig, ax = plt.subplots(figsize=(8, 6))
-        print("Running in TEST mode: Visualizing episodes...")
-
+    def create_randomized_sim():
         case_idx = np.random.randint(1, len(tailored_blobs) + 1)
         case_blobs = tailored_blobs[f"case_{case_idx}"]
         num_blobs = len(case_blobs["x_pos"])
+        
         episode_blobs = []
         for i in range(num_blobs):
-            spread_rate = np.random.uniform(1.5, 3.0)
+            spread_rate = np.random.uniform(
+                cfg.blob_spread_range[0], cfg.blob_spread_range[1]
+            )
             episode_blobs.append(
-                BlobParams(
+                BlobConfig(
                     x_pos=case_blobs["x_pos"][i],
                     y_pos=case_blobs["y_pos"][i],
-                    intensity=1.0,
+                    intensity=float(cfg.blob_intensity),
                     spread_rate=spread_rate,
                 )
             )
 
-        params = SmokeParams(
-            x_size=x_size,
-            y_size=y_size,
-            resolution=resolution,
-            average_wind_speed=float(cfg.wind_speed),
-            smoke_emission_rate=float(cfg.emission_rate),
-            smoke_diffusion_rate=float(cfg.diffusion_rate),
-            smoke_decay_rate=float(cfg.decay_rate),
-            buoyancy_factor=float(cfg.buoyancy),
-            inflow_bank_count=5,
-        )
-        sim = Smoke(params, blob_params_list=episode_blobs)
+        # Clone the default smoke parameters from config and attach the randomized blobs
+        params = cfg.smoke_params.model_copy(deep=True)
+        params.blobs = episode_blobs
+        return Smoke(cfg=params)
+
+    if test_mode:
+        fig, ax = plt.subplots(figsize=(8, 6))
+        print("Running in TEST mode: Visualizing episode...")
+
+        sim = create_randomized_sim()
 
         for step in range(episode_steps):
             sim.plot_smoke_map(fig=fig, ax=ax)
@@ -124,38 +113,25 @@ def main():
         plt.show()
         return
 
+    # Prevent overwriting existing data
+    assert not os.path.exists(output_path), f"Output path '{output_path}' already exists! Stopping to prevent overwrite."
+
+    # Ensure data directory exists
+    os.makedirs(os.path.dirname(output_path), exist_ok=True)
+
+    # Storage dimensions
+    H = int(y_size / resolution)
+    W = int(x_size / resolution)
+    print(f"Generating grid: {H}x{W} ({y_size}m x {x_size}m at {resolution}m resolution)")
+
+    start_time = time.time()
+
     def episode_generator():
         for ep in tqdm(range(num_episodes), desc="Episodes"):
-            # Randomize blobs for this episode
-            case_idx = np.random.randint(1, len(tailored_blobs) + 1)
-            case_blobs = tailored_blobs[f"case_{case_idx}"]
-            num_blobs = len(case_blobs["x_pos"])
-            episode_blobs = []
-            for i in range(num_blobs):
-                spread_rate = np.random.uniform(1.5, 3.0)
-                episode_blobs.append(
-                    BlobParams(
-                        x_pos=case_blobs["x_pos"][i],
-                        y_pos=case_blobs["y_pos"][i],
-                        intensity=1.0,
-                        spread_rate=spread_rate,
-                    )
-                )
+            # 1. Setup the Simulator with randomized blobs and config parameters
+            sim = create_randomized_sim()
 
-            # Create new simulator instance for this episode to bake in the new blobs
-            params = SmokeParams(
-                x_size=x_size,
-                y_size=y_size,
-                resolution=resolution,
-                average_wind_speed=float(cfg.wind_speed),
-                smoke_emission_rate=float(cfg.emission_rate),
-                smoke_diffusion_rate=float(cfg.diffusion_rate),
-                smoke_decay_rate=float(cfg.decay_rate),
-                buoyancy_factor=float(cfg.buoyancy),
-                inflow_bank_count=5,
-            )
-            sim = Smoke(params, blob_params_list=episode_blobs)
-
+            # 2. Simulate episode steps and record map
             episode_data = np.zeros((episode_steps, H, W), dtype=np.float32)
             for step in range(episode_steps):
                 episode_data[step] = sim.get_smoke_map()
@@ -188,7 +164,7 @@ def main():
         }
     )
 
-    ds = Dataset.from_generator(episode_generator, features=features, writer_batch_size=50)
+    ds = Dataset.from_generator(episode_generator, features=features, writer_batch_size=cfg.writer_batch_size)
 
     print(f"Generation complete in {time.time() - start_time:.2f}s. Saving to {output_path}...")
     ds.save_to_disk(output_path)

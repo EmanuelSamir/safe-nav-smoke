@@ -38,7 +38,11 @@ class Smoke(BaseSmokeSimulator):
             self.inflow_bank.append(self.build_smoke_map(self.blob_cfg_list))
 
         self.smoke_map = self.inflow_bank[0]
-        self.smoke_map = flow.diffuse.explicit(self.smoke_map, diffusivity=0.1, dt=0.1)
+        self.smoke_map = flow.diffuse.explicit(
+            self.smoke_map, 
+            diffusivity=self.cfg.initial_diffusivity, 
+            dt=self.cfg.initial_dt
+        )
 
         self.velocity = self.build_velocity()
 
@@ -53,7 +57,11 @@ class Smoke(BaseSmokeSimulator):
 
     def reset(self):
         self.smoke_map = self.inflow_bank[0]
-        self.smoke_map = flow.diffuse.explicit(self.smoke_map, diffusivity=0.1, dt=0.1)
+        self.smoke_map = flow.diffuse.explicit(
+            self.smoke_map, 
+            diffusivity=self.cfg.initial_diffusivity, 
+            dt=self.cfg.initial_dt
+        )
         self.velocity = self.build_velocity()
 
     def step(self, dt: float = 0.1):
@@ -76,9 +84,9 @@ class Smoke(BaseSmokeSimulator):
             (),
             flow.Solve(
                 rank_deficiency=0,
-                rel_tol=1e-4,
-                abs_tol=1e-4,
-                max_iterations=2000,
+                rel_tol=self.cfg.solver_rel_tol,
+                abs_tol=self.cfg.solver_abs_tol,
+                max_iterations=self.cfg.solver_max_iterations,
                 suppress=(flow.math.NotConverged,),
             ),
         )
@@ -137,7 +145,10 @@ class Smoke(BaseSmokeSimulator):
             # scale: controls how "large" the smoke clumps are.
             # smoothness: smooths the noise to look like smoke and not TV static.
             noise_grid = flow.CenteredGrid(
-                flow.Noise(scale=blob.spread_rate * 0.5, smoothness=0.8),
+                flow.Noise(
+                    scale=blob.spread_rate * self.cfg.blob_noise_scale_factor, 
+                    smoothness=self.cfg.blob_noise_smoothness
+                ),
                 flow.extrapolation.BOUNDARY,
                 resolution=self.spatial_resolution,
                 bounds=self.bounds,
@@ -156,7 +167,7 @@ class Smoke(BaseSmokeSimulator):
 
     def build_velocity(self):
         velocity = self.cfg.average_wind_speed * flow.StaggeredGrid(
-            flow.Noise(smoothness=0.4),
+            flow.Noise(smoothness=self.cfg.wind_noise_smoothness),
             flow.extrapolation.ZERO,
             resolution=self.spatial_resolution,
             bounds=self.bounds,
@@ -166,9 +177,9 @@ class Smoke(BaseSmokeSimulator):
             (),
             flow.Solve(
                 rank_deficiency=0,
-                rel_tol=1e-4,
-                abs_tol=1e-4,
-                max_iterations=2000,
+                rel_tol=self.cfg.solver_rel_tol,
+                abs_tol=self.cfg.solver_abs_tol,
+                max_iterations=self.cfg.solver_max_iterations,
                 suppress=(flow.math.NotConverged,),
             ),
         )

@@ -10,21 +10,27 @@ import datetime
 import yaml
 import lightning as L
 
-from src.models.lightning_conv_lstm import ConvLSTMLightningModule
+from src.models.lightning_fno import FNOLightningModule
 from src.models.shared.base_lightning import BaseDataModule, BaseVisualizerCallback
-from src.models.shared.schemas import ConvLSTMTrainingConfig
+from src.models.shared.schemas import FNOTrainingConfig
 
 log = logging.getLogger(__name__)
 
 
+import argparse
+
 def train():
-    config_path = os.path.join(os.path.dirname(__file__), "conv_lstm_config.yaml")
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--config", type=str, default="fno_config.yaml", help="Path to config file")
+    args, _ = parser.parse_known_args()
+    config_name = args.config
+    config_path = os.path.join(os.path.dirname(__file__), config_name)
     with open(config_path, "r") as f:
         yaml_data = yaml.safe_load(f)
+    
+    t_cfg = FNOTrainingConfig.model_validate(yaml_data)
 
-    t_cfg = ConvLSTMTrainingConfig(**yaml_data)
-
-    print(f"Training ConvLSTM — {t_cfg.experiment_name}")
+    print(f"Training FNO — {t_cfg.experiment_name}")
     L.seed_everything(t_cfg.seed)
 
     timestamp = datetime.datetime.now().strftime("%Y-%m-%d/%H-%M-%S")
@@ -50,10 +56,10 @@ def train():
     datamodule.setup()
 
     # Model
-    model = ConvLSTMLightningModule(
+    model = FNOLightningModule(
         t_cfg, datamodule.H, datamodule.W, datamodule.x_size, datamodule.y_size
     )
-    print(f"ConvLSTM params: {sum(p.numel() for p in model.model.parameters()):,}")
+    print(f"FNO params: {sum(p.numel() for p in model.model.parameters()):,}")
 
     # Checkpoint and Loggers
     from lightning.pytorch.callbacks import ModelCheckpoint
@@ -84,11 +90,7 @@ def train():
         max_epochs=t_cfg.optimizer.max_epochs,
         accelerator="auto",
         devices=1,
-        callbacks=[
-            checkpoint_callback,
-            early_stopping,
-            BaseVisualizerCallback(t_cfg.visualizer.visualize_every),
-        ],
+        callbacks=[checkpoint_callback, early_stopping, BaseVisualizerCallback(t_cfg.visualizer.visualize_every)],
         logger=tb_logger,
         enable_progress_bar=True,
         log_every_n_steps=10,
