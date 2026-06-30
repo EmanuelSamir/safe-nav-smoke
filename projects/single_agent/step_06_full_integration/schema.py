@@ -27,6 +27,7 @@ class IntegrationConfig(StrictBaseModel):
     # Neural Predictor (FNO)
     fno_checkpoint: Optional[str] = None
     fno_config: Optional[str] = None
+    fno_cvar_alpha: float = 0.95
     
     @model_validator(mode="after")
     def validate_dependencies(self) -> "IntegrationConfig":

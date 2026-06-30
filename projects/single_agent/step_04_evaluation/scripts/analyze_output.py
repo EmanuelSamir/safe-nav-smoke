@@ -1,7 +1,6 @@
 # %%
 # =============================================================================
 # 1. SETUP & RAW DATA CACHING
-# Corre esta celda una sola vez para cargar los .npz desde el disco a la RAM.
 # =============================================================================
 import os
 import sys
@@ -67,7 +66,7 @@ for run in RUNS:
             })
     raw_run_data.append(episodes if episodes else None)
 
-print("✅ Data successfully loaded into RAM!")
+print("Data successfully loaded into RAM!")
 
 # %%
 # =============================================================================
@@ -159,7 +158,7 @@ for run_idx, (run, episodes) in enumerate(zip(RUNS, raw_run_data)):
                     
     all_metrics.append(results_per_h)
 
-print("✅ Metrics ready for plotting!")
+print("Metrics ready for plotting!")
 
 # %%
 # =============================================================================

@@ -11,7 +11,7 @@ from tqdm import tqdm
 # but if this is strictly needed, keep it near the top before local imports.
 sys.path.append(os.getcwd())
 
-from projects.single_agent.step_02_structured_sim_collection.schema import DataCollectionConfig
+from projects.single_agent.step_01_data_collection.schema import DataCollectionConfig
 from src.env.simulator.smoke_data_schema import SmokeDataSchema
 from src.env.simulator.schemas import BlobConfig, SmokeConfig
 from src.env.simulator.smoke import Smoke
@@ -49,28 +49,28 @@ def main():
 
     tailored_blobs = {
         "case_1": {
-            "x_pos": [10.0, 10.0, 10.0, 20.0, 20.0],
-            "y_pos": [3.0, 10.0, 17.0, 6.0, 14.0],
+            "x_pos": [11.5, 11.5, 11.5, 23.5, 23.5],
+            "y_pos": [7.5, 17.5, 27.5, 12.5, 22.5],
         },
         "case_2": {
-            "x_pos": [20.0, 20.0, 20.0, 10.0, 10.0],
-            "y_pos": [3.0, 10.0, 17.0, 6.0, 14.0],
+            "x_pos": [23.5, 23.5, 23.5, 11.5, 11.5],
+            "y_pos": [7.5, 17.5, 27.5, 12.5, 22.5],
         },
         "case_3": {
-            "x_pos": [10.0, 10.0, 10.0, 20.0, 20.0, 20.0],
-            "y_pos": [3.0, 8.0, 13.0, 7.0, 12.0, 17.0],
+            "x_pos": [11.5, 11.5, 11.5, 23.5, 23.5, 23.5],
+            "y_pos": [7.5, 17.5, 27.5, 7.5, 17.5, 27.5],
         },
         "case_4": {
-            "x_pos": [20.0, 20.0, 20.0, 10.0, 10.0, 10.0],
-            "y_pos": [3.0, 8.0, 13.0, 7.0, 12.0, 17.0],
+            "x_pos": [23.5, 23.5, 23.5, 11.5, 11.5, 11.5],
+            "y_pos": [7.5, 17.5, 27.5, 7.5, 17.5, 27.5],
         },
         "case_5": {
-            "x_pos": [8.0, 8.0, 15.0, 22.0, 22.0],
-            "y_pos": [4.0, 16.0, 10.0, 4.0, 16.0],
+            "x_pos": [10.5, 10.5, 17.5, 24.5, 24.5],
+            "y_pos": [7.5, 27.5, 17.5, 7.5, 27.5],
         },
         "case_6": {
-            "x_pos": [8.0, 15.0, 15.0, 15.0, 22.0],
-            "y_pos": [10.0, 4.0, 10.0, 16.0, 10.0],
+            "x_pos": [10.5, 17.5, 17.5, 17.5, 24.5],
+            "y_pos": [17.5, 7.5, 17.5, 27.5, 17.5],
         },
     }
 

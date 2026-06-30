@@ -1,0 +1,33 @@
+env:
+  max_steps: 1000
+  render: "none"
+  save_transitions_path: "outputs/cbf_sweep"
+
+robot:
+  type: "dubins"
+  v_max: 2.0
+  omega_max: 1.5
+
+sensor:
+  type: "global"
+
+simulator:
+  type: "playback"
+  data_path: "data/structured_smoke_slow"
+
+cbf_base:
+  smoke_threshold: 0.5
+  k1: 1.0
+  k2: 1.0
+  rho: 0.1
+  margin: 0.2
+  gamma: 1.0
+
+# 1D Sweep Definition
+sweep_param: "smoke_threshold"
+sweep_values:
+  - 0.1
+  - 0.3
+  - 0.5
+  - 0.7
+  - 0.9

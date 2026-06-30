@@ -1,5 +1,18 @@
-# Configuration for physical smoke data generation (Testing Dataset)
-num_episodes: 100
-output_path: "data/physics_smoke_slow_test"
+# Configuration for physical smoke data generation
+# All unspecified parameters will use the default values from DataCollectionConfig.
 
-test: True
+num_episodes: 500
+output_path: "data/physics_single_agent_test"
+
+test: False
+
+# If you wish to override any default value, do it here. Example:
+smoke_params:
+  x_size: 30.0
+  y_size: 30.0
+  average_wind_speed: 8.0
+  smoke_decay_rate: 1.3
+  smoke_emission_rate: 2.0
+  smoke_diffusion_rate: 2.0
+  inflow_bank_count: 5
+  buoyancy_factor: 1.2

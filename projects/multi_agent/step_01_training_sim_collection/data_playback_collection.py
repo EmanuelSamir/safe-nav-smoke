@@ -11,14 +11,23 @@ from tqdm import tqdm
 # but if this is strictly needed, keep it near the top before local imports.
 sys.path.append(os.getcwd())
 
-from projects.single_agent.step_02_structured_sim_collection.schema import DataCollectionConfig
+from projects.single_agent.step_01_training_sim_collection.schema import DataCollectionConfig
 from src.env.simulator.smoke_data_schema import SmokeDataSchema
 from src.env.simulator.schemas import BlobConfig, SmokeConfig
 from src.env.simulator.smoke import Smoke
 
+import argparse
+
 def load_config() -> DataCollectionConfig:
     """Loads the local YAML configuration."""
-    config_path = os.path.join(os.path.dirname(__file__), "config.yaml")
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--config", type=str, default="train_config.yaml", help="Path to YAML config file")
+    args, _ = parser.parse_known_args()
+    
+    config_path = args.config
+    if not os.path.isabs(config_path):
+        config_path = os.path.join(os.path.dirname(__file__), config_path)
+        
     with open(config_path, "r") as f:
         yaml_data = yaml.safe_load(f) or {}
     # Use Pydantic's model_validate for parsing dicts (idiomatic Pydantic v2)
@@ -47,51 +56,36 @@ def main():
     resolution = cfg.smoke_params.resolution
     dt = cfg.smoke_params.dt
 
-    tailored_blobs = {
-        "case_1": {
-            "x_pos": [10.0, 10.0, 10.0, 20.0, 20.0],
-            "y_pos": [3.0, 10.0, 17.0, 6.0, 14.0],
-        },
-        "case_2": {
-            "x_pos": [20.0, 20.0, 20.0, 10.0, 10.0],
-            "y_pos": [3.0, 10.0, 17.0, 6.0, 14.0],
-        },
-        "case_3": {
-            "x_pos": [10.0, 10.0, 10.0, 20.0, 20.0, 20.0],
-            "y_pos": [3.0, 8.0, 13.0, 7.0, 12.0, 17.0],
-        },
-        "case_4": {
-            "x_pos": [20.0, 20.0, 20.0, 10.0, 10.0, 10.0],
-            "y_pos": [3.0, 8.0, 13.0, 7.0, 12.0, 17.0],
-        },
-        "case_5": {
-            "x_pos": [8.0, 8.0, 15.0, 22.0, 22.0],
-            "y_pos": [4.0, 16.0, 10.0, 4.0, 16.0],
-        },
-        "case_6": {
-            "x_pos": [8.0, 15.0, 15.0, 15.0, 22.0],
-            "y_pos": [10.0, 4.0, 10.0, 16.0, 10.0],
-        },
-    }
-
     def create_randomized_sim():
-        case_idx = np.random.randint(1, len(tailored_blobs) + 1)
-        case_blobs = tailored_blobs[f"case_{case_idx}"]
-        num_blobs = len(case_blobs["x_pos"])
-        
+        num_blobs = np.random.randint(cfg.num_blobs_range[0], cfg.num_blobs_range[1] + 1)
         episode_blobs = []
-        for i in range(num_blobs):
-            spread_rate = np.random.uniform(
-                cfg.blob_spread_range[0], cfg.blob_spread_range[1]
-            )
-            episode_blobs.append(
-                BlobConfig(
-                    x_pos=case_blobs["x_pos"][i],
-                    y_pos=case_blobs["y_pos"][i],
-                    intensity=float(cfg.blob_intensity),
-                    spread_rate=spread_rate,
-                )
-            )
+
+        for _ in range(num_blobs):
+            for _ in range(cfg.max_spawn_attempts):
+                x_c = np.random.uniform(cfg.spawn_margin, x_size - cfg.spawn_margin)
+                y_c = np.random.uniform(cfg.spawn_margin, y_size - cfg.spawn_margin)
+
+                # Enforce min distance between centers if requested
+                min_dist = cfg.blob_min_dist
+                valid_pos = True
+                for blob in episode_blobs:
+                    dist = np.sqrt((x_c - blob.x_pos) ** 2 + (y_c - blob.y_pos) ** 2)
+                    if dist < min_dist:
+                        valid_pos = False
+                        break
+
+                if valid_pos:
+                    episode_blobs.append(
+                        BlobConfig(
+                            x_pos=x_c,
+                            y_pos=y_c,
+                            intensity=float(cfg.blob_intensity),
+                            spread_rate=np.random.uniform(
+                                cfg.blob_spread_range[0], cfg.blob_spread_range[1]
+                            ),
+                        )
+                    )
+                    break
 
         # Clone the default smoke parameters from config and attach the randomized blobs
         params = cfg.smoke_params.model_copy(deep=True)

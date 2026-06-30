@@ -27,6 +27,7 @@ from projects.single_agent.step_06_full_integration.schema import IntegrationCon
 try:
     from src.models.lightning_fno import FNOLightningModule
     from src.models.shared.schemas import FNOTrainingConfig
+    from src.wrappers.smoke_forecast_wrapper import _cvar
 except ImportError:
     pass
 
@@ -178,8 +179,10 @@ def main():
                             
                             # Populate maps_deque with forecasted frames
                             for p in preds:
-                                pred_grid = p["mean"][0] # (H, W)
-                                maps_deque.append((smoke_positions, pred_grid.flatten()))
+                                pred_mean = p["mean"][0] # (H, W)
+                                pred_std = p["std"][0]
+                                cvar_grid = _cvar(pred_mean, pred_std, alpha=cfg.fno_cvar_alpha)
+                                maps_deque.append((smoke_positions, cvar_grid.flatten()))
                 else:
                     # Fallback to persistent if context is not yet full
                     for _ in range(cfg.mppi.horizon):
