@@ -28,4 +28,4 @@ export PREFECT_HOME="/data/emunoz/prefect_home"
 cd /home/emunoz/dev/safe-nav-smoke/
 
 # 4. Launch the container with Apptainer and the Python script
-apptainer exec --nv --bind /data/emunoz:/data /data/emunoz/imgs/python_full.sif /data/emunoz/envs/dev_env/bin/python projects/single_agent/step_02_structured_sim_collection/data_playback_collection.py
+apptainer exec --nv --bind /data/emunoz:/data /data/emunoz/imgs/python_full.sif /data/emunoz/envs/dev_env/bin/python projects/multi_agent/step_02_structured_sim_collection/data_playback_collection.py

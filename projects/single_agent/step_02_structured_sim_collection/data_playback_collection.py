@@ -100,7 +100,14 @@ def main():
 
     if test_mode:
         fig, ax = plt.subplots(figsize=(8, 6))
-        print("Running in TEST mode: Visualizing episode...")
+        print("--- RUNNING IN TEST MODE ---")
+        print(f"Data will NOT be saved. If test=False, data will be saved to: {output_path}")
+        if os.path.exists(output_path):
+            print(f"WARNING: The output path '{output_path}' ALREADY EXISTS!")
+            print("If you run this script with test: False, it will crash immediately to prevent overwriting.")
+        else:
+            print("Output path is clear. Ready for full execution.")
+        print("Visualizing a single episode...")
 
         sim = create_randomized_sim()
 
