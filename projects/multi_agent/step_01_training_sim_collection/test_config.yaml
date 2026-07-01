@@ -2,4 +2,4 @@
 num_episodes: 100
 output_path: "data/physics_multi_agent_test"
 
-test: True
+test: False

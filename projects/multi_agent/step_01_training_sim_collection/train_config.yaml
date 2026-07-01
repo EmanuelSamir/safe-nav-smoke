@@ -4,7 +4,7 @@
 num_episodes: 500
 output_path: "data/physics_multi_agent_train"
 
-test: True
+test: False
 
 # If you wish to override any default value, do it here. Example:
 # smoke_params:

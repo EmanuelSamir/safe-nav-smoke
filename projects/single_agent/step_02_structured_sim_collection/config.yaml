@@ -4,7 +4,7 @@
 num_episodes: 100
 output_path: "data/structured_single_agent_env"
 
-test: True
+test: False
 
 # If you wish to override any default value, do it here. Example:
 smoke_params:

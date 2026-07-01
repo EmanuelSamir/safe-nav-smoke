@@ -2,7 +2,7 @@
 # All unspecified parameters will use the default values from DataCollectionConfig.
 output_path: "data/structured_multi_agent_env"
 
-test: True
+test: False
 
 # If you wish to override any default value, do it here. Example:
 # smoke_params:
