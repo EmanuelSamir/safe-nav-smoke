@@ -1,7 +1,7 @@
 # Configuration for physical smoke data generation
 # All unspecified parameters will use the default values from DataCollectionConfig.
 
-num_episodes: 500
+num_episodes: 100
 output_path: "data/structured_single_agent_env"
 
 test: True
