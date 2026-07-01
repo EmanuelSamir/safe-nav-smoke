@@ -1,10 +1,11 @@
+project_name: "single_agent_experiment"
+sub_project_name: "integration"
 experiment_mode: cbf
 
 env:
   num_agents: 1
   clock: 0.1
   save_transitions: true
-  save_transitions_path: "outputs/integration/cbf"
   render: "rgb_array"
   initial_locations: [[5.0, 15.0]]
   goal_locations: [[25.0, 15.0]]

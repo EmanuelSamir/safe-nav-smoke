@@ -85,6 +85,8 @@ class TrainingVisualizerConfig(StrictBaseModel):
 
 
 class TrainingConfig(StrictBaseModel):
+    project_name: str = "single_agent_experiment"
+    sub_project_name: str = "training"
     experiment_name: str
     seed: int = 42
     data: TrainingDataConfig = TrainingDataConfig()

@@ -52,6 +52,11 @@ def main():
     log.info(f"Loaded configuration for experiment_mode: {cfg.experiment_mode}")
 
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    
+    # Modify output directory to segregate datasets by experiment mode
+    save_dir = os.path.join("outputs", cfg.project_name, cfg.sub_project_name, cfg.experiment_mode)
+    os.makedirs(save_dir, exist_ok=True)
+    cfg.env.save_transitions_path = save_dir
 
     # 1. Setup Environment first (crucial for PlaybackConfig)
     log.info("Initializing SmokeEnv (Playback)...")
@@ -210,8 +215,7 @@ def main():
     env.close()
     
     # Save TimeTracker metrics to output directory
-    save_dir = getattr(cfg.env, "save_transitions_path", "outputs/integration/default")
-    os.makedirs(save_dir, exist_ok=True)
+    save_dir = cfg.env.save_transitions_path
     timing_file = os.path.join(save_dir, "timing_metrics.json")
     with open(timing_file, "w") as f:
         json.dump(tracker.summary(), f, indent=4)

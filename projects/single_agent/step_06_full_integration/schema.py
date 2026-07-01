@@ -12,6 +12,9 @@ from src.controllers.schemas import MPPIConfig, CBFSmokeConfig
 class IntegrationConfig(StrictBaseModel):
     """Configuration schema for the full simulation integration."""
     
+    project_name: str = "single_agent_experiment"
+    sub_project_name: str = "integration"
+    
     experiment_mode: Literal["no_risk", "cbf", "persistent", "fno"]
     
     # Core components

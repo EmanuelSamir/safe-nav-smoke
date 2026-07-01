@@ -51,7 +51,7 @@ def main():
         setattr(cfg.cbf_base, cfg.sweep_param, val)
         
         # Modify output directory to segregate datasets
-        base_path = getattr(cfg.env, "save_transitions_path", "outputs/cbf_sweep")
+        base_path = os.path.join("outputs", cfg.project_name, cfg.sub_project_name)
         val_str = f"{val:.4f}".replace(".", "_")
         current_save_path = os.path.join(base_path, cfg.sweep_param, f"val_{val_str}")
         cfg.env.save_transitions_path = current_save_path

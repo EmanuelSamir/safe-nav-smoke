@@ -9,6 +9,9 @@ from src.controllers.schemas import CBFSmokeConfig
 class SweepConfig(StrictBaseModel):
     """Configuration schema for parameter sweeps."""
     
+    project_name: str = "single_agent_experiment"
+    sub_project_name: str = "cbf_sweep"
+    
     env: EnvConfig = Field(default_factory=EnvConfig)
     robot: RobotConfig
     sensor: GlobalSensorConfig = Field(default_factory=GlobalSensorConfig)

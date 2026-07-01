@@ -8,8 +8,9 @@ class ModelEvalConfig(StrictBaseModel):
     config_path: str  # Path to the config used during training
 
 class EvaluationConfig(StrictBaseModel):
+    project_name: str = "single_agent_experiment"
+    sub_project_name: str = "saved_rollouts"
     data_path: str = "data/structured_smoke_slow"
-    output_dir: str = "saved_rollouts"
     max_episodes: int = 10
     
     # Dataset params

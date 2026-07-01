@@ -1,3 +1,5 @@
+project_name: "single_agent_experiment"
+sub_project_name: "training"
 experiment_name: "conv_lstm_energy_loss"
 seed: 42
 

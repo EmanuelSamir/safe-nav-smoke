@@ -1,7 +1,9 @@
+project_name: "single_agent_experiment"
+sub_project_name: "cbf_sweep"
+
 env:
   max_steps: 1000
   render: "none"
-  save_transitions_path: "outputs/cbf_sweep"
 
 robot:
   type: "dubins"

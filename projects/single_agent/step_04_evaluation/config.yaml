@@ -1,5 +1,6 @@
+project_name: "single_agent_experiment"
+sub_project_name: "saved_rollouts"
 data_path: "data/structured_smoke_slow"
-output_dir: "saved_rollouts"
 max_episodes: 10
 
 sequence_length: 30

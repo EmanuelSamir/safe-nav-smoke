@@ -24,7 +24,7 @@ def load_config() -> EvaluationConfig:
 def generate_rollouts():
     cfg = load_config()
     
-    output_root = Path(os.getcwd()) / cfg.output_dir
+    output_root = Path(os.getcwd()) / "outputs" / cfg.project_name / cfg.sub_project_name
     output_root.mkdir(parents=True, exist_ok=True)
     
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
