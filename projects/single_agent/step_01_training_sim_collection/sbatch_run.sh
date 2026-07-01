@@ -3,9 +3,9 @@
 # SLURM CONFIGURATION
 # =====================================================================
 #SBATCH -p pleiades                         # general partition
-#SBATCH -w pleiades-0-23                    # lightweight node
+#SBATCH -w pleiades-0-17                    # lightweight node
 #SBATCH --job-name=physics_playback         # job name
-#SBATCH --time=08:00:00                     # 8 hours limit
+#SBATCH --time=12:00:00                     # 12 hours limit
 #SBATCH --cpus-per-task=8                   # 8 cpu cores
 #SBATCH --gpus=1                            # 1 GPU
 #SBATCH --mem=16G                           # 16 GB RAM
