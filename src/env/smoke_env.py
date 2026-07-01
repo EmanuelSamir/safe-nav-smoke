@@ -212,6 +212,11 @@ class SmokeEnv(ParallelEnv):
             self.env_cfg.world_x_size = self.smoke_simulator.cfg.x_size
             self.env_cfg.world_y_size = self.smoke_simulator.cfg.y_size
             self.env_cfg.max_steps = self.smoke_simulator.max_steps
+            
+            # Auto-sync robot physical limits to avoid manual config errors
+            if len(self.robot_cfg.state_max) >= 2:
+                self.robot_cfg.state_max[0] = self.smoke_simulator.cfg.x_size
+                self.robot_cfg.state_max[1] = self.smoke_simulator.cfg.y_size
 
     def observation_space(self, agent: str):
         agent_idx = int(agent.split("_")[1])

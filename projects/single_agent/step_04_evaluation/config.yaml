@@ -1,7 +1,7 @@
 project_name: "single_agent_experiment"
 sub_project_name: "saved_rollouts"
-data_path: "data/structured_smoke_slow"
-max_episodes: 10
+data_path: "data/physics_single_agent_test"
+max_episodes: 100
 
 sequence_length: 30
 forecast_horizon: 20
@@ -11,15 +11,15 @@ dense: true
 max_horizon_eval: 20
 
 models:
-  - name: "fno_energy"
-    checkpoint_path: "outputs/training/fno_energy_loss/latest/checkpoints/last.ckpt"
-    config_path: "outputs/training/fno_energy_loss/latest/config_used.yaml"
+  # - name: "fno_energy"
+  #   checkpoint_path: "outputs/training/fno_energy_loss/latest/checkpoints/last.ckpt"
+  #   config_path: "outputs/training/fno_energy_loss/latest/config_used.yaml"
   - name: "fno_nll"
-    checkpoint_path: "outputs/training/fno_nll_loss/latest/checkpoints/last.ckpt"
-    config_path: "outputs/training/fno_nll_loss/latest/config_used.yaml"
-  - name: "conv_lstm_energy"
-    checkpoint_path: "outputs/training/conv_lstm_energy_loss/latest/checkpoints/last.ckpt"
-    config_path: "outputs/training/conv_lstm_energy_loss/latest/config_used.yaml"
+    checkpoint_path: "outputs/single_agent_experiment/training/fno_nll_loss/2026-07-01/10-09-25/checkpoints/last.ckpt"
+    config_path: "outputs/single_agent_experiment/training/fno_nll_loss/2026-07-01/10-09-25/config_used.yaml"
+  # - name: "conv_lstm_energy"
+  #   checkpoint_path: "outputs/training/conv_lstm_energy_loss/latest/checkpoints/last.ckpt"
+  #   config_path: "outputs/training/conv_lstm_energy_loss/latest/config_used.yaml"
   - name: "conv_lstm_nll"
-    checkpoint_path: "outputs/training/conv_lstm_nll_loss/latest/checkpoints/last.ckpt"
-    config_path: "outputs/training/conv_lstm_nll_loss/latest/config_used.yaml"
+    checkpoint_path: "outputs/single_agent_experiment/training/conv_lstm_nll_loss/2026-07-01/10-12-34/checkpoints/last.ckpt"
+    config_path: "outputs/single_agent_experiment/training/conv_lstm_nll_loss/2026-07-01/10-12-34/config_used.yaml"

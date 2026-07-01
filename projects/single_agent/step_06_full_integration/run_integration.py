@@ -22,7 +22,30 @@ from src.env.smoke_env import SmokeEnv
 from src.utils.time_tracker import TimeTracker
 
 from projects.single_agent.step_06_full_integration.schema import IntegrationConfig
+from src.models.shared.schemas import (
+    TrainingDataConfig,
+    TrainingLossConfig,
+    TrainingOptimizerConfig,
+    TrainingCheckpointConfig,
+    TrainingVisualizerConfig,
+    TrainingConfig,
+    FNOConfig,
+    ConvLSTMConfig,
+    ModelConfig
+)
 
+# PyTorch 2.6 defaults to weights_only=True, we need to allowlist the config classes saved in the checkpoint
+torch.serialization.add_safe_globals([
+    TrainingDataConfig,
+    TrainingLossConfig,
+    TrainingOptimizerConfig,
+    TrainingCheckpointConfig,
+    TrainingVisualizerConfig,
+    TrainingConfig,
+    FNOConfig,
+    ConvLSTMConfig,
+    ModelConfig
+])
 # Optional imports for FNO mode
 try:
     from src.models.lightning_fno import FNOLightningModule
@@ -51,10 +74,12 @@ def main():
     cfg = load_config(args.config)
     log.info(f"Loaded configuration for experiment_mode: {cfg.experiment_mode}")
 
+    import datetime
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     
-    # Modify output directory to segregate datasets by experiment mode
-    save_dir = os.path.join("outputs", cfg.project_name, cfg.sub_project_name, cfg.experiment_mode)
+    # Modify output directory to segregate datasets by experiment mode and add timestamp
+    timestamp = datetime.datetime.now().strftime("%Y-%m-%d_%H-%M-%S")
+    save_dir = os.path.join("outputs", cfg.project_name, cfg.sub_project_name, cfg.experiment_mode, timestamp)
     os.makedirs(save_dir, exist_ok=True)
     cfg.env.save_transitions_path = save_dir
 
@@ -70,6 +95,12 @@ def main():
     # 2. Load Predictive Model if FNO mode
     fno_model = None
     if cfg.experiment_mode == "fno":
+        from src.models.shared.schemas import FNOTrainingConfig
+        try:
+            torch.serialization.add_safe_globals([FNOTrainingConfig])
+        except AttributeError:
+            pass # older pytorch versions
+
         log.info("Loading FNO model...")
         with open(cfg.fno_config, "r") as f:
             fno_cfg_data = yaml.safe_load(f)
@@ -118,99 +149,133 @@ def main():
 
     # 4. Run Simulation Loop
     log.info("Starting simulation loop...")
-    obs, _ = env.reset()
+    # Determine number of episodes
+    if hasattr(env, "smoke_simulator") and hasattr(env.smoke_simulator, "num_episodes"):
+        num_episodes_to_run = env.smoke_simulator.num_episodes
+    else:
+        num_episodes_to_run = 1
 
-    # Buffers for FNO context window
     h_ctx = fno_train_cfg.model.h_ctx if cfg.experiment_mode == "fno" else 1
-    smoke_history = deque(maxlen=h_ctx)
     max_steps = cfg.env.max_steps if cfg.env.max_steps else 1000
 
     # Initialize TimeTracker
     tracker = TimeTracker()
+    episode_summaries = []
 
-    for step in tqdm(range(max_steps), desc="Simulation Steps"):
-        agent_obs = obs.get("agent_0")
-        if agent_obs is None:
-            break # Agent terminated or truncated
+    for ep in range(num_episodes_to_run):
+        obs, _ = env.reset(seed=ep)
+        ep_tracker = TimeTracker()
+        ep_reward = 0.0
 
-        # Extract current state
-        loc = agent_obs["location"]
-        angle = agent_obs["angle"]
-        state_np = np.array([loc[0], loc[1], float(np.ravel(angle)[0])])
+        # Buffers for FNO context window
+        smoke_history = deque(maxlen=h_ctx)
 
-        smoke_density = agent_obs["smoke_density"]
-        smoke_positions = agent_obs["smoke_density_location"]
-        
-        # Grid dimensions from playback
-        H = env.smoke_simulator.H
-        W = env.smoke_simulator.W
-        
-        # Dispatch logic based on mode
-        if cfg.experiment_mode == "cbf":
-            with tracker.track("cbf_update"):
-                controller.update_h_discrete(smoke_density.flatten(), smoke_positions, state_np)
-            with tracker.track("cbf_control"):
-                cmd = controller.get_command(state_np)
-                action = {"agent_0": cmd}
+        for step in tqdm(range(max_steps), desc=f"Ep {ep+1}/{num_episodes_to_run}"):
+            agent_obs = obs.get("agent_0")
+            if agent_obs is None:
+                break # Agent terminated or truncated
 
-        else:
-            # MPPI logic for maps
-            maps_deque = deque(maxlen=cfg.mppi.horizon)
+            # Extract current state
+            loc = agent_obs["location"]
+            angle = agent_obs["angle"]
+            state_np = np.array([loc[0], loc[1], float(np.ravel(angle)[0])])
+
+            smoke_density = agent_obs["smoke_density"]
+            smoke_positions = agent_obs["smoke_density_location"]
             
-            if cfg.experiment_mode == "no_risk":
-                # Do nothing, empty maps_deque means zero risk cost
-                pass
+            # Grid dimensions from playback
+            H = env.smoke_simulator.H
+            W = env.smoke_simulator.W
+            
+            # Dispatch logic based on mode
+            if cfg.experiment_mode == "cbf":
+                with tracker.track("cbf_update"), ep_tracker.track("cbf_update"):
+                    controller.update_h_discrete(smoke_density.flatten(), smoke_positions, state_np)
+                with tracker.track("cbf_control"), ep_tracker.track("cbf_control"):
+                    cmd = controller.get_command(state_np)
+                    action = {"agent_0": cmd}
+
+            else:
+                # MPPI logic for maps
+                maps_deque = deque(maxlen=cfg.mppi.horizon)
                 
-            elif cfg.experiment_mode == "persistent":
-                # Duplicate current smoke density across the entire horizon
-                for _ in range(cfg.mppi.horizon):
-                    maps_deque.append((smoke_positions, smoke_density.flatten()))
+                if cfg.experiment_mode == "no_risk":
+                    # Do nothing, empty maps_deque means zero risk cost
+                    pass
                     
-            elif cfg.experiment_mode == "fno":
-                # Reshape smoke to (H, W) and append to history
-                smoke_grid = smoke_density.reshape(H, W)
-                smoke_history.append(torch.tensor(smoke_grid, dtype=torch.float32, device=device))
-                
-                # If we have enough context frames, run autoregressive prediction
-                if len(smoke_history) == h_ctx:
-                    with tracker.track("fno_inference"):
-                        with torch.no_grad():
-                            # Stack context: (1, h_ctx, H, W)
-                            ctx_w = torch.stack(list(smoke_history)).unsqueeze(0)
-                            
-                            preds = fno_model.model.autoregressive_forecast(
-                                ctx_w, seed_t_start=0, horizon=cfg.mppi.horizon, num_samples=1, mode="mean"
-                            )
-                            
-                            # Populate maps_deque with forecasted frames
-                            for p in preds:
-                                pred_mean = p["mean"][0] # (H, W)
-                                pred_std = p["std"][0]
-                                cvar_grid = _cvar(pred_mean, pred_std, alpha=cfg.fno_cvar_alpha)
-                                maps_deque.append((smoke_positions, cvar_grid.flatten()))
-                else:
-                    # Fallback to persistent if context is not yet full
+                elif cfg.experiment_mode == "persistent":
+                    # Duplicate current smoke density across the entire horizon
                     for _ in range(cfg.mppi.horizon):
                         maps_deque.append((smoke_positions, smoke_density.flatten()))
+                        
+                elif cfg.experiment_mode == "fno":
+                    # Reshape smoke to (H, W) and append to history
+                    smoke_grid = smoke_density.reshape(H, W)
+                    smoke_history.append(torch.tensor(smoke_grid, dtype=torch.float32, device=device))
+                    
+                    # If we have enough context frames, run autoregressive prediction
+                    if len(smoke_history) == h_ctx:
+                        with tracker.track("fno_inference"), ep_tracker.track("fno_inference"):
+                            with torch.no_grad():
+                                # Stack context: (1, h_ctx, H, W)
+                                ctx_w = torch.stack(list(smoke_history)).unsqueeze(0)
+                                
+                                preds = fno_model.model.autoregressive_forecast(
+                                    ctx_w, seed_t_start=0, horizon=cfg.mppi.horizon, num_samples=1, mode="mean"
+                                )
+                                
+                                # Populate maps_deque with forecasted frames
+                                for p in preds:
+                                    pred_mean = p["mean"][0] # (H, W)
+                                    pred_std = p["std"][0]
+                                    cvar_grid = _cvar(pred_mean, pred_std, alpha=cfg.fno_cvar_alpha)
+                                    maps_deque.append((smoke_positions, cvar_grid.flatten()))
+                    else:
+                        # Fallback to persistent if context is not yet full
+                        for _ in range(cfg.mppi.horizon):
+                            maps_deque.append((smoke_positions, smoke_density.flatten()))
 
-            controller.set_maps(maps_deque)
-            # get_commands returns Dict[str, torch.Tensor]
-            with tracker.track("mppi_control"):
-                cmd_dict = controller.get_commands(obs)
-                action = cmd_dict
+                controller.set_maps(maps_deque)
+                # get_commands returns Dict[str, torch.Tensor]
+                with tracker.track("mppi_control"), ep_tracker.track("mppi_control"):
+                    cmd_dict = controller.get_commands(obs)
+                    action = cmd_dict
 
-        # Step the environment
-        with tracker.track("env_step"):
-            obs, rewards, terminations, truncations, infos = env.step(action)
-        
-        # Render
-        if cfg.env.render and cfg.env.render != "none":
-            with tracker.track("render"):
-                env.render(controller=controller if cfg.experiment_mode != "cbf" else None)
+            # Step the environment
+            with tracker.track("env_step"), ep_tracker.track("env_step"):
+                obs, rewards, terminations, truncations, infos = env.step(action)
+            
+            ep_reward += rewards.get("agent_0", 0.0)
+            
+            # Render
+            if cfg.env.render and cfg.env.render != "none":
+                with tracker.track("render"), ep_tracker.track("render"):
+                    env.render(controller=controller if cfg.experiment_mode != "cbf" else None)
 
-        if terminations.get("agent_0", False) or truncations.get("agent_0", False):
-            log.info(f"Episode finished at step {step}. Info: {infos.get('agent_0')}")
-            break
+            if terminations.get("agent_0", False) or truncations.get("agent_0", False):
+                info_agent = infos.get('agent_0', {})
+                log.info(f"Episode {ep} finished at step {step}. Info: {info_agent}")
+                
+                # Build episode summary
+                ep_row = {
+                    "episode": ep,
+                    "steps_taken": step,
+                    "total_reward": ep_reward,
+                    "is_success": info_agent.get("is_success", False),
+                    "collision": info_agent.get("collision", False),
+                    "smoke_death": info_agent.get("smoke_death", False)
+                }
+                # Append episode metrics
+                for k, v in ep_tracker.summary().items():
+                    ep_row[f"{k}_mean_ms"] = v["mean (ms)"]
+                    ep_row[f"{k}_total_ms"] = v["total (ms)"]
+                
+                episode_summaries.append(ep_row)
+                break
+                
+        # Close renderer to finalize the video for this episode
+        if getattr(env, "renderer", None) is not None:
+            env.renderer.close()
 
     env.close()
     
@@ -220,8 +285,15 @@ def main():
     with open(timing_file, "w") as f:
         json.dump(tracker.summary(), f, indent=4)
         
+    # Save episode summaries to CSV
+    if episode_summaries:
+        import pandas as pd
+        df_summaries = pd.DataFrame(episode_summaries)
+        summaries_file = os.path.join(save_dir, "episode_summaries.csv")
+        df_summaries.to_csv(summaries_file, index=False)
+        
     tracker.pretty_print()
-    log.info(f"Simulation completed. Transitions and timing metrics saved to {save_dir}")
+    log.info(f"Simulation completed. Summaries and transitions saved to {save_dir}")
 
 if __name__ == "__main__":
     main()

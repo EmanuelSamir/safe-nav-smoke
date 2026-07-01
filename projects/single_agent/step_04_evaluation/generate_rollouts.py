@@ -13,7 +13,19 @@ from src.models.lightning_conv_lstm import ConvLSTMLightningModule
 from src.models.lightning_fno import FNOLightningModule
 from src.models.shared.datasets import SequentialDataset
 from src.models.shared.base_lightning import make_times
-from src.models.shared.schemas import TrainingConfig
+from src.models.shared.schemas import (
+    TrainingConfig, FNOTrainingConfig, ConvLSTMTrainingConfig,
+    TrainingDataConfig, TrainingLossConfig, TrainingOptimizerConfig, 
+    TrainingCheckpointConfig, TrainingVisualizerConfig,
+    ModelConfig, FNOConfig, ConvLSTMConfig
+)
+
+torch.serialization.add_safe_globals([
+    TrainingConfig, FNOTrainingConfig, ConvLSTMTrainingConfig,
+    TrainingDataConfig, TrainingLossConfig, TrainingOptimizerConfig, 
+    TrainingCheckpointConfig, TrainingVisualizerConfig,
+    ModelConfig, FNOConfig, ConvLSTMConfig
+])
 
 def load_config() -> EvaluationConfig:
     config_path = os.path.join(os.path.dirname(__file__), "config.yaml")
@@ -73,9 +85,9 @@ def generate_rollouts():
         
         # Generate predictions per episode
         for ep_idx in tqdm(range(len(dataset)), desc=f"Rollouts for {model_cfg.name}"):
-            ctx_obs, trg_obs, _ = dataset[ep_idx]
-            # Add batch dim
-            frames = ctx_obs.values[:, :, :, 0].unsqueeze(0).to(device) # (1, T, H, W)
+            # Obtener el episodio completo directamente
+            episode_data = dataset.smoke_data[ep_idx] # (T, H, W)
+            frames = torch.from_numpy(episode_data).unsqueeze(0).to(device) # (1, T, H, W)
             T = frames.shape[1]
             
             # Find all possible starting points for the rollout
@@ -95,7 +107,7 @@ def generate_rollouts():
                     
                     # Store means and stds for this timestep
                     t_means = np.stack([p["mean"][0] for p in preds]) # (H_max, H, W)
-                    t_stds = np.stack([p["std"][0] for p in preds]) # (H_max, H, W)
+                    t_stds = np.stack([p.get("std", np.zeros_like(p["mean"]))[0] for p in preds]) # (H_max, H, W)
                     
                     time_steps.append(t_idx)
                     means.append(t_means)

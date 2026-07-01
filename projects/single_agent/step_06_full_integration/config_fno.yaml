@@ -7,34 +7,24 @@ env:
   clock: 0.1
   save_transitions: true
   render: "rgb_array"
-  initial_locations: [[5.0, 15.0]]
-  goal_locations: [[25.0, 15.0]]
+  initial_locations: [[2.0, 10.0]]
+  goal_locations: [[28.0, 10.0]]
 
-robot:
-  name: "dubins2d"
-  action_dim: 2
-  action_min: [0.0, -4.0]
-  action_max: [6.0, 4.0]
-  state_dim: 3
-  state_min: [0.0, 0.0, -3.14159]
-  state_max: [30.0, 30.0, 3.14159]
-  dt: 0.1
-  device: "cuda"
 
 simulator:
-  data_path: "data/structured_smoke_slow"
+  data_path: "data/structured_single_agent_env"
 
 sensor:
   sensor_type: "global"
 
 mppi:
   nx: 3
-  noise_sigma: [[2.0, 0.0], [0.0, 2.0]]
-  num_samples: 1000
+  alpha_noise_sigma: 1.0
+  num_samples: 100
   horizon: 20
   u_min: [0.0, -4.0]
   u_max: [6.0, 4.0]
   device: "cuda"
 
-fno_checkpoint: "outputs/training/fno/best.ckpt"
-fno_config: "outputs/training/fno/config_used.yaml"
+fno_checkpoint: "outputs/single_agent_experiment/training/fno_nll_loss/2026-07-01/10-09-25/checkpoints/last.ckpt"
+fno_config: "outputs/single_agent_experiment/training/fno_nll_loss/2026-07-01/10-09-25/config_used.yaml"

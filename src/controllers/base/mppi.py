@@ -25,36 +25,49 @@ class MPPI:
     ):
         self.config = config
         self.device = config.device
-        self.dtype = config.noise_sigma.dtype
         self.nx = config.nx
         self.T = config.horizon
         self.K = config.num_samples
         self.rollout_filter_fn = rollout_filter_fn
         self.output_filter_fn = output_filter_fn
 
-        # --- Determine control dimension (nu) ---
-        self.nu = config.noise_sigma.shape[0] if len(config.noise_sigma.shape) > 0 else 1
+        # --- Control limits (ensure both exist and are converted to tensors) ---
+        if config.u_min is None or config.u_max is None:
+            raise ValueError("u_min and u_max must be defined")
+        self.u_min = torch.tensor(config.u_min, device=self.device, dtype=torch.float32)
+        self.u_max = torch.tensor(config.u_max, device=self.device, dtype=torch.float32)
 
         # --- Define mean and covariance of control noise ---
+        if config.noise_sigma is not None:
+            self.noise_sigma = torch.tensor(config.noise_sigma, device=self.device, dtype=torch.float32)
+            self.dtype = self.noise_sigma.dtype
+        elif getattr(config, "alpha_noise_sigma", None) is not None:
+            diag_vals = config.alpha_noise_sigma * (self.u_max - self.u_min)
+            self.noise_sigma = torch.diag(diag_vals).to(self.device)
+            self.dtype = self.noise_sigma.dtype
+        else:
+            raise ValueError("Either noise_sigma or alpha_noise_sigma must be provided in MPPIConfig")
+            
+        self.noise_sigma_inv = torch.inverse(self.noise_sigma)
+        
+        # --- Determine control dimension (nu) ---
+        self.nu = self.noise_sigma.shape[0] if len(self.noise_sigma.shape) > 0 else 1
+
         if config.noise_mu is None:
             noise_mu = torch.zeros(self.nu, dtype=self.dtype)
         else:
-            noise_mu = config.noise_mu
+            noise_mu = torch.tensor(config.noise_mu, dtype=self.dtype)
         self.noise_mu = noise_mu.to(self.device)
-        self.noise_sigma = config.noise_sigma.to(self.device)
-        self.noise_sigma_inv = torch.inverse(self.noise_sigma)
 
         # Create a Gaussian distribution for sampling control noise
         self.noise_dist = MultivariateNormal(self.noise_mu, covariance_matrix=self.noise_sigma)
-
-        # --- Control limits (ensure both exist and are tensors) ---
-        self.u_min, self.u_max = self._process_bounds(config.u_min, config.u_max)
 
         # --- Initialize nominal control sequence U(t) ---
         if config.u_init is None:
             self.U = self.noise_dist.sample((self.T,))
         else:
-            self.U = config.u_init.repeat(self.T, 1)
+            u_init_tensor = torch.tensor(config.u_init, device=self.device, dtype=self.dtype)
+            self.U = u_init_tensor.repeat(self.T, 1)
 
         # --- Buffers for results ---
         self.state = None
@@ -89,13 +102,9 @@ class MPPI:
     #  UTILITY FUNCTIONS
     # =====================================================
 
-    def _process_bounds(
-        self, u_min: Optional[torch.Tensor], u_max: Optional[torch.Tensor]
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        """Ensure min/max controls are both defined and moved to device."""
-        if u_min is None or u_max is None:
-            raise ValueError("u_min and u_max must be defined")
-        return u_min.to(self.device), u_max.to(self.device)
+    def _process_bounds(self, u_min, u_max):
+        # Legacy stub, logic moved to __init__
+        pass
 
     def _bound_action(self, u: torch.Tensor) -> torch.Tensor:
         """Clamp actions element-wise within limits."""

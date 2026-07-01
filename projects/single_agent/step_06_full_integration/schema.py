@@ -5,7 +5,7 @@ from pydantic import Field, model_validator
 
 from src.utils.config_utils import StrictBaseModel
 from src.env.schemas import EnvConfig
-from src.agents.schemas import RobotConfig
+from src.agents.schemas import RobotConfig, DubinsConfig
 from src.env.simulator.schemas import PlaybackConfig, SmokeConfig, GlobalSensorConfig
 from src.controllers.schemas import MPPIConfig, CBFSmokeConfig
 
@@ -19,7 +19,7 @@ class IntegrationConfig(StrictBaseModel):
     
     # Core components
     env: EnvConfig = Field(default_factory=EnvConfig)
-    robot: RobotConfig
+    robot: Union[DubinsConfig, RobotConfig] = Field(default_factory=DubinsConfig)
     sensor: GlobalSensorConfig = Field(default_factory=GlobalSensorConfig)
     simulator: PlaybackConfig
     

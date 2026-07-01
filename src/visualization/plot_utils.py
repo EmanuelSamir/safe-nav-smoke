@@ -65,7 +65,7 @@ def plot_controller_rollouts(ax: plt.Axes, controller: Any) -> None:
         line.remove()
 
     if controller is not None and hasattr(controller, "visualize_rollouts"):
-        controller.visualize_rollouts(ax)
+        controller.visualize_rollouts(ax, sample_stride=1)
         for line in ax.lines:
             line.set_zorder(3)
 

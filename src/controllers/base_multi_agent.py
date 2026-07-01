@@ -72,7 +72,13 @@ class AgentMPPI(MPPI):
         self.dt = dt
         self._goal: Optional[torch.Tensor] = None
         self._maps: deque = deque(maxlen=config.horizon)
-        self.running_cost_fn = running_cost_fn
+        
+        if running_cost_fn is not None:
+            self.running_cost_fn = running_cost_fn
+        else:
+            self.running_cost_fn = self.running_cost
+            
+        self.terminal_state_cost_fn = self.terminal_state_cost
 
     def set_goal(self, goal_position) -> None:
         self._goal = torch.tensor(goal_position, dtype=self.dtype, device=self.device)
@@ -93,28 +99,46 @@ class AgentMPPI(MPPI):
         coords, flatten_risk_map = self._maps[map_idx]
 
         states_np = states[:, :2].detach().cpu().numpy()
-        if not isinstance(coords, np.ndarray):
+        if torch.is_tensor(coords):
+            coords = coords.cpu().detach().numpy()
+        elif not isinstance(coords, np.ndarray):
             coords = np.array(coords)
-        if not isinstance(flatten_risk_map, np.ndarray):
+            
+        if torch.is_tensor(flatten_risk_map):
+            flatten_risk_map = flatten_risk_map.cpu().detach().numpy()
+        elif not isinstance(flatten_risk_map, np.ndarray):
             flatten_risk_map = np.array(flatten_risk_map)
+            
+        assert coords.shape[0] == flatten_risk_map.shape[0], f"Dimension mismatch: coords {coords.shape} vs risk map {flatten_risk_map.shape}"
 
         risk_np = get_value_in_map_from_coords(states_np, coords, flatten_risk_map)
+        
+        # LOGS PARA DEBUG: Imprimir si realmente estamos viendo humo y si el mapa tiene humo
+        if t == 0:
+            print(f"[DEBUG] [t=0] Mapa max density: {flatten_risk_map.max():.4f}, Trayectorias max risk: {risk_np.max():.4f}")
+            
         return torch.tensor(risk_np, dtype=self.dtype, device=self.device)
 
     def running_cost(
         self, state: torch.Tensor, u: torch.Tensor, t: Optional[int] = None
     ) -> torch.Tensor:
-        if self.running_cost_fn is not None:
-            return self.running_cost_fn(state, u, t)
+        # We do NOT check self.running_cost_fn here because MPPI calls this directly
+        # when running_cost_fn is set to self.running_cost.
         dist_cost = torch.norm(state[:, :2] - self._goal, dim=1)
         risk_cost = self._compute_risk_cost(state, t)
-        return dist_cost + 20.0 * risk_cost
+        return self.config.cost_distance_weight * dist_cost + self.config.cost_risk_weight * risk_cost
 
     def terminal_state_cost(self, states: torch.Tensor) -> Optional[torch.Tensor]:
         if self._goal is None:
             return None
-        dist_terminal = torch.norm(states[:, -1, :2] - self._goal, dim=1)
-        return torch.where(dist_terminal < self.goal_thresh, -100.0, 0.0)
+        K, T, nx = states.shape
+        goal_reached = torch.norm(states[:, :, :2] - self._goal, dim=2) < self.goal_thresh
+        cost = torch.zeros(K, dtype=self.dtype, device=self.device)
+
+        for k in range(K):
+            if goal_reached[k].any():
+                cost[k] = self.config.cost_goal_reached
+        return cost
 
 
 class BaseMultiAgentController:

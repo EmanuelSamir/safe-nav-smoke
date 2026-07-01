@@ -3,6 +3,7 @@ from typing import List, Literal, Optional
 import numpy as np
 import torch
 from pydantic import ConfigDict
+from typing import Any
 
 from src.utils.config_utils import DeviceType, StrictBaseModel
 
@@ -39,19 +40,23 @@ class MPPIConfig(StrictBaseModel):
     model_config = ConfigDict(arbitrary_types_allowed=True)
 
     nx: int
-    noise_sigma: Optional[torch.Tensor] = None
+    noise_sigma: Optional[List[List[float]]] = None
+    alpha_noise_sigma: Optional[float] = None
     num_samples: int = 100
     horizon: int = 10
     device: DeviceType = "cpu"
-    lambda_: float = 1.0
-    noise_mu: Optional[torch.Tensor] = None
-    u_min: Optional[torch.Tensor] = None
-    u_max: Optional[torch.Tensor] = None
-    u_init: Optional[torch.Tensor] = None
+    lambda_: float = 3.0
+    noise_mu: Optional[List[float]] = None
+    u_min: Optional[List[float]] = None
+    u_max: Optional[List[float]] = None
+    u_init: Optional[List[float]] = None
     u_scale: float = 1.0
     u_per_command: int = 1
-    step_dependent_dynamics: bool = False
+    step_dependent_dynamics: bool = True
     noise_abs_cost: bool = False
+    cost_distance_weight: float = 1.0
+    cost_risk_weight: float = 20.0
+    cost_goal_reached: float = -100.0
 
 
 class BaseHJSolverConfig(StrictBaseModel):

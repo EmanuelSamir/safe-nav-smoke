@@ -6,8 +6,9 @@ env:
   clock: 0.1
   save_transitions: true
   render: "rgb_array"
-  initial_locations: [[5.0, 15.0]]
-  goal_locations: [[25.0, 15.0]]
+  initial_locations: [[2.0, 10.0]]
+  goal_locations: [[28.0, 10.0]]
+  num_episodes: 1000
 
 cbf_base:
   smoke_threshold: 0.5

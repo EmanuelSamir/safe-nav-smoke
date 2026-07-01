@@ -94,38 +94,48 @@ def main():
         )
         tracker = TimeTracker()
 
-        obs, info = env.reset()
+        available_episodes = getattr(env.smoke_simulator, "num_episodes", 1)
+        requested_episodes = cfg.env.num_episodes if cfg.env.num_episodes is not None else available_episodes
+        
+        if cfg.test_mode:
+            num_episodes_to_run = 1
+        else:
+            num_episodes_to_run = min(requested_episodes, available_episodes)
+
         max_steps = cfg.env.max_steps
 
-        for step in tqdm(range(max_steps), desc=f"Evaluating {val}"):
-            agent_id = list(obs.keys())[0] if obs else None
-            agent_obs = obs.get(agent_id) if agent_id else None
-            if agent_obs is None:
-                break
+        for ep in range(num_episodes_to_run):
+            obs, info = env.reset(seed=ep)
+            
+            for step in tqdm(range(max_steps), desc=f"Evaluating {val} (Ep {ep+1}/{num_episodes_to_run})"):
+                agent_id = list(obs.keys())[0] if obs else None
+                agent_obs = obs.get(agent_id) if agent_id else None
+                if agent_obs is None:
+                    break
 
-            loc = agent_obs["location"]
-            angle = agent_obs["angle"]
-            state_np = np.array([loc[0], loc[1], float(np.ravel(angle)[0])])
+                loc = agent_obs["location"]
+                angle = agent_obs["angle"]
+                state_np = np.array([loc[0], loc[1], float(np.ravel(angle)[0])])
 
-            smoke_density = agent_obs["smoke_density"]
-            smoke_positions = agent_obs["smoke_density_location"]
+                smoke_density = agent_obs["smoke_density"]
+                smoke_positions = agent_obs["smoke_density_location"]
 
-            with tracker.track("cbf_update"):
-                controller.update_h_discrete(smoke_density.flatten(), smoke_positions, state_np)
-            with tracker.track("cbf_control"):
-                cmd = controller.get_command(state_np)
-                action = {agent_id: cmd}
+                with tracker.track("cbf_update"):
+                    controller.update_h_discrete(smoke_density.flatten(), smoke_positions, state_np)
+                with tracker.track("cbf_control"):
+                    cmd = controller.get_command(state_np)
+                    action = {agent_id: cmd}
 
-            with tracker.track("env_step"):
-                obs, rewards, terminations, truncations, infos = env.step(action)
-                
-            if cfg.env.render and cfg.env.render != "none":
-                with tracker.track("render"):
-                    env.render(controller=controller)
+                with tracker.track("env_step"):
+                    obs, rewards, terminations, truncations, infos = env.step(action)
+                    
+                if cfg.env.render and cfg.env.render != "none":
+                    with tracker.track("render"):
+                        env.render(controller=controller)
 
-            if terminations.get(agent_id, False) or truncations.get(agent_id, False):
-                log.info(f"Episode finished at step {step}. Info: {infos.get(agent_id)}")
-                break
+                if terminations.get(agent_id, False) or truncations.get(agent_id, False):
+                    log.info(f"Episode {ep} finished at step {step}. Info: {infos.get(agent_id)}")
+                    break
         
         env.close()
         

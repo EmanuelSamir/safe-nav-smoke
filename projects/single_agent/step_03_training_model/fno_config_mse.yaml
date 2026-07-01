@@ -12,3 +12,6 @@ loss:
 model:
   type: "fno"
   is_probabilistic: false
+
+checkpoint:
+  monitor: "val_loss"

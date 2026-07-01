@@ -13,3 +13,6 @@ loss:
 model:
   type: "conv_lstm"
   is_probabilistic: false
+
+checkpoint:
+  monitor: "val_loss"

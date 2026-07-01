@@ -70,7 +70,7 @@ class TrainingLossConfig(StrictBaseModel):
 class TrainingOptimizerConfig(StrictBaseModel):
     lr: float = 1.0e-3
     min_lr: float = 1.0e-4
-    max_epochs: int = 250
+    max_epochs: int = 500
     grad_clip: float = 1.0
 
 

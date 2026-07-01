@@ -1,6 +1,8 @@
 from typing import Any, Dict, Optional
 import matplotlib.pyplot as plt
 import numpy as np
+import imageio
+import os
 
 from src.visualization.base_renderer import BaseRenderer
 from src.visualization.schemas import RenderConfig
@@ -34,6 +36,9 @@ class SimpleRenderer(BaseRenderer):
         # Headless Agg backend for rgb_array mode to prevent plotting GUI popup
         if self.render_mode == "rgb_array":
             plt.switch_backend("Agg")
+            
+        self.writer = None
+        self.video_count = 0
 
     def _init_render_window(
         self, fig: Optional[plt.Figure] = None, ax: Optional[plt.Axes] = None, env: Any = None
@@ -53,8 +58,6 @@ class SimpleRenderer(BaseRenderer):
         self.window["ax"].set_title("Simulation")
         self.window["ax"].set_xlim(0, self.world_x_size)
         self.window["ax"].set_ylim(0, self.world_y_size)
-        self.window["ax"].set_xticks([])
-        self.window["ax"].set_yticks([])
 
         # Draw static goal circles and texts
         goal_circles, goal_texts = plot_goals(self.window["ax"], env.smoke_agents)
@@ -105,6 +108,18 @@ class SimpleRenderer(BaseRenderer):
             except AttributeError:
                 img = np.frombuffer(self.window["fig"].canvas.tostring_rgb(), dtype="uint8")
                 img = img.reshape(height, width, 3).copy()
+                
+            if getattr(self, "writer", None) is None:
+                save_dir = getattr(env.env_cfg, "save_transitions_path", "outputs")
+                if not save_dir:
+                    save_dir = "outputs"
+                os.makedirs(save_dir, exist_ok=True)
+                output_path = os.path.join(save_dir, f"render_ep_{self.video_count}.mp4")
+                self.video_count += 1
+                self.writer = imageio.get_writer(output_path, fps=10, macro_block_size=None)
+                print(f"[SimpleRenderer] Started saving video to {output_path}")
+                
+            self.writer.append_data(img)
             return img
         return None
 
@@ -114,6 +129,10 @@ class SimpleRenderer(BaseRenderer):
 
     def close(self) -> None:
         """Clean up and close rendering resources."""
+        if getattr(self, "writer", None) is not None:
+            self.writer.close()
+            self.writer = None
+            
         if self.window["fig"] is not None:
             plt.close(self.window["fig"])
         self.window = {"fig": None, "ax": None, "cax": None}

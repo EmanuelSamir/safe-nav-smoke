@@ -11,7 +11,7 @@ class EvaluationConfig(StrictBaseModel):
     project_name: str = "single_agent_experiment"
     sub_project_name: str = "saved_rollouts"
     data_path: str = "data/structured_smoke_slow"
-    max_episodes: int = 10
+    max_episodes: int = 100
     
     # Dataset params
     sequence_length: int = 30

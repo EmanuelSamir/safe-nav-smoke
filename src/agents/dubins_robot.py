@@ -60,7 +60,7 @@ class DubinsRobot(Robot):
             logging.warning(f"State is out of bounds: {state}")
 
         state[..., XY_DIM] = torch.clamp(
-            state[..., XY_DIM], self.state_min[XY_DIM], self.state_max[XY_DIM]
+            state[..., XY_DIM], self.state_min[XY_DIM].to(state.device), self.state_max[XY_DIM].to(state.device)
         )
         state[..., ANGLE_DIM] = torch.remainder(state[..., ANGLE_DIM], 2 * torch.pi)
         return state
@@ -73,7 +73,7 @@ class DubinsRobot(Robot):
             torch.any(action < self.action_min) or torch.any(action > self.action_max)
         ):
             logging.warning(f"Action {action} out of bounds [{self.action_min}, {self.action_max}]")
-        return torch.clamp(action, self.action_min, self.action_max)
+        return torch.clamp(action, self.action_min.to(action.device), self.action_max.to(action.device))
 
     def dynamics(self, states: torch.Tensor, actions: torch.Tensor) -> torch.Tensor:
         if states.ndim == 1:
