@@ -11,7 +11,7 @@ class SweepConfig(StrictBaseModel):
     
     project_name: str = "single_agent_experiment"
     sub_project_name: str = "cbf_sweep"
-    test_mode: bool = True
+    test_mode: bool = False
     
     env: EnvConfig = Field(default_factory=EnvConfig)
     robot: DubinsConfig = Field(default_factory=DubinsConfig)

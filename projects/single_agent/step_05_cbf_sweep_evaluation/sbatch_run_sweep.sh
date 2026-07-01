@@ -3,7 +3,7 @@
 # SLURM CONFIGURATION
 # =====================================================================
 #SBATCH -p pleiades                         
-#SBATCH -w pleiades-0-23                     
+#SBATCH -w pleiades-0-17                     
 #SBATCH --job-name=run_cbf_sweep         
 #SBATCH --time=12:00:00                     
 #SBATCH --cpus-per-task=8                   
@@ -25,4 +25,4 @@ cd /home/emunoz/dev/safe-nav-smoke/
 
 # Launch with the specific YAML config and inject the array task ID
 # No GPU needed since CBF is primarily CPU bound
-apptainer exec --bind /data/emunoz:/data /data/emunoz/imgs/python_full.sif /data/emunoz/envs/dev_env/bin/python projects/single_agent/step_05_cbf_sweep_evaluation/run_sweep.py --config projects/single_agent/step_05_cbf_sweep_evaluation/config_sweep.yaml --sweep_idx $SLURM_ARRAY_TASK_ID
+apptainer exec --bind /data/emunoz:/data /data/emunoz/imgs/python_full.sif /data/emunoz/envs/dev_env/bin/python projects/single_agent/step_05_cbf_sweep_evaluation/run_sweep.py --config config_sweep.yaml --sweep_idx $SLURM_ARRAY_TASK_ID
