@@ -1,5 +1,5 @@
 # Configuration for physical smoke data generation (Testing Dataset)
 num_episodes: 100
-output_path: "data/physics_single_agent_test"
+output_path: "data/physics_multi_agent_test"
 
 test: True

@@ -2,7 +2,7 @@
 # All unspecified parameters will use the default values from DataCollectionConfig.
 
 num_episodes: 500
-output_path: "data/physics_single_agent_train"
+output_path: "data/physics_multi_agent_train"
 
 test: True
 
