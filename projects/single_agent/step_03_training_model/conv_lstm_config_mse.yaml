@@ -1,13 +1,15 @@
 project_name: "single_agent_experiment"
 sub_project_name: "training"
-experiment_name: "fno_nll_loss"
+experiment_name: "conv_lstm_mse_det_loss"
 seed: 42
 
 data:
   data_path: "data/physics_single_agent_train"
+  batch_size: 8
 
 loss:
-  name: "nll"
+  name: "mse"
 
 model:
-  type: "fno"
+  type: "conv_lstm"
+  is_probabilistic: false

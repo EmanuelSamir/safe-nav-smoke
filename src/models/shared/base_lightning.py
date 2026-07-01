@@ -89,7 +89,8 @@ def log_vis(
                 if idx >= len(preds):
                     break
                 mu_img = preds[idx]["mean"][0].astype("float32")
-                std_img = preds[idx]["std"][0].astype("float32")
+                has_std = "std" in preds[idx]
+                std_img = preds[idx]["std"][0].astype("float32") if has_std else np.zeros_like(mu_img)
 
                 abs_t = h_ctx + idx
                 gt_img = (
@@ -129,17 +130,20 @@ def log_vis(
                 plt.colorbar(sc2, ax=ax)
 
                 ax = axes[b_idx, col + 2]
-                sc3 = ax.imshow(
-                    std_img,
-                    vmin=0,
-                    vmax=1,
-                    cmap="hot",
-                    origin="lower",
-                    extent=extent,
-                    aspect="auto",
-                )
-                ax.set_title(f"σ +{step}  μσ={std_img.mean():.3f}")
-                plt.colorbar(sc3, ax=ax)
+                if has_std:
+                    sc3 = ax.imshow(
+                        std_img,
+                        vmin=0,
+                        vmax=1,
+                        cmap="hot",
+                        origin="lower",
+                        extent=extent,
+                        aspect="auto",
+                    )
+                    ax.set_title(f"σ +{step}  μσ={std_img.mean():.3f}")
+                    plt.colorbar(sc3, ax=ax)
+                else:
+                    ax.axis("off")
 
     plt.tight_layout()
     buf = BytesIO()
@@ -279,7 +283,11 @@ class BasePredictorModule(L.LightningModule):
         return loss.mean()
 
     def criterion(self, dist, gt):
-        if self.loss_cfg.name == "energy_score":
+        if self.loss_cfg.name == "mse":
+            return F.mse_loss(dist, gt)
+        elif self.loss_cfg.name == "mae":
+            return F.l1_loss(dist, gt)
+        elif self.loss_cfg.name == "energy_score":
             return self.energy_score_loss(
                 dist, gt, m_samples=self.loss_cfg.m_samples, normalize_l2=self.loss_cfg.normalize_l2
             )
@@ -313,12 +321,16 @@ class BasePredictorModule(L.LightningModule):
             ctx_w = frames[:, t - h_ctx + 1 : t + 1]  # (B, h_ctx, H, W)
             times = make_times(t - h_ctx + 1, h_ctx, seq_len, self.device, B_size)
 
-            dists = self(ctx_w, times)  # List[Normal] of h_pred, (B,H,W,1)
+            if self.t_cfg.model.is_probabilistic:
+                dists = self(ctx_w, times)  # List[Normal] of h_pred, (B,H,W,1)
 
-            step_loss = sum(
-                self.criterion(dists[h], targets[:, t, :, :, h].unsqueeze(-1))
-                for h in range(h_pred)
-            ) / (h_pred * n_win)
+                step_loss = sum(
+                    self.criterion(dists[h], targets[:, t, :, :, h].unsqueeze(-1))
+                    for h in range(h_pred)
+                ) / (h_pred * n_win)
+            else:
+                preds = self(ctx_w, times)  # Tensor (B, H, W, h_pred)
+                step_loss = self.criterion(preds, targets[:, t]) / n_win
 
             self.manual_backward(step_loss)
             batch_loss += step_loss.item()
@@ -349,17 +361,24 @@ class BasePredictorModule(L.LightningModule):
         for t in range(h_ctx - 1, T - h_pred):
             ctx_w = frames[:, t - h_ctx + 1 : t + 1]
             times = make_times(t - h_ctx + 1, h_ctx, seq_len, self.device, B_size)
-            dists = self(ctx_w, times)
-            for h in range(h_pred):
-                gt_h = targets[:, t, :, :, h].unsqueeze(-1)
-                batch_loss += self.criterion(dists[h], gt_h).item()
-                batch_nll += -dists[h].log_prob(gt_h).mean().item()
-                batch_es += self.energy_score_loss(
-                    dists[h],
-                    gt_h,
-                    m_samples=self.loss_cfg.m_samples,
-                    normalize_l2=self.loss_cfg.normalize_l2,
-                ).item()
+            
+            if self.t_cfg.model.is_probabilistic:
+                dists = self(ctx_w, times)
+                for h in range(h_pred):
+                    gt_h = targets[:, t, :, :, h].unsqueeze(-1)
+                    batch_loss += self.criterion(dists[h], gt_h).item()
+                    
+                    if hasattr(dists[h], "log_prob"):
+                        batch_nll += -dists[h].log_prob(gt_h).mean().item()
+                        batch_es += self.energy_score_loss(
+                            dists[h],
+                            gt_h,
+                            m_samples=self.loss_cfg.m_samples,
+                            normalize_l2=self.loss_cfg.normalize_l2,
+                        ).item()
+            else:
+                preds = self(ctx_w, times)
+                batch_loss += self.criterion(preds, targets[:, t]).item()
 
         avg_loss = batch_loss / (h_pred * n_win)
         avg_nll = batch_nll / (h_pred * n_win)

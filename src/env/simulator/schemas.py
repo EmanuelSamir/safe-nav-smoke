@@ -51,10 +51,10 @@ class PlaybackConfig(BaseSimConfig):
 
 
 class BlobConfig(StrictBaseModel):
-    x_pos: float = 10.0
-    y_pos: float = 10.0
+    x_pos: float = 15.0
+    y_pos: float = 15.0
     intensity: float = 1.0
-    spread_rate: float = 1.0
+    spread_rate: float = 5.0
 
 
 class SmokeConfig(BaseSimConfig):

@@ -3,7 +3,7 @@
 # SLURM CONFIGURATION
 # =====================================================================
 #SBATCH -p pleiades                         
-#SBATCH -w pleiades-0-23                     
+#SBATCH -w pleiades-0-17                    
 #SBATCH --job-name=train_fno_nll         
 #SBATCH --time=12:00:00                     
 #SBATCH --cpus-per-task=8                   

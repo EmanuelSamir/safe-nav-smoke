@@ -13,6 +13,7 @@ class ModelConfig(StrictBaseModel):
     use_time: bool = True
     min_std: float = 1e-4
     sequence_length: Optional[int] = 25
+    is_probabilistic: bool = True
 
 
 class FNOConfig(ModelConfig):
@@ -60,7 +61,7 @@ class TrainingDataConfig(StrictBaseModel):
 
 
 class TrainingLossConfig(StrictBaseModel):
-    name: Optional[str] = "nll"  # None for ConvLSTM, string for FNO
+    name: Optional[str] = "nll"  # None for ConvLSTM, string for FNO (e.g. 'nll', 'energy_score', 'mse', 'mae')
     beta: Optional[float] = None
     m_samples: int = 5
     normalize_l2: bool = True

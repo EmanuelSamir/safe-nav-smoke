@@ -20,7 +20,7 @@ class EnvConfig(StrictBaseModel):
     render_save_every: int = 2
     terminate_on_collision: bool = False
     collision_penalty: float = -10.0
-    smoke_density_threshold: Optional[float] = 0.5
+    smoke_density_threshold: Optional[float] = None
     save_transitions: bool = False
     remove_dead_agents: bool = True
 

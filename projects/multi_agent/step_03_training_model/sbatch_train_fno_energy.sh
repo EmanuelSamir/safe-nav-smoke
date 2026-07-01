@@ -24,4 +24,4 @@ export PREFECT_HOME="/data/emunoz/prefect_home"
 cd /home/emunoz/dev/safe-nav-smoke/
 
 # Launch with the specific YAML config
-apptainer exec --nv --bind /data/emunoz:/data /data/emunoz/imgs/python_full.sif /data/emunoz/envs/dev_env/bin/python projects/single_agent/step_03_training_model/run_fno.py --config fno_config_energy.yaml
+apptainer exec --nv --bind /data/emunoz:/data /data/emunoz/imgs/python_full.sif /data/emunoz/envs/dev_env/bin/python projects/multi_agent/step_03_training_model/run_fno.py --config fno_config_energy.yaml

@@ -257,7 +257,14 @@ class SmokeEnv(ParallelEnv):
             )
 
         for i, agent in enumerate(self.smoke_agents):
-            agent_init = initial_state[i] if initial_state is not None else None
+            agent_init = None
+            if initial_state is not None:
+                agent_init = initial_state[i]
+            elif self.env_cfg.initial_locations is not None and len(self.env_cfg.initial_locations) > i:
+                agent_init = {
+                    "location": np.array(self.env_cfg.initial_locations[i]),
+                    "angle": 0.0  # Default initial angle
+                }
             agent.reset(initial_state=agent_init)
 
         obs = self._get_obs()

@@ -1,9 +1,9 @@
-from typing import Literal, List
+from typing import Literal, List, Union
 from pydantic import Field, model_validator
 from src.utils.config_utils import StrictBaseModel
 from src.env.schemas import EnvConfig
-from src.agents.schemas import RobotConfig
-from src.env.simulator.schemas import PlaybackConfig, GlobalSensorConfig
+from src.agents.schemas import DubinsConfig
+from src.env.simulator.schemas import PlaybackConfig, GlobalSensorConfig, SmokeConfig
 from src.controllers.schemas import CBFSmokeConfig
 
 class SweepConfig(StrictBaseModel):
@@ -11,11 +11,12 @@ class SweepConfig(StrictBaseModel):
     
     project_name: str = "single_agent_experiment"
     sub_project_name: str = "cbf_sweep"
+    test_mode: bool = True
     
     env: EnvConfig = Field(default_factory=EnvConfig)
-    robot: RobotConfig
+    robot: DubinsConfig = Field(default_factory=DubinsConfig)
     sensor: GlobalSensorConfig = Field(default_factory=GlobalSensorConfig)
-    simulator: PlaybackConfig
+    simulator: Union[PlaybackConfig, SmokeConfig] = Field(default_factory=SmokeConfig)
     
     cbf_base: CBFSmokeConfig
     

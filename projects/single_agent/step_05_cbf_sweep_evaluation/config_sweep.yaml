@@ -2,20 +2,12 @@ project_name: "single_agent_experiment"
 sub_project_name: "cbf_sweep"
 
 env:
-  max_steps: 1000
-  render: "none"
-
-robot:
-  type: "dubins"
-  v_max: 2.0
-  omega_max: 1.5
-
-sensor:
-  type: "global"
-
-simulator:
-  type: "playback"
-  data_path: "data/structured_smoke_slow"
+  num_agents: 1
+  clock: 0.1
+  save_transitions: true
+  render: "rgb_array"
+  initial_locations: [[5.0, 15.0]]
+  goal_locations: [[25.0, 15.0]]
 
 cbf_base:
   smoke_threshold: 0.5
@@ -24,6 +16,9 @@ cbf_base:
   rho: 0.1
   margin: 0.2
   gamma: 1.0
+
+simulator:
+  data_path: "data/structured_single_agent_env"
 
 # 1D Sweep Definition
 sweep_param: "smoke_threshold"

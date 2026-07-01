@@ -4,7 +4,7 @@ experiment_name: "conv_lstm_nll_loss"
 seed: 42
 
 data:
-  data_path: "data/structured_smoke_slow"
+  data_path: "data/physics_single_agent_train"
 
 loss:
   name: "nll"

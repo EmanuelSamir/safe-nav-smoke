@@ -33,6 +33,11 @@ def main():
 
     cfg = load_config(args.config)
     
+    if cfg.test_mode:
+        log.info("Running in TEST MODE. Limiting sweep values and enabling rendering.")
+        cfg.sweep_values = [cfg.sweep_values[0]] if cfg.sweep_values else []
+        cfg.env.render = "human"
+    
     if args.sweep_idx is not None:
         if args.sweep_idx < 0 or args.sweep_idx >= len(cfg.sweep_values):
             raise ValueError(f"Invalid sweep_idx {args.sweep_idx}. Max is {len(cfg.sweep_values)-1}")
@@ -50,16 +55,25 @@ def main():
         # Inject the swept parameter into cbf_base
         setattr(cfg.cbf_base, cfg.sweep_param, val)
         
-        # Modify output directory to segregate datasets
+        # Determine output directory to segregate datasets
         base_path = os.path.join("outputs", cfg.project_name, cfg.sub_project_name)
         val_str = f"{val:.4f}".replace(".", "_")
         current_save_path = os.path.join(base_path, cfg.sweep_param, f"val_{val_str}")
-        cfg.env.save_transitions_path = current_save_path
-        os.makedirs(current_save_path, exist_ok=True)
-        
-        # Save a copy of the specific config used for this run
-        with open(os.path.join(current_save_path, "run_config.json"), "w") as f:
-            f.write(cfg.model_dump_json(indent=2))
+
+        # Assert to prevent overwriting existing data
+        if os.path.exists(current_save_path) and len(os.listdir(current_save_path)) > 0:
+            assert False, f"Output directory {current_save_path} already exists and is not empty. Aborting to prevent overwrite."
+
+        if cfg.test_mode:
+            log.info(f"TEST MODE: Data would be saved to {current_save_path}, but saving is disabled.")
+            cfg.env.save_transitions = False
+        else:
+            cfg.env.save_transitions_path = current_save_path
+            os.makedirs(current_save_path, exist_ok=True)
+            
+            # Save a copy of the specific config used for this run
+            with open(os.path.join(current_save_path, "run_config.json"), "w") as f:
+                f.write(cfg.model_dump_json(indent=2))
 
         # Setup Env
         env = SmokeEnv(
@@ -69,14 +83,23 @@ def main():
             simulator_cfg=cfg.simulator,
         )
 
-        controller = CBFSmokeController(cfg.cbf_base)
+        assert cfg.env.goal_locations is not None, "goal_locations must be defined in the env configuration"
+        goal_loc = cfg.env.goal_locations[0]
+        controller = CBFSmokeController(
+            config=cfg.cbf_base,
+            env_config=cfg.env,
+            robot_config=cfg.robot,
+            goal=np.array(goal_loc),
+            num_agents=1
+        )
         tracker = TimeTracker()
 
         obs, info = env.reset()
-        max_steps = cfg.env.max_steps if cfg.env.max_steps else 1000
+        max_steps = cfg.env.max_steps
 
         for step in tqdm(range(max_steps), desc=f"Evaluating {val}"):
-            agent_obs = obs.get("agent_0")
+            agent_id = list(obs.keys())[0] if obs else None
+            agent_obs = obs.get(agent_id) if agent_id else None
             if agent_obs is None:
                 break
 
@@ -91,7 +114,7 @@ def main():
                 controller.update_h_discrete(smoke_density.flatten(), smoke_positions, state_np)
             with tracker.track("cbf_control"):
                 cmd = controller.get_command(state_np)
-                action = {"agent_0": cmd}
+                action = {agent_id: cmd}
 
             with tracker.track("env_step"):
                 obs, rewards, terminations, truncations, infos = env.step(action)
@@ -100,18 +123,20 @@ def main():
                 with tracker.track("render"):
                     env.render(controller=controller)
 
-            if terminations.get("agent_0", False) or truncations.get("agent_0", False):
-                log.info(f"Episode finished at step {step}. Info: {infos.get('agent_0')}")
+            if terminations.get(agent_id, False) or truncations.get(agent_id, False):
+                log.info(f"Episode finished at step {step}. Info: {infos.get(agent_id)}")
                 break
         
         env.close()
         
-        # Save TimeTracker metrics
-        timing_file = os.path.join(current_save_path, "timing_metrics.json")
-        with open(timing_file, "w") as f:
-            json.dump(tracker.summary(), f, indent=4)
-
-        log.info(f"Finished {cfg.sweep_param}={val}. Saved to {current_save_path}")
+        if not cfg.test_mode:
+            # Save TimeTracker metrics
+            timing_file = os.path.join(current_save_path, "timing_metrics.json")
+            with open(timing_file, "w") as f:
+                json.dump(tracker.summary(), f, indent=4)
+            log.info(f"Finished {cfg.sweep_param}={val}. Saved to {current_save_path}")
+        else:
+            log.info(f"Finished test run for {cfg.sweep_param}={val}.")
 
 if __name__ == "__main__":
     main()

@@ -114,9 +114,10 @@ class FNO(nn.Module):
         # Temporal aggregation
         self.temporal_agg = nn.Conv3d(cfg.width, cfg.width, kernel_size=(cfg.h_ctx, 1, 1))
 
-        # (B, H, W, C_post) → (B, H, W, 2*h_pred)
+        # (B, H, W, C_post) → (B, H, W, 2*h_pred) or (B, H, W, h_pred)
         self.fc1 = nn.Linear(self.c_post, 128)
-        self.fc2 = nn.Linear(128, 2 * cfg.h_pred)
+        out_features = 2 * cfg.h_pred if cfg.is_probabilistic else cfg.h_pred
+        self.fc2 = nn.Linear(128, out_features)
 
     def _build_feat_volume(self, frames: torch.Tensor, times: torch.Tensor | None) -> torch.Tensor:
         """Build the 3D feature volume fed to the spectral layers.
@@ -153,12 +154,11 @@ class FNO(nn.Module):
         gy, gx = torch.meshgrid(y, x, indexing="ij")
         return torch.stack([gx, gy], dim=0).unsqueeze(0)
 
-    def forward(self, frames: torch.Tensor, times: torch.Tensor | None = None) -> List[Normal]:
+    def forward(self, frames: torch.Tensor, times: torch.Tensor | None = None) -> list:
         """Frames : (B, h_ctx, H, W)  — context smoke values in [0, 1].
 
         times  : (B, h_ctx)        — relative times in [0, 1], or None (auto)
-        returns: List[Normal] of length h_pred
-                 Each Normal: .mean, .stddev shape (B, H, W, 1)
+        returns: List[Normal] or List[torch.Tensor] of length h_pred
         """
         B, T_c, H, W = frames.shape
 
@@ -178,7 +178,10 @@ class FNO(nn.Module):
         # MLP decode
         x = x.permute(0, 2, 3, 1)  # (B, H, W, C_post)
         x = F.gelu(self.fc1(x))  # (B, H, W, 128)
-        out = self.fc2(x)  # (B, H, W, 2*h_pred)
+        out = self.fc2(x)
+
+        if not self.cfg.is_probabilistic:
+            return out
 
         dists = []
 
@@ -217,28 +220,37 @@ class FNO(nn.Module):
             times = (t_abs / ref).unsqueeze(0).expand(num_samples, -1)  # (S, h_ctx)
 
             with torch.no_grad():
-                dists = self.forward(ctx, times)  # List[Normal], each (S,H,W,1)
+                out_forward = self.forward(ctx, times)
 
             new_frames_for_ctx = []
-            eps = torch.randn(num_samples, 1, 1, 1, device=device)
-            for d in dists:
-                if len(preds) >= horizon:
-                    break
+            
+            if not self.cfg.is_probabilistic:
+                for h in range(h_pred):
+                    if len(preds) >= horizon:
+                        break
+                    sampled = out_forward[..., h:h+1]
+                    sample_np = sampled[..., 0].cpu().to(torch.float16).numpy()
+                    preds.append({"sample": sample_np, "mean": sample_np})
+                    new_frames_for_ctx.append(sampled)
+            else:
+                eps = torch.randn(num_samples, 1, 1, 1, device=device)
+                for d in out_forward:
+                    if len(preds) >= horizon:
+                        break
 
-                if mode == "mean":
-                    sampled = d.mean
-                elif mode == "sample":
-                    # Coupled sample: all spatial distributions share the same standard normal epsilon
-                    sampled = d.mean + d.stddev * eps
-                else:
-                    raise ValueError(f"Unknown mode: {mode}")
+                    if mode == "mean":
+                        sampled = d.mean
+                    elif mode == "sample":
+                        sampled = d.mean + d.stddev * eps
+                    else:
+                        raise ValueError(f"Unknown mode: {mode}")
 
-                sample_np = sampled[..., 0].cpu().to(torch.float16).numpy()
-                mu_np = d.mean[..., 0].cpu().to(torch.float16).numpy()
-                std_np = d.stddev[..., 0].cpu().to(torch.float16).numpy()
+                    sample_np = sampled[..., 0].cpu().to(torch.float16).numpy()
+                    mu_np = d.mean[..., 0].cpu().to(torch.float16).numpy()
+                    std_np = d.stddev[..., 0].cpu().to(torch.float16).numpy()
 
-                preds.append({"sample": sample_np, "mean": mu_np, "std": std_np})
-                new_frames_for_ctx.append(sampled)
+                    preds.append({"sample": sample_np, "mean": mu_np, "std": std_np})
+                    new_frames_for_ctx.append(sampled)
 
             # Slide context window by len(new_frames_for_ctx)
             n_slide = len(new_frames_for_ctx)
