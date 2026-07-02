@@ -29,8 +29,9 @@ cfg = load_config()
 # Construct RUNS from config
 RUNS = [
     {
-        "folder": os.path.join("projects/single_agent/step_04_evaluation", cfg.output_dir, m.name),
+        "folder": os.path.join(os.getcwd(), "outputs", cfg.project_name, cfg.sub_project_name, m.name),
         "label":  m.name,
+        "config_path": m.config_path,
     }
     for m in cfg.models
 ]
@@ -54,14 +55,17 @@ for run in RUNS:
     episodes = []
     for path in tqdm.tqdm(ep_paths, desc=f"Loading {run['label']}"):
         data = np.load(path)
-        if "mean" in data and "std" in data:
+        if "mean" in data:
             # Load into memory to avoid closing file issues
+            mean_data = data["mean"].copy()
+            std_data = data["std"].copy() if "std" in data else np.zeros_like(mean_data)
+            
             episodes.append({
                 "path": path,
                 "time_steps": data["time_steps"].copy(),
                 "gt_full": data["gt_full"].copy(),
-                "mean": data["mean"].copy(),
-                "std": data["std"].copy(),
+                "mean": mean_data,
+                "std": std_data,
                 "latency": data["latency"].copy() if "latency" in data else None
             })
     raw_run_data.append(episodes if episodes else None)
@@ -123,10 +127,18 @@ for run_idx, (run, episodes) in enumerate(zip(RUNS, raw_run_data)):
     
     results_per_h = {h: {"latencies_ms": []} for h in range(MAX_HORIZON)}
     
+    # Read h_ctx from the model config
+    model_cfg_data = {}
+    if os.path.exists(run.get("config_path", "")):
+        with open(run["config_path"], "r") as f:
+            model_cfg_data = yaml.safe_load(f) or {}
+    h_ctx = model_cfg_data.get("model", {}).get("h_ctx", 1)
+
     for ep in tqdm.tqdm(episodes, desc=f"Metrics [{run['label']}]"):
         for i, t in enumerate(ep["time_steps"]):
-            gt_all = ep["gt_full"][t + 1 : t + 1 + MAX_HORIZON]
-            gt_current = ep["gt_full"][t]
+            t_start = t + h_ctx
+            gt_all = ep["gt_full"][t_start : t_start + MAX_HORIZON]
+            gt_current = ep["gt_full"][t_start - 1]
             max_h_avail = gt_all.shape[0]
             if max_h_avail == 0: continue
                 
