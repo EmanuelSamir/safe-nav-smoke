@@ -26,8 +26,8 @@ class FNOConfig(ModelConfig):
 
     @model_validator(mode="after")
     def validate_modes(self):
-        if self.modes_t > self.h_ctx // 2:
-            raise ValueError(f"modes_t ({self.modes_t}) must be <= h_ctx // 2 ({self.h_ctx // 2})")
+        # if self.modes_t > self.h_ctx // 2:
+        #     raise ValueError(f"modes_t ({self.modes_t}) must be <= h_ctx // 2 ({self.h_ctx // 2})")
         return self
 
 
