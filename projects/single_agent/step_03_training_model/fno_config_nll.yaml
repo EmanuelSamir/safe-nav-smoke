@@ -9,6 +9,7 @@ data:
 
 loss:
   name: "nll"
+  beta: 0.5
 
 model:
   type: "fno"
@@ -19,6 +20,9 @@ model:
   modes_w: 8
   width: 32
   n_layers: 4
+  use_grid: true
+  use_time: true
+  min_std: 0.001
 
 optimizer:
   max_epochs: 500

@@ -102,7 +102,7 @@ def generate_rollouts():
                     
                     # Autoregressive rollout!
                     preds = model.model.autoregressive_forecast(
-                        ctx_w, seed_t_start=0, horizon=max_horizon, num_samples=1, mode="mean"
+                        ctx_w, seed_t_start=t_idx - h_ctx + 1, horizon=max_horizon, num_samples=1, mode="mean"
                     )
                     
                     # Store means and stds for this timestep
