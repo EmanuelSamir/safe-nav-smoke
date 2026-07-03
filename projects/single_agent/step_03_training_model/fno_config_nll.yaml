@@ -5,9 +5,20 @@ seed: 42
 
 data:
   data_path: "data/physics_single_agent_train"
+  batch_size: 8
 
 loss:
   name: "nll"
 
 model:
   type: "fno"
+  h_ctx: 5
+  h_pred: 5
+  modes_t: 4
+  modes_h: 8
+  modes_w: 8
+  width: 32
+  n_layers: 4
+
+optimizer:
+  max_epochs: 500

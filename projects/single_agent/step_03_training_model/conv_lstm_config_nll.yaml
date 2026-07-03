@@ -5,9 +5,18 @@ seed: 42
 
 data:
   data_path: "data/physics_single_agent_train"
+  batch_size: 32
 
 loss:
   name: "nll"
 
 model:
   type: "conv_lstm"
+  h_ctx: 5
+  h_pred: 5
+  hidden_dim: 32
+  n_layers: 3
+  kernel_size: 5
+
+optimizer:
+  max_epochs: 500
