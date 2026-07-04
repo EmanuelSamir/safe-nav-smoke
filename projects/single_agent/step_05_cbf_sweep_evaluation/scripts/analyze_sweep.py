@@ -21,8 +21,11 @@ with open(config_path, "r") as f:
 sweep_param = cfg["sweep_param"]
 sweep_values = cfg["sweep_values"]
 
-# Ensure backward compatibility with save paths
-outputs_dir = os.path.join(base_dir, cfg.get("env", {}).get("save_transitions_path", "outputs/cbf_sweep"), sweep_param)
+repo_root = os.path.dirname(os.path.dirname(os.path.dirname(base_dir)))
+project_name = cfg.get("project_name", "single_agent_experiment")
+sub_project_name = cfg.get("sub_project_name", "cbf_sweep")
+
+outputs_dir = os.path.join(repo_root, "outputs", project_name, sub_project_name, sweep_param)
 print(f"Analyzing Sweep Parameter: {sweep_param}")
 print(f"Expected Values: {sweep_values}")
 print(f"Looking in: {outputs_dir}")
@@ -35,19 +38,14 @@ all_data = []
 
 # Fetch Playback dataset to get dynamic grid resolution
 playback_data_path = cfg.get("simulator", {}).get("data_path", "data/structured_smoke_slow")
-playback_ds_path = os.path.join(base_dir, playback_data_path) if not os.path.isabs(playback_data_path) else playback_data_path
+playback_ds_path = os.path.join(repo_root, playback_data_path) if not os.path.isabs(playback_data_path) else playback_data_path
 
-try:
-    playback_ds = load_from_disk(playback_ds_path)
-    first_row = playback_ds[0]
-    RESOLUTION = float(first_row.get("resolution", 0.2))
-    Y_SIZE = float(first_row.get("y_size", 30.0))
-    X_SIZE = float(first_row.get("x_size", 30.0))
-except Exception as e:
-    print(f"Warning: Could not load playback dataset from {playback_ds_path}. Using defaults. Error: {e}")
-    RESOLUTION = 0.2
-    Y_SIZE = 30.0
-    X_SIZE = 30.0
+playback_ds = load_from_disk(playback_ds_path)
+first_row = playback_ds[0]
+# Use config values or fail if they don't exist
+RESOLUTION = float(cfg.get("simulator", {}).get("resolution")) if "resolution" in cfg.get("simulator", {}) else float(first_row["resolution"])
+Y_SIZE = float(cfg.get("simulator", {}).get("y_size")) if "y_size" in cfg.get("simulator", {}) else float(first_row["y_size"])
+X_SIZE = float(cfg.get("simulator", {}).get("x_size")) if "x_size" in cfg.get("simulator", {}) else float(first_row["x_size"])
 
 H = int(Y_SIZE / RESOLUTION)
 W = int(X_SIZE / RESOLUTION)
