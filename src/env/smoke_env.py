@@ -526,6 +526,7 @@ class SmokeEnv(ParallelEnv):
             obs_readings = to_numpy(obs_agent["smoke_density"])
             next_obs_loc = to_numpy(next_obs_agent["location"])
             next_obs_readings = to_numpy(next_obs_agent["smoke_density"])
+            smoke_in_robot_val = float(self.smoke_simulator.get_smoke_density(obs_loc))
 
             transition = {
                 SmokeDataSchema.OBS_LOCATION: [float(x) for x in np.ravel(obs_loc)],
@@ -539,6 +540,7 @@ class SmokeEnv(ParallelEnv):
                 SmokeDataSchema.NEXT_OBS_READINGS: [float(x) for x in np.ravel(next_obs_readings)],
                 SmokeDataSchema.TERMINATIONS: bool(term_val),
                 SmokeDataSchema.TRUNCATIONS: bool(trunc_val),
+                SmokeDataSchema.SMOKE_IN_ROBOT: smoke_in_robot_val,
             }
             self._transition_buffer.append(transition)
 
@@ -574,6 +576,7 @@ class SmokeEnv(ParallelEnv):
                     SmokeDataSchema.NEXT_OBS_READINGS: datasets.Sequence(datasets.Value("float32")),
                     SmokeDataSchema.TERMINATIONS: datasets.Value("bool"),
                     SmokeDataSchema.TRUNCATIONS: datasets.Value("bool"),
+                    SmokeDataSchema.SMOKE_IN_ROBOT: datasets.Value("float32"),
                 }
             )
 
