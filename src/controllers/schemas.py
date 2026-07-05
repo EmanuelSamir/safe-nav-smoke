@@ -48,7 +48,7 @@ class CBFSmokeConfig(StrictBaseModel):
     k1: float = 5.0
     k2: float = 5.0
     rho: float = 5.0
-    margin: float = 1.0
+    discrete_epsilon: float = 0.5
     gamma: float = 1.0
     R_diag: List[float] = [1.0, 1.0]
 

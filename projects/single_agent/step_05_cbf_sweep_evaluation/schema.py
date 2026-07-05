@@ -20,7 +20,7 @@ class SweepConfig(StrictBaseModel):
     
     cbf_base: CBFSmokeConfig
     
-    sweep_param: Literal["smoke_threshold", "k1", "k2", "rho", "margin", "gamma"]
+    sweep_param: Literal["smoke_threshold", "k1", "k2", "rho", "discrete_epsilon", "gamma"]
     sweep_values: List[float]
     
     @model_validator(mode="after")

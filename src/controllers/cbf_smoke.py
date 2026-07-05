@@ -74,7 +74,12 @@ class CBFSmokeController:
         self.k1 = self.config.k1
         self.k2 = self.config.k2
         self.smoke_threshold = self.config.smoke_threshold
-        self.margin = self.config.margin
+        
+        # Explicit Sampled-Data CBF robustness formulation
+        self.robot_radius = self.env_config.collision_radius
+        self.discrete_epsilon = self.config.discrete_epsilon
+        self.margin = self.robot_radius + self.discrete_epsilon
+
 
         assert self.R_diag.shape == (self.n_u,), f"R_diag must be of shape ({self.n_u},)"
 
@@ -163,9 +168,10 @@ class CBFSmokeController:
         # 1 is free, 0 is occupied (unsafe)
         occupancy_grid = (smoke_map < self.smoke_threshold).astype(int)
 
-        if np.all(occupancy_grid == 1):
+        if np.all(occupancy_grid == 1) or np.all(occupancy_grid == 0):
             self.h_discrete_artifacts = {}
             return
+
 
         # Compute physical resolution (meters per cell)
         dx_grid = (x_max - x_min) / max(1, W - 1)
@@ -326,6 +332,11 @@ if __name__ == "__main__":
     print("=== Testing CBFSmokeController with Pydantic Config ===")
 
     cbf_config = CBFSmokeConfig()
+    # Tune CBF for strict safety:
+    cbf_config.rho = 1e6    # Very high penalty for violating safety constraint
+    cbf_config.k1 = 2.0     # Damping / reaction time 
+    cbf_config.k2 = 1.0     # Stiffness
+    cbf_config.discrete_epsilon = 0.5    # Robustness bound for discrete-time jumps
     print("Successfully initialized CBFSmokeConfig.")
 
     env_config = EnvConfig(
@@ -337,19 +348,15 @@ if __name__ == "__main__":
         world_y_size=30.0,
     )
     
-    robot_config = RobotConfig(name="dubins2d", action_dim=2, action_min=torch.tensor([0.0,-4.0]), action_max=torch.tensor([6.0,4.0]), state_dim=3, state_min=torch.tensor([-10,-10,-3.14]), state_max=torch.tensor([10,10,3.14]), dt=0.1, device="cpu")
+    robot_config = RobotConfig(name="dubins2d", action_dim=2, action_min=[0.0,-4.0], action_max=[6.0,4.0], state_dim=3, state_min=[-10.0,-10.0,-3.14], state_max=[30.0,30.0,3.14], dt=0.1, device="cpu")
     smoke_config = SmokeConfig()
-    sensor_config = GlobalSensorConfig(world_x_size=30.0, world_y_size=30.0)
+    sensor_config = GlobalSensorConfig()
 
     # Force single agent parameters for test environment
     env_config.num_agents = 1
-    env_config.max_steps = 2
-    env_config.initial_locations = [[5.0, 15.0]]
+    env_config.max_steps = 100
+    env_config.initial_locations = [[5.0, 14.5]]
     env_config.goal_locations = [[25.0, 15.0]]
-
-    # Ensure global sensor size matches environment size
-    sensor_config.world_x_size = env_config.world_x_size
-    sensor_config.world_y_size = env_config.world_y_size
 
     goal = np.array(env_config.goal_locations[0])
 
@@ -379,43 +386,90 @@ if __name__ == "__main__":
         else:
             raise e
 
-    # 2. Run simulation loop for exactly 2 steps using SmokeEnv
-    from src.env.smoke_env import SmokeEnv
+    # 2. Setup EnvConfig and SmokeConfig for static obstacle
+    env_config.render = "human"
+    env_config.max_steps = 100
+    
+    from src.env.simulator.schemas import BlobConfig
+    smoke_config.average_wind_speed = 0.1
+    smoke_config.smoke_decay_rate = 0.5
+    smoke_config.smoke_diffusion_rate = 0.5
+    smoke_config.smoke_emission_rate = 2.0
+    smoke_config.blobs = [BlobConfig(x_pos=15.0, y_pos=15.0, intensity=5.0, spread_rate=1.0)]
 
+    from src.env.smoke_env import SmokeEnv
     print("Initializing SmokeEnv...")
     env = SmokeEnv(
-        env_config=env_config,
-        robot_config=robot_config,
-        sensor_config=sensor_config,
-        simulator_params=smoke_config,
+        env_cfg=env_config,
+        robot_cfg=robot_config,
+        sensor_cfg=sensor_config,
+        simulator_cfg=smoke_config,
     )
 
     print("Resetting SmokeEnv...")
     obs, _ = env.reset(seed=42)
     print("SmokeEnv reset successfully.")
 
-    print("Running controller simulation for exactly 2 steps...")
-    for step in range(2):
+    print("Running controller simulation...")
+    import matplotlib.pyplot as plt
+    
+    plt.ion()
+    fig, ax = plt.subplots(figsize=(6, 6))
+
+    for step in range(env_config.max_steps):
         agent_obs = obs["agent_0"]
         location = np.asarray(agent_obs["location"])
         angle = float(np.ravel(agent_obs["angle"])[0])
         state = np.array([location[0], location[1], angle])
 
-        # Extract smoke grid and positions
-        smoke_values = agent_obs["smoke_density"].flatten()
+        # Extract smoke grid positions
         smoke_positions = agent_obs["smoke_density_location"]
+
+        # Create a FIXED static obstacle (e.g., a circle at (15, 15) with radius 3.0)
+        # We override the smoke physics here to just act as a solid static obstacle
+        dists = np.linalg.norm(smoke_positions - np.array([15.0, 15.0]), axis=1)
+        smoke_values = (dists < 3.0).astype(float) * 5.0 # Value above threshold creates the obstacle
 
         # Update controller barrier function h
         controller.update_h_discrete(smoke_values, smoke_positions, state)
 
         # Compute safe projected action
         cmd = controller.get_command(state)
-        print(
-            f"Step {step + 1}: State={state}, Nominal={controller.nominal_control(state)}, Safe Action={cmd}"
-        )
+        print(f"Step {step + 1}: State={state}, Nominal={controller.nominal_control(state)}, Safe Action={cmd}")
+
+        # Visualize CBF levels
+        if controller.h_discrete_artifacts:
+            ax.clear()
+            d_map = controller.h_discrete_artifacts["distance_map"]
+            x_range = controller.h_discrete_artifacts["x_range"]
+            y_range = controller.h_discrete_artifacts["y_range"]
+            
+            # Plot distance field (CBF level sets)
+            im = ax.imshow(d_map, origin='lower', extent=[x_range[0], x_range[1], y_range[0], y_range[1]], cmap='RdYlGn', alpha=0.7)
+            # Add contour lines for better visibility of safe/unsafe boundaries (0 contour)
+            ax.contour(d_map, levels=[0], origin='lower', extent=[x_range[0], x_range[1], y_range[0], y_range[1]], colors='r', linewidths=2)
+            
+            # Plot robot and goal
+            ax.plot(state[0], state[1], 'bo', markersize=8, label="Robot")
+            ax.plot(goal[0], goal[1], 'r*', markersize=12, label="Goal")
+            
+            # Plot orientation
+            ax.arrow(state[0], state[1], np.cos(state[2])*1.5, np.sin(state[2])*1.5, head_width=0.5, color='b')
+            
+            ax.set_title(f"CBF Levels (Distance Map) - Step {step+1}")
+            ax.legend()
+            plt.pause(0.01)
 
         # Step environment
         obs, rewards, terminateds, truncateds, infos = env.step({"agent_0": cmd})
+        env.render()
+        
+        if terminateds.get("agent_0", False) or truncateds.get("agent_0", False):
+            print(f"Episode ended at step {step + 1}. Success: {infos['agent_0'].get('is_success')}")
+            break
 
+    plt.ioff()
+    plt.show(block=False)
     env.close()
     print("Verification completed successfully!")
+
