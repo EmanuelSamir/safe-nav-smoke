@@ -12,8 +12,8 @@ import seaborn as sns
 from datasets import load_from_disk
 
 # %%
-base_dir = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-config_path = os.path.join(base_dir, "config_sweep.yaml")
+base_dir = "/home/emunoz/dev/safe-nav-smoke/" #
+config_path = os.path.join(os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "config_sweep.yaml")
 
 with open(config_path, "r") as f:
     cfg = yaml.safe_load(f)
@@ -85,21 +85,23 @@ for val in sweep_values:
         time_taken = len(ep) * 0.1
         
         for transition in ep:
-            loc = transition["obs_location"]
-            readings = transition["obs_readings"]
-            
-            y_coords = (loc[1] / RESOLUTION) - 0.5
-            x_coords = (loc[0] / RESOLUTION) - 0.5
-            # Dynamically infer dimensions assuming square map
-            side_len = int(np.sqrt(readings.size))
-            curr_H, curr_W = side_len, side_len
-            
-            y_idx = int(np.clip(round(y_coords), 0, curr_H-1))
-            x_idx = int(np.clip(round(x_coords), 0, curr_W-1))
-            
-            full_map = readings.reshape(curr_H, curr_W)
-            smoke_val = full_map[y_idx, x_idx]
-            
+            if "smoke_in_robot" in transition:
+                smoke_val = transition["smoke_in_robot"]
+            else:
+                loc = transition["obs_location"]
+                readings = transition["obs_readings"]
+                
+                y_coords = (loc[1] / RESOLUTION) - 0.5
+                x_coords = (loc[0] / RESOLUTION) - 0.5
+                y_idx = int(np.clip(round(y_coords), 0, H-1))
+                x_idx = int(np.clip(round(x_coords), 0, W-1))
+                
+                try:
+                    full_map = readings.reshape(H, W)
+                    smoke_val = full_map[y_idx, x_idx]
+                except:
+                    smoke_val = 0.0
+                
             smoke_on_robot_vals.append(smoke_val)
             if transition["reward"] > 0.0:
                 reached_goal = True

@@ -28,6 +28,7 @@ class SmokeDataSchema:
     NEXT_OBS_FULL_MAP = "next_obs_full_map"
     TERMINATIONS = "terminations"  # bool
     TRUNCATIONS = "truncations"  # bool
+    SMOKE_IN_ROBOT = "smoke_in_robot"  # float
 
     @classmethod
     def get_playback_keys(cls) -> List[str]:
@@ -47,4 +48,5 @@ class SmokeDataSchema:
             cls.NEXT_OBS_FULL_MAP,
             cls.TERMINATIONS,
             cls.TRUNCATIONS,
+            cls.SMOKE_IN_ROBOT,
         ]
