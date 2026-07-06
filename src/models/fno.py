@@ -96,7 +96,7 @@ class FNO(nn.Module):
         # Input channel count
         # 1 channel (greyscale) + time (1, if use_time) + spatial grid (2, if use_grid) → C_in
         self.c_in = 1 + (1 if cfg.use_time else 0) + (2 if cfg.use_grid else 0)
-        self.c_post = cfg.width
+        self.c_post = cfg.width + (2 if cfg.use_grid else 0)
 
         self.lift = nn.Conv3d(self.c_in, cfg.width, kernel_size=1)
 
@@ -174,6 +174,11 @@ class FNO(nn.Module):
         # Temporal aggregation -> (B, width, H, W)
         x = self.temporal_agg(x)  # (B, width, 1, H, W)
         x = x.squeeze(2)  # (B, width, H, W)
+
+        # Append spatial grid for MLP decoding (Skip connection)
+        if self.cfg.use_grid:
+            grid = self._build_grid(H, W, frames.device).expand(B, -1, -1, -1)
+            x = torch.cat([x, grid], dim=1)  # (B, width+2, H, W)
 
         # MLP decode
         x = x.permute(0, 2, 3, 1)  # (B, H, W, C_post)
@@ -273,7 +278,7 @@ def main():
         modes_t=4,
         modes_h=8,
         modes_w=8,
-        width=32,
+        width=48,
         n_layers=4,
         use_grid=True,
         use_time=True,
@@ -311,7 +316,7 @@ def main():
             modes_t=6,
             modes_h=8,
             modes_w=8,
-            width=32,
+            width=48,
             n_layers=4,
             use_grid=True,
             use_time=True,

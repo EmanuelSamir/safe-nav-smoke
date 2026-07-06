@@ -21,7 +21,7 @@ class FNOConfig(ModelConfig):
     modes_t: int = 4
     modes_h: int = 8
     modes_w: int = 8
-    width: int = 32
+    width: int = 64
     n_layers: int = 4
 
     @model_validator(mode="after")
