@@ -6,6 +6,7 @@ env:
   num_agents: 1
   clock: 0.1
   save_transitions: true
+  save_global_map_transitions: false
   render: "rgb_array"
   initial_locations: [[2.0, 10.0]]
   goal_locations: [[28.0, 10.0]]
@@ -19,7 +20,7 @@ sensor:
 
 mppi:
   nx: 3
-  alpha_noise_sigma: 1.0
+  alpha_noise_sigma: 10.0
   num_samples: 100
   horizon: 20
   u_min: [0.0, -4.0]

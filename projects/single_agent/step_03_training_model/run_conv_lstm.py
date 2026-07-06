@@ -78,7 +78,7 @@ def train():
 
     early_stopping = EarlyStopping(
         monitor=monitor_metric,
-        patience=10,
+        patience=500,
         mode=t_cfg.checkpoint.mode,
         verbose=True
     )

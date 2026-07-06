@@ -5,11 +5,10 @@ seed: 42
 
 data:
   data_path: "data/physics_single_agent_train"
-  batch_size: 8
+  batch_size: 32
 
 loss:
   name: "nll"
-  beta: 0.5
 
 model:
   type: "fno"

@@ -248,11 +248,13 @@ def plot_horizon_metrics(all_metrics, runs, active_variants, metrics_to_plot, ti
 if any(m is not None for m in all_metrics):
     variants = {
         "base":        {"ls": "-",  "marker": "o", "label": "Mean Prediction"},
-        "persistence": {"ls": "--", "marker": "s", "label": "Persistence", "is_ref": True, "alpha": 0.6}
+        "base_cvar_0.5":  {"ls": "-",  "marker": "p", "label": f"CVaR (a=0.5)"},
+        "base_cvar_0.9":  {"ls": "-",  "marker": "x", "label": f"CVaR (a=0.9)"},
+        "persistence": {"ls": "--", "marker": "s", "label": "Persistence", "is_ref": True, "alpha": 0.6},
     }
     
     metrics = [
-        ("mae", "MAE", "Mean Absolute Error"),
+        #("mae", "MAE", "Mean Absolute Error"),
         ("coverage", "Coverage error (mean)", "Coverage (under-prediction penalty)"),
         ("conservatism", "Conservatism error (mean)", "Conservatism (over-prediction penalty)")
     ]

@@ -21,7 +21,7 @@ with open(config_path, "r") as f:
 sweep_param = cfg["sweep_param"]
 sweep_values = cfg["sweep_values"]
 
-repo_root = os.path.dirname(os.path.dirname(os.path.dirname(base_dir)))
+repo_root = "/home/emunoz/dev/safe-nav-smoke/" #os.path.dirname(os.path.dirname(os.path.dirname(base_dir)))
 project_name = cfg.get("project_name", "single_agent_experiment")
 sub_project_name = cfg.get("sub_project_name", "cbf_sweep")
 
@@ -132,6 +132,7 @@ if not df.empty:
     summary = df.groupby('Sweep Value').agg(
         Success_Rate=('Reached Goal', lambda x: x.mean() * 100),
         Avg_Max_Smoke=('Max Smoke', 'mean'),
+        Avg_Mean_Smoke=('Mean Smoke', 'mean'),
         Avg_Time=('Time to Goal', lambda x: df.loc[x.index][df.loc[x.index]['Reached Goal']]['Time to Goal'].mean())
     ).round(2)
     print(summary)
@@ -149,10 +150,10 @@ plt.rcParams.update({
 })
 
 if not df.empty:
-    fig, axes = plt.subplots(1, 3, figsize=(18, 5))
+    fig, axes = plt.subplots(1, 4, figsize=(24, 5))
     
     # Success Rate
-    sns.lineplot(data=summary, x=summary.index, y='Success_Rate', marker='o', ax=axes[0])
+    sns.barplot(data=summary, x=summary.index, y='Success_Rate', ax=axes[0])
     axes[0].set_title("Success Rate vs. Threshold")
     axes[0].set_ylabel("Success Rate (%)")
     axes[0].set_xlabel(sweep_param)
@@ -164,10 +165,67 @@ if not df.empty:
         sns.boxplot(data=success_df, x='Sweep Value', y='Max Smoke', ax=axes[1])
         axes[1].set_title("Max Smoke Inhaled (Successful Ops)")
         axes[1].set_xlabel(sweep_param)
-        
-        sns.boxplot(data=success_df, x='Sweep Value', y='Time to Goal', ax=axes[2])
-        axes[2].set_title("Time to Goal (s)")
+
+        sns.boxplot(data=success_df, x='Sweep Value', y='Mean Smoke', ax=axes[2])
+        axes[2].set_title("Mean Smoke Inhaled (Successful Ops)")
         axes[2].set_xlabel(sweep_param)
+        
+        sns.boxplot(data=success_df, x='Sweep Value', y='Time to Goal', ax=axes[3])
+        axes[3].set_title("Time to Goal (s)")
+        axes[3].set_xlabel(sweep_param)
         
     plt.tight_layout()
     plt.show()
+
+# %%
+
+# %% [markdown]
+# ## 4. Mathematical Pareto Optimization (Elbow Point Calculation)
+
+# %%
+if not df.empty:
+    # 1. Preparar el DataFrame agrupado
+    summary_df = summary.reset_index()
+
+    # 2. Normalizar las métricas críticas entre 0 y 1
+    s_min, s_max = summary_df['Avg_Mean_Smoke'].min(), summary_df['Avg_Mean_Smoke'].max()
+    t_min, t_max = summary_df['Avg_Time'].min(), summary_df['Avg_Time'].max()
+
+    s_denom = (s_max - s_min) if s_max != s_min else 1.0
+    t_denom = (t_max - t_min) if t_max != t_min else 1.0
+
+    summary_df['Norm_Smoke'] = (summary_df['Avg_Mean_Smoke'] - s_min) / s_denom
+    summary_df['Norm_Time'] = (summary_df['Avg_Time'] - t_min) / t_denom
+    # Tasa de fallo (100% - Success_Rate) convertida a una escala de 0 a 1
+    summary_df['Norm_Failure'] = (100.0 - summary_df['Success_Rate']) / 100.0
+
+    # 3. Definir pesos de balance (Priorizando viabilidad del solver QP y seguridad aérea)
+    w_safety = 0.3      # Peso para mitigar el humo inhalado
+    w_viability = 0.3   # Peso para mantener alto Success Rate (evitar QPs infeisbles)
+    w_time = 0.3        # Peso para el tiempo de misión
+
+    # 4. Calcular la pérdida total usando la Distancia Euclidiana Ponderada al punto ideal (0,0,0)
+    summary_df['Pareto_Loss'] = np.sqrt(
+        w_safety * (summary_df['Norm_Smoke']**2) +
+        w_time * (summary_df['Norm_Time']**2) +
+        w_viability * (summary_df['Norm_Failure']**2)
+    )
+
+    # 5. Encontrar el índice del parámetro óptimo
+    optimal_row = summary_df.loc[summary_df['Pareto_Loss'].idxmin()]
+    optimal_beta = optimal_row['Sweep Value']
+
+    # 6. Imprimir resultados numéricos en consola
+    print("\n" + "="*60)
+    print("MATHEMATICAL PARETO ANALYSIS RESULTS")
+    print("="*60)
+    print(f"Weights used -> Safety: {w_safety}, Viability: {w_viability}, Time: {w_time}")
+    print(f"The mathematically optimal 'Elbow Point' is: beta = {optimal_beta}")
+    print("-"*60)
+    print(f"Performance at optimal point (beta = {optimal_beta}):")
+    print(f"  - Success Rate:      {optimal_row['Success_Rate']}%")
+    print(f"  - Avg Mean Smoke:     {optimal_row['Avg_Mean_Smoke']}")
+    print(f"  - Avg Time to Goal:  {optimal_row['Avg_Time']} s")
+    print("="*60 + "\n")
+
+# %%

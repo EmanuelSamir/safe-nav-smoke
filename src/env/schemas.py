@@ -22,6 +22,7 @@ class EnvConfig(StrictBaseModel):
     collision_penalty: float = -10.0
     smoke_density_threshold: Optional[float] = None
     save_transitions: bool = False
+    save_global_map_transitions: bool = True
     remove_dead_agents: bool = True
 
     # Extra parameters in smoke_env.yaml configuration

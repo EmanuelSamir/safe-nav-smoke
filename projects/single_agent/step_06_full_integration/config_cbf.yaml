@@ -6,6 +6,7 @@ env:
   num_agents: 1
   clock: 0.1
   save_transitions: true
+  save_global_map_transitions: false
   render: "rgb_array"
   initial_locations: [[2.0, 10.0]]
   goal_locations: [[28.0, 10.0]]
@@ -18,9 +19,5 @@ sensor:
   sensor_type: "global"
 
 cbf:
-  smoke_threshold: 0.75
-  k1: 5.0
-  k2: 5.0
-  rho: 5.0
-  margin: 1.0
-  R_diag: [1.0, 1.0]
+  smoke_threshold: 0.6
+  discrete_epsilon: 0.5

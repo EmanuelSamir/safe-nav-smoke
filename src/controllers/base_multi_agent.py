@@ -85,6 +85,47 @@ class AgentMPPI(MPPI):
 
     def set_maps(self, maps: deque) -> None:
         self._maps = maps
+        self._cached_maps = []
+        import warnings
+        from scipy.spatial import KDTree
+
+        for coords, flatten_risk_map in maps:
+            if torch.is_tensor(coords):
+                coords_np = coords.cpu().detach().numpy()
+            else:
+                coords_np = np.array(coords)
+                
+            if torch.is_tensor(flatten_risk_map):
+                risk_map_np = flatten_risk_map.cpu().detach().numpy()
+            else:
+                risk_map_np = np.array(flatten_risk_map)
+                
+            P = coords_np.shape[0]
+            unique_y = np.unique(np.round(coords_np[:, 1], decimals=3))
+            unique_x = np.unique(np.round(coords_np[:, 0], decimals=3))
+            H = len(unique_y)
+            W = len(unique_x)
+            
+            if H * W == P and H > 1 and W > 1:
+                y_min, y_max = unique_y.min(), unique_y.max()
+                x_min, x_max = unique_x.min(), unique_x.max()
+                
+                grid_tensor = torch.tensor(risk_map_np.reshape(1, 1, H, W), dtype=self.dtype, device=self.device)
+                
+                self._cached_maps.append({
+                    "is_grid": True,
+                    "grid_tensor": grid_tensor,
+                    "x_min": x_min, "x_max": x_max,
+                    "y_min": y_min, "y_max": y_max
+                })
+            else:
+                warnings.warn("Using KDTree for map lookups. This will be slower.")
+                tree = KDTree(coords_np)
+                self._cached_maps.append({
+                    "is_grid": False,
+                    "tree": tree,
+                    "risk_map_np": risk_map_np
+                })
 
     def dynamics(
         self, state: torch.Tensor, u: torch.Tensor, t: Optional[int] = None
@@ -92,32 +133,45 @@ class AgentMPPI(MPPI):
         return self.robot.dynamics(state, u)
 
     def _compute_risk_cost(self, states: torch.Tensor, t: Optional[int]) -> torch.Tensor:
-        if len(self._maps) == 0 or t is None:
+        if not hasattr(self, '_cached_maps') or len(self._cached_maps) == 0 or t is None:
             return torch.zeros(states.shape[0], dtype=self.dtype, device=self.device)
 
-        map_idx = min(t, len(self._maps) - 1)
-        coords, flatten_risk_map = self._maps[map_idx]
-
-        states_np = states[:, :2].detach().cpu().numpy()
-        if torch.is_tensor(coords):
-            coords = coords.cpu().detach().numpy()
-        elif not isinstance(coords, np.ndarray):
-            coords = np.array(coords)
-            
-        if torch.is_tensor(flatten_risk_map):
-            flatten_risk_map = flatten_risk_map.cpu().detach().numpy()
-        elif not isinstance(flatten_risk_map, np.ndarray):
-            flatten_risk_map = np.array(flatten_risk_map)
-            
-        assert coords.shape[0] == flatten_risk_map.shape[0], f"Dimension mismatch: coords {coords.shape} vs risk map {flatten_risk_map.shape}"
-
-        risk_np = get_value_in_map_from_coords(states_np, coords, flatten_risk_map)
+        map_idx = min(t, len(self._cached_maps) - 1)
+        cached = self._cached_maps[map_idx]
         
-        # LOGS PARA DEBUG: Imprimir si realmente estamos viendo humo y si el mapa tiene humo
-        if t == 0:
-            print(f"[DEBUG] [t=0] Mapa max density: {flatten_risk_map.max():.4f}, Trayectorias max risk: {risk_np.max():.4f}")
+        if cached["is_grid"]:
+            x = states[:, 0]
+            y = states[:, 1]
+            x_min, x_max = cached["x_min"], cached["x_max"]
+            y_min, y_max = cached["y_min"], cached["y_max"]
             
-        return torch.tensor(risk_np, dtype=self.dtype, device=self.device)
+            norm_x = 2.0 * (x - x_min) / (x_max - x_min) - 1.0
+            norm_y = 2.0 * (y - y_min) / (y_max - y_min) - 1.0
+            
+            norm_grid = torch.stack([norm_x, norm_y], dim=-1).view(1, 1, -1, 2)
+            
+            sampled = torch.nn.functional.grid_sample(
+                cached["grid_tensor"], 
+                norm_grid, 
+                mode='nearest', 
+                padding_mode='border', 
+                align_corners=True
+            )
+            risk = sampled.view(-1)
+        else:
+            states_np = states[:, :2].detach().cpu().numpy()
+            _, idxs = cached["tree"].query(states_np)
+            risk_np = cached["risk_map_np"][idxs]
+            risk = torch.tensor(risk_np, dtype=self.dtype, device=self.device)
+            
+        if t == 0:
+            if cached["is_grid"]:
+                max_density = cached["grid_tensor"].max().item()
+            else:
+                max_density = cached["risk_map_np"].max()
+            print(f"[DEBUG] [t=0] Mapa max density: {max_density:.4f}, Trayectorias max risk: {risk.max().item():.4f}")
+            
+        return risk
 
     def running_cost(
         self, state: torch.Tensor, u: torch.Tensor, t: Optional[int] = None
@@ -447,3 +501,59 @@ class BaseMultiAgentController:
             raise ValueError(
                 f"Unknown safety mode: {mode!r}. Choose 'filter', 'dual-guard', or 'penalty'."
             )
+
+if __name__ == '__main__':
+    # Test comparativo entre KDTree y grid_sample
+    print("Corriendo test comparativo...")
+    device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+    
+    # Crear un grid falso de 10x10 (H=10, W=10)
+    x = np.linspace(0, 9, 10)
+    y = np.linspace(0, 9, 10)
+    xx, yy = np.meshgrid(x, y) # indexing='xy' (row-major: Y changes slow, X changes fast)
+    
+    # Coordenadas (N, 2)
+    coords = np.stack([xx.flatten(), yy.flatten()], axis=-1)
+    
+    # Riesgo aleatorio
+    risk_map = np.random.rand(100).astype(np.float32)
+    
+    # Estados de trayectoria aleatorios (X, Y) dentro y fuera de límites
+    states_np = np.random.uniform(-2, 12, (50, 2)).astype(np.float32)
+    states = torch.tensor(states_np, device=device)
+    
+    # 1. Metodo KDTree
+    from scipy.spatial import KDTree
+    tree = KDTree(coords)
+    _, idxs = tree.query(states_np)
+    risk_kdtree = risk_map[idxs]
+    risk_kdtree_tensor = torch.tensor(risk_kdtree, device=device)
+    
+    # 2. Metodo Grid Sample
+    unique_y = np.unique(coords[:, 1])
+    unique_x = np.unique(coords[:, 0])
+    y_min, y_max = unique_y.min(), unique_y.max()
+    x_min, x_max = unique_x.min(), unique_x.max()
+    
+    grid_tensor = torch.tensor(risk_map.reshape(1, 1, 10, 10), device=device)
+    
+    norm_x = 2.0 * (states[:, 0] - x_min) / (x_max - x_min) - 1.0
+    norm_y = 2.0 * (states[:, 1] - y_min) / (y_max - y_min) - 1.0
+    norm_grid = torch.stack([norm_x, norm_y], dim=-1).view(1, 1, -1, 2)
+    
+    sampled = torch.nn.functional.grid_sample(
+        grid_tensor, 
+        norm_grid, 
+        mode='nearest', 
+        padding_mode='border', 
+        align_corners=True
+    )
+    risk_grid_sample = sampled.view(-1)
+    
+    # Comparar
+    is_close = torch.allclose(risk_kdtree_tensor, risk_grid_sample, atol=1e-5)
+    print(f"Results are the same? {'YES' if is_close else 'NO'}")
+    if not is_close:
+        print("Differences found:")
+        print("KDTree:", risk_kdtree_tensor[:15])
+        print("Grid Sample:", risk_grid_sample[:15])

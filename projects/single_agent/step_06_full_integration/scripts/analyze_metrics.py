@@ -97,23 +97,26 @@ for exp_name, exp_folder in EXPERIMENTS.items():
         time_taken = len(ep) * 0.1 # assuming dt = 0.1
         
         for transition in ep:
-            loc = transition["obs_location"]
-            readings = transition["obs_readings"]
-            
-            # Since sensor is global, readings is the full flattened grid
-            # We map loc to grid coords to find the smoke at robot position
-            y_coords = (loc[1] / RESOLUTION) - 0.5
-            x_coords = (loc[0] / RESOLUTION) - 0.5
-            
-            y_idx = int(np.clip(round(y_coords), 0, H-1))
-            x_idx = int(np.clip(round(x_coords), 0, W-1))
-            
-            try:
-                full_map = readings.reshape(H, W)
-                smoke_val = full_map[y_idx, x_idx]
-            except Exception:
-                # If dimensions mismatch due to different resolution, we can fallback safely
-                smoke_val = 0.0
+            if "smoke_in_robot" in transition:
+                smoke_val = transition["smoke_in_robot"]
+            else:
+                loc = transition["obs_location"]
+                readings = transition["obs_readings"]
+                
+                # Since sensor is global, readings is the full flattened grid
+                # We map loc to grid coords to find the smoke at robot position
+                y_coords = (loc[1] / RESOLUTION) - 0.5
+                x_coords = (loc[0] / RESOLUTION) - 0.5
+                
+                y_idx = int(np.clip(round(y_coords), 0, H-1))
+                x_idx = int(np.clip(round(x_coords), 0, W-1))
+                
+                try:
+                    full_map = readings.reshape(H, W)
+                    smoke_val = full_map[y_idx, x_idx]
+                except Exception:
+                    # If dimensions mismatch due to different resolution, we can fallback safely
+                    smoke_val = 0.0
                 
             smoke_on_robot_vals.append(smoke_val)
             

@@ -533,15 +533,16 @@ class SmokeEnv(ParallelEnv):
                 SmokeDataSchema.OBS_ANGLE: [float(obs_angle)]
                 if isinstance(obs_angle, (int, float, np.number))
                 else [float(x) for x in np.ravel(obs_angle)],
-                SmokeDataSchema.OBS_READINGS: [float(x) for x in np.ravel(obs_readings)],
                 SmokeDataSchema.ACTION: [float(x) for x in np.ravel(act_val)],
                 SmokeDataSchema.REWARD: float(rew_val),
                 SmokeDataSchema.NEXT_OBS_LOCATION: [float(x) for x in np.ravel(next_obs_loc)],
-                SmokeDataSchema.NEXT_OBS_READINGS: [float(x) for x in np.ravel(next_obs_readings)],
                 SmokeDataSchema.TERMINATIONS: bool(term_val),
                 SmokeDataSchema.TRUNCATIONS: bool(trunc_val),
                 SmokeDataSchema.SMOKE_IN_ROBOT: smoke_in_robot_val,
             }
+            if getattr(self.env_cfg, "save_global_map_transitions", True):
+                transition[SmokeDataSchema.OBS_READINGS] = [float(x) for x in np.ravel(obs_readings)]
+                transition[SmokeDataSchema.NEXT_OBS_READINGS] = [float(x) for x in np.ravel(next_obs_readings)]
             self._transition_buffer.append(transition)
 
         self._last_obs = obs
@@ -559,26 +560,27 @@ class SmokeEnv(ParallelEnv):
             import datasets
             from datasets import Dataset
 
-            features = datasets.Features(
-                {
-                    SmokeDataSchema.OBS_LOCATION: datasets.Sequence(
-                        datasets.Value("float32"), length=2
-                    ),
-                    SmokeDataSchema.OBS_ANGLE: datasets.Sequence(
-                        datasets.Value("float32"), length=1
-                    ),
-                    SmokeDataSchema.OBS_READINGS: datasets.Sequence(datasets.Value("float32")),
-                    SmokeDataSchema.ACTION: datasets.Sequence(datasets.Value("float32")),
-                    SmokeDataSchema.REWARD: datasets.Value("float32"),
-                    SmokeDataSchema.NEXT_OBS_LOCATION: datasets.Sequence(
-                        datasets.Value("float32"), length=2
-                    ),
-                    SmokeDataSchema.NEXT_OBS_READINGS: datasets.Sequence(datasets.Value("float32")),
-                    SmokeDataSchema.TERMINATIONS: datasets.Value("bool"),
-                    SmokeDataSchema.TRUNCATIONS: datasets.Value("bool"),
-                    SmokeDataSchema.SMOKE_IN_ROBOT: datasets.Value("float32"),
-                }
-            )
+            feature_dict = {
+                SmokeDataSchema.OBS_LOCATION: datasets.Sequence(
+                    datasets.Value("float32"), length=2
+                ),
+                SmokeDataSchema.OBS_ANGLE: datasets.Sequence(
+                    datasets.Value("float32"), length=1
+                ),
+                SmokeDataSchema.ACTION: datasets.Sequence(datasets.Value("float32")),
+                SmokeDataSchema.REWARD: datasets.Value("float32"),
+                SmokeDataSchema.NEXT_OBS_LOCATION: datasets.Sequence(
+                    datasets.Value("float32"), length=2
+                ),
+                SmokeDataSchema.TERMINATIONS: datasets.Value("bool"),
+                SmokeDataSchema.TRUNCATIONS: datasets.Value("bool"),
+                SmokeDataSchema.SMOKE_IN_ROBOT: datasets.Value("float32"),
+            }
+            if getattr(self.env_cfg, "save_global_map_transitions", True):
+                feature_dict[SmokeDataSchema.OBS_READINGS] = datasets.Sequence(datasets.Value("float32"))
+                feature_dict[SmokeDataSchema.NEXT_OBS_READINGS] = datasets.Sequence(datasets.Value("float32"))
+
+            features = datasets.Features(feature_dict)
 
             ds = Dataset.from_list(self._transition_buffer, features=features)
 
