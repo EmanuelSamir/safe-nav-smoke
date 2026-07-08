@@ -18,8 +18,9 @@ This repository contains the codebase for the paper **"Risk-Aware Navigation in 
 
 1. Clone the repository and navigate to its root:
    ```bash
-   git clone https://github.com/yourusername/safe-nav-smoke.git
+   git clone https://github.com/EmanuelSamir/safe-nav-smoke.git
    cd safe-nav-smoke
+   git checkout iros
    ```
 
 2. Establish the virtual environment and install the required torch, fourier-neural-operator, and phiflow dependencies using the provided bash script:
@@ -88,3 +89,15 @@ python scripts/analyze_metrics.py
 ```
 Outputs are routed to `.pdf` and `.png` versions within the central logging directory.
 
+## Citation
+
+If you find this work useful in your research, please consider citing our paper:
+
+```bibtex
+@inproceedings{munoz2026risk,
+  title     ={Risk-Aware Navigation in Dynamic Smoke Environments via Probabilistic Fourier Neural Operators},
+  author    ={Munoz, Emanuel and Kailas, Siva and Kim, Woojun and Luo, Wenhao and Sycara, Katia},
+  booktitle ={IEEE/RSJ International Conference on Intelligent Robots and Systems (IROS)},
+  year      ={2026}
+}
+```
